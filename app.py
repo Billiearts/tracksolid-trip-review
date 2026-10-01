@@ -48,22 +48,6 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
 
 
-# --- startup maintenance --------------------------------------------------
-try:
-    swept = jobs.sweep_stale()
-    if swept:
-        log.info("swept %d stale report job(s) on startup", swept)
-except Exception as exc:
-    log.warning("startup sweep failed: %s", exc)
-
-try:
-    purged = sessions_svc.purge_expired()
-    if purged:
-        log.info("purged %d expired session(s) on startup", purged)
-except Exception as exc:
-    log.warning("session purge failed: %s", exc)
-
-
 # --- JSON (de)serialisation for stored reports ----------------------------
 
 def _to_jsonable(obj):
