@@ -4,7 +4,9 @@ venv
 __pycache__
 *.pyc
 .env
+.env.production
 reports/*.xlsx
 reports/*.meta.json
 *.xlsx
+!Trip review template.xlsx
 .token_cache.json
