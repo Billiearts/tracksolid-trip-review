@@ -41,43 +41,45 @@
       <button type="button" class="filter-clear" id="filter-clear">Clear</button>
     </div>
 
-    <table class="jobs-table">
-      <thead>
-        <tr>
-          <th>Truck</th>
-          <th>Trip</th>
-          {% if is_admin %}<th>Created by</th>{% endif %}
-          <th>Status</th>
-          <th>Finished</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody id="jobs-body">
-        {% for j in jobs %}
+    <div class="table-scroll">
+      <table class="jobs-table">
+        <thead>
           <tr>
-            <td>{{ j.truck }}</td>
-            <td>{{ (j.trip_start or '')[:10] }}</td>
-            {% if is_admin %}
-              <td>{{ j.created_by_email or ('(legacy)' if j.from_disk else '—') }}</td>
-            {% endif %}
-            <td><span class="status status-{{ j.status }}">{{ j.status }}</span></td>
-            <td>{{ j.finished_at.strftime('%Y-%m-%d %H:%M') if j.finished_at else '' }}</td>
-            <td>
-              {% if j.status == 'done' and j.filename %}
-                {% if j.id %}
-                  <a class="btn-edit"
-                     href="{{ url_for('report_view', report_id=j.id) }}">View</a>
-                {% endif %}
-                <a class="btn-download"
-                   href="{{ url_for('download', filename=j.filename) }}">Download</a>
-              {% elif j.status == 'failed' %}
-                <span class="error-msg" title="{{ j.error }}">failed</span>
-              {% endif %}
-            </td>
+            <th>Truck</th>
+            <th>Trip</th>
+            {% if is_admin %}<th>Created by</th>{% endif %}
+            <th>Status</th>
+            <th>Finished</th>
+            <th></th>
           </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+        </thead>
+        <tbody id="jobs-body">
+          {% for j in jobs %}
+            <tr>
+              <td>{{ j.truck }}</td>
+              <td>{{ (j.trip_start or '')[:10] }}</td>
+              {% if is_admin %}
+                <td>{{ j.created_by_email or ('(legacy)' if j.from_disk else '—') }}</td>
+              {% endif %}
+              <td><span class="status status-{{ j.status }}">{{ j.status }}</span></td>
+              <td>{{ j.finished_at.strftime('%Y-%m-%d %H:%M') if j.finished_at else '' }}</td>
+              <td>
+                {% if j.status == 'done' and j.filename %}
+                  {% if j.id %}
+                    <a class="btn-edit"
+                       href="{{ url_for('report_view', report_id=j.id) }}">View</a>
+                  {% endif %}
+                  <a class="btn-download"
+                     href="{{ url_for('download', filename=j.filename) }}">Download</a>
+                {% elif j.status == 'failed' %}
+                  <span class="error-msg" title="{{ j.error }}">failed</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
 
     <p id="empty-msg" class="muted" style="display: none;">
       No reports match these filters.
@@ -100,12 +102,12 @@
 {% block scripts %}
   <script>
     (function () {
-      const reportsIsAdmin = {{ 'true' if is_admin else 'false' }};
+      const isAdmin = {{ 'true' if is_admin else 'false' }};
 
       const state = {
         jobs: [], page: 1, pageSize: 25,
         status: '', truck: '', dateFrom: '',
-        scope: reportsIsAdmin ? 'all' : 'mine',
+        scope: isAdmin ? 'all' : 'mine',
       };
 
       const els = {
@@ -168,7 +170,7 @@
                 esc(j.error || '') + '">failed</span>';
             }
             const trip = j.trip_start ? esc(j.trip_start.slice(0, 10)) : '';
-            const ownerCol = reportsIsAdmin
+            const ownerCol = isAdmin
               ? '<td>' + esc(j.created_by_email ||
                   (j.from_disk ? '(legacy)' : '—')) + '</td>'
               : '';

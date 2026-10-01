@@ -13,6 +13,7 @@
     </div>
 
     {% if result.users %}
+      <div class="table-scroll">
       <table class="admin-table">
         <thead>
           <tr>
@@ -39,7 +40,8 @@
             </tr>
           {% endfor %}
         </tbody>
-      </table>
+         </table>
+      </div>
 
       <div class="pagination">
         {% if result.page > 1 %}

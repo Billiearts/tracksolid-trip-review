@@ -28,6 +28,7 @@
       align-items: center;
       gap: 1.25rem;
       font-size: 0.92rem;
+      flex-wrap: wrap;
     }
     .topbar a {
       color: #444;
@@ -146,6 +147,15 @@
       font-variant-numeric: tabular-nums;
     }
 
+    /* Tables — scroll horizontally inside a card when too wide */
+    .table-scroll {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      margin: 0 -0.25rem;
+      padding: 0 0.25rem;
+    }
+
     /* Jobs table */
     .jobs-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
     .jobs-table th {
@@ -262,6 +272,7 @@
     .pagination {
       display: flex; align-items: center; justify-content: flex-end;
       gap: 0.75rem; margin-top: 1rem; font-size: 0.88rem; color: #666;
+      flex-wrap: wrap;
     }
     .pagination button {
       background: #f0f2f5; color: #333;
@@ -340,6 +351,126 @@
     }
     .role-admin { background: #e6f0fb; color: #1e5f9e; }
     .role-user  { background: #f0f0f0; color: #666; }
+
+    /* ==========================================================
+       Mobile adjustments — screens 768px and narrower
+       ========================================================== */
+    @media (max-width: 768px) {
+      body {
+        padding: 0.75rem;
+        font-size: 0.95rem;
+      }
+      .container {
+        max-width: 100%;
+        margin: 0.75rem auto 0;
+      }
+      body.wide .container { max-width: 100%; }
+
+      /* Topbar stacks: nav links row, then user/sign-out row */
+      .topbar {
+        margin: -0.75rem -0.75rem 0.5rem;
+        padding: 0.6rem 0.75rem;
+        gap: 0.5rem 1rem;
+        font-size: 0.88rem;
+      }
+      .topbar .spacer { display: none; }
+      .topbar .user {
+        margin-left: auto;
+        font-size: 0.8rem;
+        max-width: 40%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      h1 { font-size: 1.2rem; margin: 0 0 1rem; }
+      .card {
+        padding: 1rem;
+        border-radius: 6px;
+        margin-bottom: 0.75rem;
+      }
+
+      /* Larger tap targets */
+      button { min-height: 42px; padding: 0.6rem 1rem; }
+      .btn-download,
+      .btn-edit {
+        min-height: 34px;
+        padding: 0.4rem 0.75rem;
+        display: inline-flex;
+        align-items: center;
+      }
+
+      /* Rate-limit banner spans the full width */
+      .ratelimit-banner {
+        margin: 0 -0.75rem;
+        padding: 0.6rem 0.75rem;
+        font-size: 0.85rem;
+      }
+
+      /* Filter bar stacks into one column */
+      .filter-bar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.5rem;
+      }
+      .filter-bar .field-inline { flex: 1 1 auto; }
+      .filter-bar .filter-clear { width: 100%; }
+
+      /* Pagination wraps nicely */
+      .pagination {
+        justify-content: space-between;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+      .pagination #page-info {
+        flex: 1 1 100%;
+        text-align: center;
+        order: 3;
+      }
+
+      /* Tabs get scrollable if too many */
+      .tabs {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        flex-wrap: nowrap;
+      }
+      .tab { white-space: nowrap; padding: 0.6rem 0.75rem; }
+
+      /* Summary sections tighter */
+      .summary-section { padding: 0.85rem 0.9rem; }
+      .summary-section > h3 { font-size: 0.72rem; }
+
+      /* Preview table adjustments */
+      .preview-table { font-size: 0.82rem; }
+      .preview-table th,
+      .preview-table td { padding: 0.4rem 0.4rem 0.4rem 0; }
+
+      /* Auth card */
+      .auth-card { margin: 1.5rem auto 0; }
+
+      /* Modal */
+      .ratelimit-modal { padding: 1rem; }
+    }
+
+    /* Even narrower — phones in portrait */
+    @media (max-width: 480px) {
+      .topbar {
+        font-size: 0.82rem;
+        gap: 0.4rem 0.85rem;
+      }
+      h1 { font-size: 1.1rem; }
+      .card { padding: 0.85rem; }
+      .summary-section { padding: 0.75rem; }
+      .jobs-table,
+      .admin-table { font-size: 0.82rem; }
+      .jobs-table th,
+      .jobs-table td,
+      .admin-table th,
+      .admin-table td {
+        padding-left: 0.4rem;
+        padding-right: 0.4rem;
+      }
+    }
   </style>
   {% block head %}{% endblock %}
 </head>
