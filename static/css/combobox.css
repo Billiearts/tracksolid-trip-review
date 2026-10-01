@@ -1,0 +1,119 @@
+.combobox { position: relative; }
+
+.combobox-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.combobox-input {
+  width: 100%;
+  padding: 0.5rem 2.75rem 0.5rem 0.75rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  background: #fff;
+}
+.combobox-input:focus { outline: none; border-color: #4a90e2; }
+
+.combobox-clear,
+.combobox-toggle {
+  position: absolute;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: #888;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+.combobox-clear  { right: 1.75rem; font-size: 1rem; }
+.combobox-toggle { right: 0.25rem; }
+.combobox-clear:hover,
+.combobox-toggle:hover { color: #222; background: transparent; }
+
+.combobox-listbox {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin: 2px 0 0;
+  padding: 0.25rem 0;
+  list-style: none;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  max-height: 280px;
+  overflow-y: auto;
+  z-index: 100;
+}
+
+.combobox-option {
+  display: flex;
+  flex-direction: column;
+  padding: 0.45rem 0.75rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.combobox-option[aria-selected="true"] { background: #eaf2fb; }
+.combobox-option-name { font-weight: 500; color: #222; }
+.combobox-option-meta {
+  font-size: 0.78rem;
+  color: #888;
+  font-variant-numeric: tabular-nums;
+}
+
+.combobox-status {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin: 2px 0 0;
+  padding: 0.75rem;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.88rem;
+  color: #666;
+  z-index: 100;
+}
+.combobox-retry {
+  background: none;
+  border: none;
+  color: #4a90e2;
+  cursor: pointer;
+  padding: 0;
+  font-size: inherit;
+  font-family: inherit;
+  text-decoration: underline;
+}
+
+/* Date presets */
+.date-presets {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+.date-preset {
+  background: #f0f2f5;
+  color: #333;
+  border: 1px solid #d7dbe0;
+  border-radius: 4px;
+  padding: 0.3rem 0.65rem;
+  font-size: 0.8rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+.date-preset:hover { background: #e2e6eb; }
+
+    input[type="datetime-local"] {
+      width: 100%; padding: 0.5rem 0.75rem;
+      border: 1px solid #ccc; border-radius: 4px;
+      font-size: 0.95rem; font-family: inherit;
+      background: #fff;
+      color: inherit;
+    }
+    input[type="datetime-local"]:focus { outline: none; border-color: #4a90e2; }

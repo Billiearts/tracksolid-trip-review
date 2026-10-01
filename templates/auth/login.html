@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block heading %}&nbsp;{% endblock %}
+
+{% block content %}
+  <div class="card auth-card">
+    <h1>Trip Review</h1>
+    <form method="post">
+      <div class="field">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required autofocus>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required>
+      </div>
+      <button type="submit" style="width: 100%;">Sign in</button>
+    </form>
+    <p class="swap">
+      No account? <a href="{{ url_for('auth.register') }}">Register</a>
+    </p>
+  </div>
+{% endblock %}

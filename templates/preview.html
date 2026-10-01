@@ -1,0 +1,342 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+  {% if loading %}
+    <div class="card">
+      <h2 style="font-size: 1.1rem; margin: 0 0 1rem;">Computing…</h2>
+      <p style="color: #666;">
+        Fetching trips, parking events, and history for
+        <strong>{{ state.truck }}</strong>.
+      </p>
+      <div class="spinner" style="margin: 2rem auto;"></div>
+    </div>
+
+    <script>
+      async function poll() {
+        try {
+          const r = await fetch("{{ url_for('api_preview', preview_id=preview_id) }}");
+          const j = await r.json();
+          if (j.status === "ready" || j.status === "failed") {
+            location.reload();
+          } else {
+            setTimeout(poll, 2000);
+          }
+        } catch (e) {
+          setTimeout(poll, 4000);
+        }
+      }
+      setTimeout(poll, 1500);
+    </script>
+
+  {% else %}
+    {% set c = computed %}
+    {% set cur = c.stops %}
+    {% set ev  = c.events %}
+    {% set h   = c.history %}
+
+    {# ---------- Header ---------- #}
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: baseline;">
+        <div>
+          <h2 style="font-size: 1.2rem; margin: 0 0 0.25rem;">
+            {{ c.truck_id }}{% if view_mode %} <span class="meta-note">(saved report)</span>{% endif %}
+          </h2>
+          <p style="color: #666; font-size: 0.9rem; margin: 0;">
+            IMEI {{ c.imei }} &middot;
+            {% if c.trip_start %}{{ c.trip_start.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+            →
+            {% if c.trip_end %}{{ c.trip_end.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+            &middot; {{ c.trips | length }} trip(s) found
+          </p>
+        </div>
+        {% if view_mode %}
+          <a class="btn-download"
+             href="{{ url_for('download', filename=(c.truck_id + '.xlsx')) }}"
+             style="display: none;">Download</a>
+          {# Fallback: no direct filename; leave as-is, users download from Reports list #}
+        {% else %}
+          <form action="{{ url_for('export') }}" method="post" style="margin: 0;">
+            <input type="hidden" name="preview_id" value="{{ preview_id }}">
+            <button type="submit">Export to Excel</button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ---------- Tabs ---------- #}
+    <div class="card">
+      <div class="tabs" role="tablist">
+        <button type="button" class="tab active" data-tab="summary" role="tab">Summary</button>
+        <button type="button" class="tab" data-tab="trips" role="tab">
+          Trips ({{ c.trips | length }})
+        </button>
+        <button type="button" class="tab" data-tab="stops" role="tab">
+          Stops &amp; Rests ({{ cur.count }})
+        </button>
+        <button type="button" class="tab" data-tab="events" role="tab">
+          Events ({{ ev.events | length }})
+        </button>
+      </div>
+
+      {# ----------------------------- SUMMARY ----------------------------- #}
+      <div class="tab-panel" data-panel="summary">
+
+        {# ===== This Trip ===== #}
+        <div class="summary-section">
+          <h3>This Trip</h3>
+
+          <table class="preview-table">
+            <thead>
+              <tr><th>Rest and breaks</th><th>Value</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Duration of mandatory rest break</td>
+                <td>{{ cur.rest_break_seconds | fmt_duration }}</td>
+              </tr>
+              <tr>
+                <td>Number of stops exceeding 5 mins</td>
+                <td>{{ cur.count }}</td>
+              </tr>
+              <tr>
+                <td>Duration of stops exceeding 5 mins</td>
+                <td>{{ cur.total_seconds | fmt_duration }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3 style="margin-top: 1.5rem;">Driver behaviour</h3>
+          <table class="preview-table">
+            <thead>
+              <tr><th>Event</th><th>Count</th><th>Max speed (kph)</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Hard braking</td>
+                <td>{{ ev.counts.hard_braking }}</td>
+                <td>{{ ev.max_speed.hard_braking | round(1) }}</td>
+              </tr>
+              <tr>
+                <td>Hard cornering</td>
+                <td>{{ ev.counts.hard_cornering }}</td>
+                <td>{{ ev.max_speed.hard_cornering | round(1) }}</td>
+              </tr>
+              <tr>
+                <td>Speeding &lt;10 kph over</td>
+                <td>{{ ev.counts.speeding_10 }}</td>
+                <td>{{ ev.max_speed.speeding_10 | round(1) }}</td>
+              </tr>
+              <tr>
+                <td>Speeding &lt;20 kph over</td>
+                <td>{{ ev.counts.speeding_20 }}</td>
+                <td>{{ ev.max_speed.speeding_20 | round(1) }}</td>
+              </tr>
+              <tr>
+                <td>Speeding &gt;20 kph over</td>
+                <td>{{ ev.counts.speeding_over_20 }}</td>
+                <td>{{ ev.max_speed.speeding_over_20 | round(1) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        {# ===== Previous 3 months ===== #}
+        {% if h %}
+          <div class="summary-section">
+            <h3>
+              Previous 3 months
+              <span class="meta-note">
+                {{ h.trip_count }} trips
+                &middot;
+                {{ h.window_begin.strftime('%Y-%m-%d') }} →
+                {{ h.window_end.strftime('%Y-%m-%d') }}
+              </span>
+            </h3>
+
+            <table class="preview-table">
+              <thead>
+                <tr>
+                  <th>Rest and breaks</th>
+                  <th>Average per trip</th>
+                  <th>Longest</th>
+                  <th>Shortest</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Duration of mandatory rest break</td>
+                  <td>{{ h.rests.avg_seconds | fmt_duration }}</td>
+                  <td>{{ h.rests.max_seconds | fmt_duration }}</td>
+                  <td>{{ h.rests.min_seconds | fmt_duration }}</td>
+                </tr>
+                <tr>
+                  <td>Number of stops exceeding 5 mins</td>
+                  <td>{{ h.stops.avg_count | round(1) }}</td>
+                  <td>{{ h.stops.max_count }}</td>
+                  <td>{{ h.stops.min_count }}</td>
+                </tr>
+                <tr>
+                  <td>Duration of stops exceeding 5 mins</td>
+                  <td>{{ h.stops.avg_seconds | fmt_duration }}</td>
+                  <td>{{ h.stops.max_seconds | fmt_duration }}</td>
+                  <td>{{ h.stops.min_seconds | fmt_duration }}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <h3 style="margin-top: 1.5rem;">Driver behaviour</h3>
+            <table class="preview-table">
+              <thead>
+                <tr>
+                  <th>Event</th>
+                  <th>Total events</th>
+                  <th>Max speed (kph)</th>
+                  <th>Avg max (kph)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Hard braking</td>
+                  <td>{{ h.behaviours.hard_braking.total_events }}</td>
+                  <td>{{ h.behaviours.hard_braking.max_speed | round(1) }}</td>
+                  <td>{{ h.behaviours.hard_braking.avg_max_speed | round(1) }}</td>
+                </tr>
+                <tr>
+                  <td>Hard cornering</td>
+                  <td>{{ h.behaviours.hard_cornering.total_events }}</td>
+                  <td>{{ h.behaviours.hard_cornering.max_speed | round(1) }}</td>
+                  <td>{{ h.behaviours.hard_cornering.avg_max_speed | round(1) }}</td>
+                </tr>
+                <tr>
+                  <td>Speeding &lt;10 kph over</td>
+                  <td>{{ h.behaviours.speeding_10.total_events }}</td>
+                  <td>{{ h.behaviours.speeding_10.max_speed | round(1) }}</td>
+                  <td>{{ h.behaviours.speeding_10.avg_max_speed | round(1) }}</td>
+                </tr>
+                <tr>
+                  <td>Speeding &lt;20 kph over</td>
+                  <td>{{ h.behaviours.speeding_20.total_events }}</td>
+                  <td>{{ h.behaviours.speeding_20.max_speed | round(1) }}</td>
+                  <td>{{ h.behaviours.speeding_20.avg_max_speed | round(1) }}</td>
+                </tr>
+                <tr>
+                  <td>Speeding &gt;20 kph over</td>
+                  <td>{{ h.behaviours.speeding_over_20.total_events }}</td>
+                  <td>{{ h.behaviours.speeding_over_20.max_speed | round(1) }}</td>
+                  <td>{{ h.behaviours.speeding_over_20.avg_max_speed | round(1) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="summary-section">
+            <h3>Previous 3 months</h3>
+            <p class="muted">History data is not available for this report.</p>
+          </div>
+        {% endif %}
+
+      </div>
+
+      {# ----------------------------- TRIPS ----------------------------- #}
+      <div class="tab-panel" data-panel="trips" hidden>
+        {% if c.trips %}
+          <table class="preview-table">
+            <thead>
+              <tr><th>#</th><th>Start</th><th>End</th><th>Duration</th></tr>
+            </thead>
+            <tbody>
+              {% for t in c.trips %}
+                <tr>
+                  <td>{{ loop.index }}</td>
+                  <td style="text-align: left;">{{ t.start.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                  <td style="text-align: left;">{{ t.end.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                  <td>{{ t.duration_s | fmt_duration }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="muted">No trips detected in this window.</p>
+        {% endif %}
+      </div>
+
+      {# ----------------------------- STOPS ----------------------------- #}
+      <div class="tab-panel" data-panel="stops" hidden>
+        <h3>Stops ≥ 5 min ({{ cur.intervals | length }})</h3>
+        {% if cur.intervals %}
+          <table class="preview-table">
+            <thead>
+              <tr><th>#</th><th>Start</th><th>End</th><th>Duration</th><th>Address</th></tr>
+            </thead>
+            <tbody>
+              {% for s in cur.intervals %}
+                <tr>
+                  <td>{{ loop.index }}</td>
+                  <td style="text-align: left;">{{ s.start.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                  <td style="text-align: left;">{{ s.end.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                  <td>{{ s.seconds | fmt_duration }}</td>
+                  <td style="text-align: left; font-size: 0.82rem; color: #666;">{{ s.address or '' }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="muted">No stops detected.</p>
+        {% endif %}
+      </div>
+
+      {# ----------------------------- EVENTS ----------------------------- #}
+      <div class="tab-panel" data-panel="events" hidden>
+        {% if ev.events %}
+          <table class="preview-table">
+            <thead>
+              <tr><th>#</th><th>Time</th><th>Type</th><th>Speed (kph)</th></tr>
+            </thead>
+            <tbody>
+              {% for e in ev.events %}
+                <tr>
+                  <td>{{ loop.index }}</td>
+                  <td style="text-align: left;">{{ e.time }}</td>
+                  <td style="text-align: left;">{{ e.type }}</td>
+                  <td>{{ '%.1f' | format(e.speed) }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="muted">No events recorded in this window.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if not view_mode %}
+      <p style="text-align: center; color: #666; font-size: 0.9rem;">
+        Not what you expected? <a href="{{ url_for('index') }}">Search again</a>.
+      </p>
+    {% else %}
+      <p style="text-align: center; color: #666; font-size: 0.9rem;">
+        <a href="{{ url_for('reports') }}">← Back to reports</a>
+      </p>
+    {% endif %}
+  {% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+  {% if not loading %}
+    <script>
+      (function () {
+        const tabs = document.querySelectorAll('.tab');
+        const panels = document.querySelectorAll('.tab-panel');
+        tabs.forEach(function (tab) {
+          tab.addEventListener('click', function () {
+            const target = tab.dataset.tab;
+            tabs.forEach(function (t) { t.classList.toggle('active', t === tab); });
+            panels.forEach(function (p) { p.hidden = p.dataset.panel !== target; });
+          });
+        });
+      })();
+    </script>
+  {% endif %}
+{% endblock %}

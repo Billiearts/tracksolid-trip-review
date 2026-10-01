@@ -1,0 +1,8 @@
+.env
+.env.production
+.token_cache.json
+reports/
+__pycache__/
+*.pyc
+.venv/
+venv/

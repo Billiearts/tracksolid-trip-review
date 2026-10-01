@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block body_class %}wide{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h2 style="font-size: 1.1rem; margin: 0 0 1rem;">
+      Users ({{ users | length }})
+    </h2>
+
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th>Email</th>
+          <th>Role</th>
+          <th>Registered</th>
+          <th>Last sign-in</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+          <tr>
+            <td>{{ u.email }}</td>
+            <td><span class="role-pill role-{{ u.role }}">{{ u.role }}</span></td>
+            <td style="white-space: nowrap;">
+              {{ (u.created_at or '')[:19].replace('T', ' ') or '—' }}
+            </td>
+            <td style="white-space: nowrap;">
+              {% if u.last_sign_in_at %}
+                {{ u.last_sign_in_at[:19].replace('T', ' ') }}
+              {% else %}—{% endif %}
+            </td>
+            <td style="text-align: right;">
+              <form method="post"
+                    action="{{ url_for('admin.change_role', user_id=u.id) }}">
+                {% if u.role == 'admin' %}
+                  <input type="hidden" name="role" value="user">
+                  <button type="submit" class="role-btn">Make user</button>
+                {% else %}
+                  <input type="hidden" name="role" value="admin">
+                  <button type="submit" class="role-btn">Make admin</button>
+                {% endif %}
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

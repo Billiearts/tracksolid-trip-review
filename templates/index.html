@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% block head %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/combobox.css') }}">
+{% endblock %}
+
+{% block content %}
+
+  <div class="card">
+    <h2 style="font-size: 1.1rem; margin: 0 0 1rem;">New report</h2>
+    <form action="{{ url_for('preview_start') }}" method="post" id="search-form"
+          data-loading-overlay="Loading preview… this can take up to 90 seconds.">
+
+      <div class="field">
+        <label for="truck-input">Truck</label>
+        <div class="combobox" data-combobox>
+          <input type="hidden" name="truck" id="truck-value">
+          <div class="combobox-input-wrap">
+            <input type="text" id="truck-input" class="combobox-input"
+                   placeholder="Select or search a truck"
+                   autocomplete="off"
+                   role="combobox"
+                   aria-expanded="false"
+                   aria-controls="truck-listbox"
+                   aria-autocomplete="list"
+                   required>
+            <button type="button" class="combobox-clear" hidden
+                    aria-label="Clear selection">&times;</button>
+            <button type="button" class="combobox-toggle"
+                    aria-label="Toggle list">&#9662;</button>
+          </div>
+          <ul class="combobox-listbox" id="truck-listbox"
+              role="listbox" hidden></ul>
+          <div class="combobox-status" hidden></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Date range (your local time)</label>
+        <div class="date-presets">
+          <button type="button" class="date-preset" data-preset="24h">Last 24h</button>
+          <button type="button" class="date-preset" data-preset="7d">Last 7 days</button>
+          <button type="button" class="date-preset" data-preset="30d">Last 30 days</button>
+          <button type="button" class="date-preset" data-preset="month">This month</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="begin-picker">Begin</label>
+        <input type="datetime-local" id="begin-picker" step="1" required>
+        <input type="hidden" name="begin" id="begin">
+      </div>
+      <div class="field">
+        <label for="end-picker">End</label>
+        <input type="datetime-local" id="end-picker" step="1" required>
+        <input type="hidden" name="end" id="end">
+      </div>
+
+      <div class="field">
+        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+          <input type="checkbox" name="include_history" checked>
+          Include 3-month history
+          <span style="color: #888; font-size: 0.8rem;">(uses ~15 extra API calls)</span>
+        </label>
+      </div>
+
+      <button type="submit">View results</button>
+    </form>
+  </div>
+
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/combobox.js') }}"></script>
+  <script>
+    (function () {
+      const beginPicker = document.getElementById('begin-picker');
+      const endPicker   = document.getElementById('end-picker');
+      const beginHidden = document.getElementById('begin');
+      const endHidden   = document.getElementById('end');
+
+      function utcString(d) {
+        const p = (n) => String(n).padStart(2, '0');
+        return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate())
+          + ' ' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds());
+      }
+      function localToUtcString(localValue) {
+        if (!localValue) return '';
+        const d = new Date(localValue);
+        if (isNaN(d.getTime())) return '';
+        return utcString(d);
+      }
+      function localPickerValue(d) {
+        const p = (n) => String(n).padStart(2, '0');
+        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+          + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+      }
+
+      (function initDefaults() {
+        const now = new Date();
+        const begin = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
+        beginPicker.value = localPickerValue(begin);
+        endPicker.value   = localPickerValue(now);
+      })();
+
+      document.querySelectorAll('.date-preset').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          const now = new Date();
+          let begin;
+          switch (btn.dataset.preset) {
+            case '24h':   begin = new Date(now.getTime() - 24 * 3600 * 1000); break;
+            case '7d':    begin = new Date(now.getTime() - 7 * 24 * 3600 * 1000); break;
+            case '30d':   begin = new Date(now.getTime() - 30 * 24 * 3600 * 1000); break;
+            case 'month': begin = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0); break;
+            default: return;
+          }
+          beginPicker.value = localPickerValue(begin);
+          endPicker.value   = localPickerValue(now);
+        });
+      });
+
+      document.getElementById('search-form').addEventListener('submit', function (e) {
+        beginHidden.value = localToUtcString(beginPicker.value);
+        endHidden.value   = localToUtcString(endPicker.value);
+
+        if (!beginHidden.value || !endHidden.value) {
+          e.preventDefault();
+          alert('Please pick both a begin and an end date.');
+          return;
+        }
+        if (beginHidden.value >= endHidden.value) {
+          e.preventDefault();
+          alert('The begin date must be before the end date.');
+          return;
+        }
+
+        const tv = document.getElementById('truck-value');
+        const ti = document.getElementById('truck-input');
+        if (!tv.value && ti.value.trim()) {
+          tv.value = ti.value.trim();
+        }
+      });
+    })();
+  </script>
+{% endblock %}

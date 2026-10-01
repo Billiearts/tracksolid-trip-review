@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: tracksolid-trip-review
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: frankfurt
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      # --- Tracksolid Pro ---
+      - key: TRACKSOLID_APP_KEY
+        sync: false
+      - key: TRACKSOLID_APP_SECRET
+        sync: false
+      - key: TRACKSOLID_USER_ID
+        sync: false
+      - key: TRACKSOLID_USER_PWD_MD5
+        sync: false
+
+      # --- Flask ---
+      - key: FLASK_SECRET
+        generateValue: true
+      - key: FLASK_DEBUG
+        value: "0"
+
+      # --- Supabase ---
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+
+      # --- Paths (inside the container) ---
+      - key: TRACKSOLID_TEMPLATE_PATH
+        value: /app/Trip review template.xlsx
+      - key: TRACKSOLID_OUTPUT_DIR
+        value: /app/reports
+
+      # --- Gunicorn ---
+      - key: GUNICORN_LOGLEVEL
+        value: info

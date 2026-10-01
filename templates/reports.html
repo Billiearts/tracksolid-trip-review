@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+
+{% block body_class %}wide{% endblock %}
+
+{% block content %}
+
+  <div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem;">
+      <h2 style="font-size: 1.1rem; margin: 0;">Reports</h2>
+      <a href="{{ url_for('index') }}" style="font-size: 0.9rem;">+ New report</a>
+    </div>
+
+    <div class="filter-bar">
+      {% if is_admin %}
+        <div class="field-inline">
+          <label for="filter-scope">Show</label>
+          <select id="filter-scope">
+            <option value="all">All reports</option>
+            <option value="mine">Only mine</option>
+          </select>
+        </div>
+      {% endif %}
+      <div class="field-inline">
+        <label for="filter-status">Status</label>
+        <select id="filter-status">
+          <option value="">All</option>
+          <option value="queued">Queued</option>
+          <option value="running">Running</option>
+          <option value="done">Done</option>
+          <option value="failed">Failed</option>
+        </select>
+      </div>
+      <div class="field-inline">
+        <label for="filter-truck">Truck</label>
+        <input type="text" id="filter-truck" placeholder="Filter by truck ID">
+      </div>
+      <div class="field-inline">
+        <label for="filter-date">Trip date from</label>
+        <input type="date" id="filter-date">
+      </div>
+      <button type="button" class="filter-clear" id="filter-clear">Clear</button>
+    </div>
+
+    <table class="jobs-table">
+      <thead>
+        <tr>
+          <th>Truck</th>
+          <th>Trip</th>
+          {% if is_admin %}<th>Created by</th>{% endif %}
+          <th>Status</th>
+          <th>Finished</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="jobs-body">
+        {% for j in jobs %}
+          <tr>
+            <td>{{ j.truck }}</td>
+            <td>{{ (j.trip_start or '')[:10] }}</td>
+            {% if is_admin %}
+              <td>{{ j.created_by_email or ('(legacy)' if j.from_disk else '—') }}</td>
+            {% endif %}
+            <td><span class="status status-{{ j.status }}">{{ j.status }}</span></td>
+            <td>{{ j.finished_at.strftime('%Y-%m-%d %H:%M') if j.finished_at else '' }}</td>
+            <td>
+              {% if j.status == 'done' and j.filename %}
+                {% if j.id %}
+                  <a class="btn-edit"
+                     href="{{ url_for('report_view', report_id=j.id) }}">View</a>
+                {% endif %}
+                <a class="btn-download"
+                   href="{{ url_for('download', filename=j.filename) }}">Download</a>
+              {% elif j.status == 'failed' %}
+                <span class="error-msg" title="{{ j.error }}">failed</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <p id="empty-msg" class="muted" style="display: none;">
+      No reports match these filters.
+    </p>
+
+    <div class="pagination">
+      <button type="button" id="prev-page">← Prev</button>
+      <span id="page-info">Page 1 of 1</span>
+      <button type="button" id="next-page">Next →</button>
+      <select id="page-size">
+        <option value="25">25 / page</option>
+        <option value="50">50 / page</option>
+        <option value="100">100 / page</option>
+      </select>
+    </div>
+  </div>
+
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    (function () {
+      const reportsIsAdmin = {{ 'true' if is_admin else 'false' }};
+
+      const state = {
+        jobs: [], page: 1, pageSize: 25,
+        status: '', truck: '', dateFrom: '',
+        scope: reportsIsAdmin ? 'all' : 'mine',
+      };
+
+      const els = {
+        body:      document.getElementById('jobs-body'),
+        empty:     document.getElementById('empty-msg'),
+        filterScope:  document.getElementById('filter-scope'),
+        filterStatus: document.getElementById('filter-status'),
+        filterTruck:  document.getElementById('filter-truck'),
+        filterDate:   document.getElementById('filter-date'),
+        filterClear:  document.getElementById('filter-clear'),
+        prevPage:  document.getElementById('prev-page'),
+        nextPage:  document.getElementById('next-page'),
+        pageInfo:  document.getElementById('page-info'),
+        pageSize:  document.getElementById('page-size'),
+      };
+
+      function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+          '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+        }[c]));
+      }
+
+      function filtered() {
+        const truckQ = state.truck.trim().toLowerCase();
+        return state.jobs.filter(j => {
+          if (state.status && j.status !== state.status) return false;
+          if (truckQ && !String(j.truck || '').toLowerCase().includes(truckQ)) return false;
+          if (state.dateFrom) {
+            const tripDay = (j.trip_start || '').slice(0, 10);
+            if (!tripDay || tripDay < state.dateFrom) return false;
+          }
+          return true;
+        });
+      }
+
+      function render() {
+        const rows = filtered();
+        const total = rows.length;
+        const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+        if (state.page > totalPages) state.page = totalPages;
+        const startIdx = (state.page - 1) * state.pageSize;
+        const pageRows = rows.slice(startIdx, startIdx + state.pageSize);
+
+        if (!pageRows.length) {
+          els.body.innerHTML = '';
+          els.empty.style.display = 'block';
+        } else {
+          els.empty.style.display = 'none';
+          els.body.innerHTML = pageRows.map(j => {
+            let action = '';
+            if (j.status === 'done' && j.filename) {
+              const view = j.id
+                ? '<a class="btn-edit" href="/reports/' +
+                    encodeURIComponent(j.id) + '/view">View</a>'
+                : '';
+              action = view + '<a class="btn-download" href="/download/' +
+                encodeURIComponent(j.filename) + '">Download</a>';
+            } else if (j.status === 'failed') {
+              action = '<span class="error-msg" title="' +
+                esc(j.error || '') + '">failed</span>';
+            }
+            const trip = j.trip_start ? esc(j.trip_start.slice(0, 10)) : '';
+            const ownerCol = reportsIsAdmin
+              ? '<td>' + esc(j.created_by_email ||
+                  (j.from_disk ? '(legacy)' : '—')) + '</td>'
+              : '';
+            return '<tr>' +
+              '<td>' + esc(j.truck) + '</td>' +
+              '<td>' + trip + '</td>' +
+              ownerCol +
+              '<td><span class="status status-' + esc(j.status) + '">' +
+                esc(j.status) + '</span></td>' +
+              '<td>' + esc(j.finished_at || '') + '</td>' +
+              '<td>' + action + '</td>' +
+            '</tr>';
+          }).join('');
+        }
+
+        els.pageInfo.textContent = 'Page ' + state.page + ' of ' + totalPages +
+          ' (' + total + ' total)';
+        els.prevPage.disabled = state.page <= 1;
+        els.nextPage.disabled = state.page >= totalPages;
+      }
+
+      async function refresh() {
+        try {
+          const url = "{{ url_for('api_jobs') }}?scope=" + encodeURIComponent(state.scope);
+          const r = await fetch(url);
+          const jobs = await r.json();
+          state.jobs = jobs;
+          render();
+          const active = jobs.some(j => j.status === 'queued' || j.status === 'running');
+          setTimeout(refresh, active ? 3000 : 10000);
+        } catch (e) {
+          setTimeout(refresh, 5000);
+        }
+      }
+
+      if (els.filterScope) {
+        els.filterScope.addEventListener('change', () => {
+          state.scope = els.filterScope.value;
+          state.page = 1;
+          refresh();
+        });
+      }
+      els.filterStatus.addEventListener('change', () => {
+        state.status = els.filterStatus.value; state.page = 1; render();
+      });
+      els.filterTruck.addEventListener('input', () => {
+        state.truck = els.filterTruck.value; state.page = 1; render();
+      });
+      els.filterDate.addEventListener('change', () => {
+        state.dateFrom = els.filterDate.value; state.page = 1; render();
+      });
+      els.filterClear.addEventListener('click', () => {
+        els.filterStatus.value = ''; els.filterTruck.value = ''; els.filterDate.value = '';
+        state.status = ''; state.truck = ''; state.dateFrom = '';
+        state.page = 1; render();
+      });
+      els.prevPage.addEventListener('click', () => {
+        if (state.page > 1) { state.page--; render(); }
+      });
+      els.nextPage.addEventListener('click', () => {
+        const total = filtered().length;
+        const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+        if (state.page < totalPages) { state.page++; render(); }
+      });
+      els.pageSize.addEventListener('change', () => {
+        state.pageSize = parseInt(els.pageSize.value, 10) || 25;
+        state.page = 1; render();
+      });
+
+      setTimeout(refresh, 1000);
+    })();
+  </script>
+{% endblock %}

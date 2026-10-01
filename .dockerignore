@@ -1,0 +1,10 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.env
+reports/*.xlsx
+reports/*.meta.json
+*.xlsx
+.token_cache.json

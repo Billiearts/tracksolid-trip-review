@@ -1,0 +1,6 @@
+flask
+requests
+openpyxl
+python-dotenv
+supabase>=2.5.0
+gunicorn

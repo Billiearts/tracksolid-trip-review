@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Trip Review{% endblock %}</title>
+  <link rel="icon" type="image/png"
+        href="{{ url_for('static', filename='gbc_logo.png') }}">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f6f8;
+      color: #222;
+      margin: 0;
+      padding: 2rem;
+    }
+    .container { max-width: 720px; margin: 1.5rem auto 0; }
+    body.wide .container { max-width: 1100px; }
+
+    /* Top navigation (signed in only) */
+    .topbar {
+      margin: -2rem -2rem 0;
+      padding: 0.75rem 2rem;
+      background: #fff;
+      border-bottom: 1px solid #e2e6ea;
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+      font-size: 0.92rem;
+    }
+    .topbar a {
+      color: #444;
+      text-decoration: none;
+      padding: 0.25rem 0;
+      border-bottom: 2px solid transparent;
+    }
+    .topbar a:hover { color: #1e5f9e; }
+    .topbar a.active {
+      color: #1e5f9e;
+      border-bottom-color: #1e5f9e;
+      font-weight: 500;
+    }
+    .topbar .spacer { flex: 1; }
+    .topbar .user {
+      color: #666;
+      font-size: 0.85rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    h1 { font-size: 1.5rem; margin: 0 0 1.5rem; }
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      padding: 1.5rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      margin-bottom: 1rem;
+    }
+    label { display: block; font-size: 0.85rem; margin-bottom: 0.25rem; color: #555; }
+    input[type="text"], input[type="email"], input[type="password"],
+    input[type="datetime-local"], select {
+      width: 100%; padding: 0.5rem 0.75rem;
+      border: 1px solid #ccc; border-radius: 4px;
+      font-size: 0.95rem; font-family: inherit;
+      background: #fff; color: inherit;
+    }
+    input[type="text"]:focus,
+    input[type="email"]:focus,
+    input[type="password"]:focus,
+    input[type="datetime-local"]:focus,
+    select:focus { outline: none; border-color: #4a90e2; }
+    .field { margin-bottom: 1rem; }
+    button {
+      background: #4a90e2; color: #fff;
+      border: none; border-radius: 4px;
+      padding: 0.6rem 1.25rem; font-size: 0.95rem;
+      cursor: pointer;
+    }
+    button:hover { background: #357ab8; }
+    button:disabled { background: #a0c3e8; cursor: not-allowed; }
+    .flash {
+      padding: 0.75rem 1rem; border-radius: 4px;
+      margin-bottom: 1rem; font-size: 0.9rem;
+      border-left: 3px solid transparent;
+    }
+    .flash.error   { background: #fde7e7; color: #a02525; border-left-color: #c92a2a; }
+    .flash.success { background: #e7f5e9; color: #256b2a; border-left-color: #2b8a3e; }
+
+    /* Download button */
+    .btn-download {
+      display: inline-block;
+      padding: 0.35rem 0.85rem;
+      background: #2b8a3e;
+      color: #fff;
+      border-radius: 4px;
+      text-decoration: none;
+      font-size: 0.85rem;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .btn-download:hover { background: #1f6e2d; }
+
+    /* Edit / View / secondary inline buttons */
+    .btn-edit {
+      display: inline-block;
+      padding: 0.35rem 0.85rem;
+      background: #f0f2f5;
+      color: #333;
+      border: 1px solid #d7dbe0;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      text-decoration: none;
+      font-family: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+      margin-right: 0.4rem;
+    }
+    .btn-edit:hover {
+      background: #e2e6eb;
+      color: #1e5f9e;
+      text-decoration: none;
+    }
+
+    /* Loading overlay */
+    .loading-overlay {
+      position: fixed; inset: 0;
+      background: rgba(245, 246, 248, 0.95);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      z-index: 9999;
+    }
+    .loading-overlay[hidden] { display: none; }
+    .spinner {
+      width: 48px; height: 48px;
+      border: 4px solid #e0e0e0;
+      border-top-color: #4a90e2;
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+      margin-bottom: 1rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-overlay p { color: #555; font-size: 0.95rem; margin: 0; }
+    .loading-overlay .timer {
+      color: #888; font-size: 0.8rem; margin-top: 0.5rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Jobs table */
+    .jobs-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    .jobs-table th {
+      text-align: left; font-weight: 500; color: #666;
+      padding: 0.4rem 0.75rem 0.4rem 0; border-bottom: 1px solid #eee;
+      font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em;
+      white-space: nowrap;
+    }
+    .jobs-table td {
+      padding: 0.55rem 0.75rem 0.55rem 0;
+      border-bottom: 1px solid #f0f0f0;
+      vertical-align: middle;
+    }
+    .jobs-table th:nth-child(2),
+    .jobs-table td:nth-child(2),
+    .jobs-table th:nth-child(4),
+    .jobs-table td:nth-child(4) { white-space: nowrap; width: 1%; }
+    .jobs-table th:last-child,
+    .jobs-table td:last-child {
+      text-align: right; white-space: nowrap; width: 1%;
+    }
+
+    .status {
+      display: inline-block; font-size: 0.75rem; padding: 2px 8px;
+      border-radius: 10px; text-transform: uppercase; letter-spacing: 0.03em;
+    }
+    .status-queued  { background: #f0f0f0; color: #666; }
+    .status-running { background: #e6f0fb; color: #357ab8; }
+    .status-done    { background: #e7f5e9; color: #256b2a; }
+    .status-failed  { background: #fde7e7; color: #a02525; }
+    .error-msg {
+      color: #a02525; cursor: help; border-bottom: 1px dotted #a02525;
+    }
+
+    /* Preview tables */
+    .preview-table {
+      width: 100%; border-collapse: collapse;
+      font-size: 0.88rem; margin-top: 0.5rem;
+    }
+    .preview-table th {
+      text-align: left; font-weight: 500; color: #666;
+      padding: 0.4rem 0.6rem 0.4rem 0; border-bottom: 1px solid #eee;
+      font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em;
+    }
+    .preview-table td {
+      padding: 0.5rem 0.6rem 0.5rem 0; border-bottom: 1px solid #f0f0f0;
+    }
+    .preview-table tr td:not(:first-child) { text-align: right; }
+    .preview-table thead tr:first-child th { border-bottom: none; }
+
+    /* Tabs */
+    .tabs { display: flex; border-bottom: 1px solid #e2e6ea; margin-bottom: 1rem; }
+    .tab {
+      background: transparent; border: none;
+      padding: 0.6rem 1rem; font-size: 0.9rem; font-family: inherit;
+      color: #666; cursor: pointer;
+      border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 0;
+    }
+    .tab:hover { color: #222; background: transparent; }
+    .tab.active {
+      color: #1e5f9e; border-bottom-color: #1e5f9e; font-weight: 500;
+    }
+    .tab-panel[hidden] { display: none; }
+    .tab-panel h3 { font-size: 0.95rem; margin: 1rem 0 0.25rem; color: #444; }
+
+    /* Preview summary sections */
+    .summary-section {
+      background: #fafbfc;
+      border: 1px solid #e2e6ea;
+      border-radius: 6px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.25rem;
+    }
+    .summary-section > h3 {
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #1e5f9e;
+      margin: 0 0 0.75rem;
+    }
+    .summary-section .meta-note {
+      color: #888;
+      font-size: 0.78rem;
+      margin-left: 0.5rem;
+      font-weight: 400;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    .muted { color: #888; font-size: 0.88rem; margin: 0.5rem 0; }
+
+    /* Filter bar (reports) */
+    .filter-bar {
+      display: flex; gap: 0.75rem; align-items: flex-end;
+      margin-bottom: 1rem; flex-wrap: wrap;
+    }
+    .filter-bar .field-inline { flex: 1 1 160px; }
+    .filter-bar .field-inline label {
+      font-size: 0.75rem; margin-bottom: 0.2rem;
+    }
+    .filter-bar .field-inline input,
+    .filter-bar .field-inline select {
+      font-size: 0.88rem; padding: 0.35rem 0.5rem;
+    }
+    .filter-bar .filter-clear {
+      background: #f0f2f5; color: #333;
+      border: 1px solid #d7dbe0;
+      padding: 0.4rem 0.75rem; font-size: 0.85rem;
+    }
+    .filter-bar .filter-clear:hover { background: #e2e6eb; }
+
+    /* Pagination */
+    .pagination {
+      display: flex; align-items: center; justify-content: flex-end;
+      gap: 0.75rem; margin-top: 1rem; font-size: 0.88rem; color: #666;
+    }
+    .pagination button {
+      background: #f0f2f5; color: #333;
+      border: 1px solid #d7dbe0;
+      padding: 0.3rem 0.7rem; font-size: 0.85rem;
+    }
+    .pagination button:hover:not(:disabled) { background: #e2e6eb; }
+    .pagination button:disabled {
+      opacity: 0.5; cursor: not-allowed; background: #f0f2f5;
+    }
+    .pagination select { width: auto; padding: 0.3rem 0.5rem; font-size: 0.85rem; }
+
+    /* Rate-limit banner */
+    .ratelimit-banner {
+      position: sticky; top: 0; z-index: 500;
+      background: #fde7e7; color: #7a1c1c;
+      border-bottom: 1px solid #f5b5b5;
+      padding: 0.7rem 2rem; font-size: 0.9rem;
+      display: flex; align-items: center; gap: 0.6rem;
+      margin: 0 -2rem;
+    }
+    .ratelimit-banner[hidden] { display: none; }
+    .ratelimit-banner-icon { font-size: 1.15rem; line-height: 1; }
+    .ratelimit-banner-text strong { font-weight: 600; }
+
+    /* Rate-limit modal */
+    .ratelimit-modal {
+      border: none; border-radius: 8px; padding: 1.5rem;
+      max-width: 460px; width: calc(100% - 2rem);
+      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+      font-family: inherit; color: #222;
+    }
+    .ratelimit-modal::backdrop { background: rgba(0,0,0,0.4); }
+    .ratelimit-modal h3 {
+      margin: 0 0 0.75rem; font-size: 1.1rem; color: #a02525;
+    }
+    .ratelimit-modal p { margin: 0 0 0.75rem; font-size: 0.92rem; line-height: 1.5; }
+    .ratelimit-modal .hint { color: #666; font-size: 0.85rem; margin-bottom: 1rem; }
+    .ratelimit-modal button { background: #a02525; margin-top: 0.25rem; }
+    .ratelimit-modal button:hover { background: #7a1c1c; }
+
+    /* Auth pages */
+    .auth-card { max-width: 380px; margin: 3rem auto 0; }
+    .auth-card h1 {
+      font-size: 1.35rem; margin: 0 0 1.5rem; text-align: center;
+    }
+    .auth-card .swap {
+      text-align: center; font-size: 0.88rem; color: #666; margin-top: 1rem;
+    }
+    .auth-card .swap a { color: #1e5f9e; }
+
+    /* Admin table */
+    .admin-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    .admin-table th {
+      text-align: left; font-weight: 500; color: #666;
+      padding: 0.5rem 0.75rem 0.5rem 0;
+      border-bottom: 1px solid #eee;
+      font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em;
+      white-space: nowrap;
+    }
+    .admin-table td {
+      padding: 0.6rem 0.75rem 0.6rem 0;
+      border-bottom: 1px solid #f0f0f0;
+      vertical-align: middle;
+    }
+    .admin-table form { display: inline; }
+    .admin-table button.role-btn {
+      background: #f0f2f5; color: #333;
+      border: 1px solid #d7dbe0;
+      padding: 0.3rem 0.7rem; font-size: 0.8rem;
+    }
+    .admin-table button.role-btn:hover { background: #e2e6eb; }
+    .role-pill {
+      display: inline-block; font-size: 0.75rem; padding: 2px 8px;
+      border-radius: 10px; text-transform: uppercase; letter-spacing: 0.03em;
+    }
+    .role-admin { background: #e6f0fb; color: #1e5f9e; }
+    .role-user  { background: #f0f0f0; color: #666; }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+
+  {% if session.get('user_id') %}
+    <nav class="topbar">
+      <a href="{{ url_for('index') }}"
+         class="{{ 'active' if request.endpoint == 'index' else '' }}">New report</a>
+      <a href="{{ url_for('reports') }}"
+         class="{{ 'active' if request.endpoint == 'reports' else '' }}">Reports</a>
+      {% if session.get('role') == 'admin' %}
+        <a href="{{ url_for('admin.index') }}"
+           class="{{ 'active' if request.endpoint and request.endpoint.startswith('admin.') else '' }}">Admin</a>
+      {% endif %}
+      <span class="spacer"></span>
+      <span class="user">{{ session.get('full_name') or session.get('email') }}</span>
+      <a href="{{ url_for('auth.logout') }}">Sign out</a>
+    </nav>
+  {% endif %}
+
+  <div id="ratelimit-banner" class="ratelimit-banner" hidden>
+    <span class="ratelimit-banner-icon">&#9888;&#65039;</span>
+    <span class="ratelimit-banner-text" id="ratelimit-banner-text">
+      Tracksolid Pro daily API limit reached.
+    </span>
+  </div>
+
+  <div class="container">
+    <h1>{% block heading %}Tracksolid Pro — Trip Review{% endblock %}</h1>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, msg in messages %}
+        <div class="flash {{ category }}">{{ msg }}</div>
+      {% endfor %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </div>
+
+  <div id="loading-overlay" class="loading-overlay" hidden>
+    <div class="spinner"></div>
+    <p id="loading-message">Working…</p>
+    <p class="timer" id="loading-timer">0s elapsed</p>
+  </div>
+
+  <dialog id="ratelimit-modal" class="ratelimit-modal">
+    <h3>Daily API limit reached</h3>
+    <p id="ratelimit-modal-text"></p>
+    <p class="hint">Reports generated now would be missing data.</p>
+    <form method="dialog">
+      <button type="submit">OK, understood</button>
+    </form>
+  </dialog>
+
+  <script>
+    (function () {
+      const overlay   = document.getElementById("loading-overlay");
+      const messageEl = document.getElementById("loading-message");
+      const timerEl   = document.getElementById("loading-timer");
+      if (overlay) {
+        document.querySelectorAll("form[data-loading-overlay]").forEach(function (form) {
+          form.addEventListener("submit", function () {
+            messageEl.textContent = form.dataset.loadingOverlay || "Working…";
+            overlay.hidden = false;
+            form.querySelectorAll("button").forEach(function (b) {
+              b.disabled = true;
+            });
+            const startedAt = Date.now();
+            timerEl.textContent = "0s elapsed";
+            setInterval(function () {
+              timerEl.textContent =
+                Math.floor((Date.now() - startedAt) / 1000) + "s elapsed";
+            }, 1000);
+          });
+        });
+        window.addEventListener("pageshow", function () {
+          overlay.hidden = true;
+        });
+      }
+    })();
+
+    // --- rate-limit banner + modal -------------------------------------
+    (function () {
+      const banner     = document.getElementById("ratelimit-banner");
+      const bannerText = document.getElementById("ratelimit-banner-text");
+      const modal      = document.getElementById("ratelimit-modal");
+      const modalText  = document.getElementById("ratelimit-modal-text");
+      if (!banner || !modal) return;
+
+      function apply(state) {
+        if (!state.rate_limited) { banner.hidden = true; return; }
+        banner.hidden = false;
+        bannerText.innerHTML =
+          '<strong>Tracksolid Pro daily API limit reached.</strong> ' +
+          'Resets at ' + state.resets_at + ' UTC. ' +
+          'Reports generated before then may be incomplete.';
+
+        const seen = sessionStorage.getItem("ratelimit-modal-seen") || "";
+        if (state.limited_at && state.limited_at !== seen) {
+          modalText.textContent =
+            "Your Tracksolid Pro API quota for today has been used up. " +
+            "The quota resets at " + state.resets_at + " UTC.";
+          if (typeof modal.showModal === "function" && !modal.open) {
+            modal.showModal();
+          }
+          sessionStorage.setItem("ratelimit-modal-seen", state.limited_at);
+        }
+      }
+
+      async function poll() {
+        try {
+          const r = await fetch("/api/status");
+          if (!r.ok) return;
+          apply(await r.json());
+        } catch (e) { /* ignore */ }
+      }
+
+      poll();
+      setInterval(poll, 30000);
+    })();
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

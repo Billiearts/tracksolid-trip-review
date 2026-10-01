@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block body_class %}wide{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem;">
+      <h2 style="font-size: 1.1rem; margin: 0;">
+        Users ({{ result.users | length }})
+      </h2>
+      <a href="{{ url_for('admin.new_user') }}"
+         style="font-size: 0.9rem;">+ New user</a>
+    </div>
+
+    {% if result.users %}
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Registered</th>
+            <th>Last sign-in</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in result.users %}
+            <tr>
+              <td>{{ u.full_name }}</td>
+              <td>{{ u.email }}</td>
+              <td><span class="role-pill role-{{ u.role }}">{{ u.role }}</span></td>
+              <td style="white-space: nowrap;">{{ u.created_at or '—' }}</td>
+              <td style="white-space: nowrap;">{{ u.last_sign_in_at or '—' }}</td>
+              <td style="text-align: right; white-space: nowrap;">
+                <a class="btn-edit"
+                   href="{{ url_for('admin.edit_user', user_id=u.id) }}">Edit</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <div class="pagination">
+        {% if result.page > 1 %}
+          <a class="role-btn" style="text-decoration: none;"
+             href="{{ url_for('admin.index', page=result.page - 1) }}">← Prev</a>
+        {% else %}
+          <button class="role-btn" disabled>← Prev</button>
+        {% endif %}
+        <span>Page {{ result.page }}</span>
+        {% if result.users | length == result.per_page %}
+          <a class="role-btn" style="text-decoration: none;"
+             href="{{ url_for('admin.index', page=result.page + 1) }}">Next →</a>
+        {% else %}
+          <button class="role-btn" disabled>Next →</button>
+        {% endif %}
+      </div>
+    {% else %}
+      <p class="muted">No users yet.</p>
+    {% endif %}
+  </div>
+{% endblock %}

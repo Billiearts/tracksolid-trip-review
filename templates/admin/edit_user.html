@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block heading %}Admin — edit user{% endblock %}
+
+{% block content %}
+  <div class="card" style="max-width: 460px;">
+    <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem;">
+      <h2 style="font-size: 1.1rem; margin: 0;">Edit user</h2>
+      <a href="{{ url_for('admin.index') }}" style="font-size: 0.9rem;">← Back</a>
+    </div>
+
+    <p class="muted" style="font-size: 0.85rem;">
+      User ID: <code>{{ user.id }}</code>
+    </p>
+
+    <form method="post">
+      <div class="field">
+        <label for="full_name">Full name</label>
+        <input type="text" id="full_name" name="full_name" required
+               value="{{ user.full_name }}">
+      </div>
+      <div class="field">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required
+               value="{{ user.email }}">
+      </div>
+      <div class="field">
+        <label for="password">New password</label>
+        <input type="password" id="password" name="password" minlength="8">
+        <p class="muted" style="font-size: 0.8rem; margin: 0.25rem 0 0;">
+          Leave blank to keep the current password.
+        </p>
+      </div>
+      <div class="field">
+        <label for="role">Role</label>
+        <select id="role" name="role">
+          <option value="user"  {{ 'selected' if user.role != 'admin' else '' }}>User</option>
+          <option value="admin" {{ 'selected' if user.role == 'admin' else '' }}>Admin</option>
+        </select>
+      </div>
+      <button type="submit" style="width: 100%;">Save changes</button>
+    </form>
+
+    <form method="post"
+          action="{{ url_for('admin.delete_user_route', user_id=user.id) }}"
+          onsubmit="return confirm('Delete this user? This cannot be undone.');"
+          style="margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid #eee;">
+      <input type="hidden" name="soft" value="0">
+      <button type="submit"
+              style="background: #c92a2a; width: 100%;">Delete user</button>
+    </form>
+  </div>
+{% endblock %}

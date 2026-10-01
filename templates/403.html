@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block heading %}&nbsp;{% endblock %}
+
+{% block content %}
+  <div class="card auth-card" style="text-align: center;">
+    <h1>Not allowed</h1>
+    <p class="muted" style="margin: 1rem 0 1.5rem;">
+      You don't have permission to view this page or download this file.
+    </p>
+    <a href="{{ url_for('index') }}"
+       style="color: #1e5f9e; font-size: 0.9rem;">← Back to reports</a>
+  </div>
+{% endblock %}
