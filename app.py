@@ -2,7 +2,7 @@
 app.py — Flask front-end for the Trip Review report.
 """
 from __future__ import annotations
-
+import os
 import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -150,6 +150,21 @@ def healthz():
         "time":   datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
     })
 
+@app.route("/debug/env")
+def debug_env():
+    """TEMPORARY — remove after diagnosing the Tracksolid auth issue."""
+    import hashlib as _hl
+    out = {}
+    for name in ("TRACKSOLID_APP_KEY",
+                 "TRACKSOLID_APP_SECRET",
+                 "TRACKSOLID_USER_ID",
+                 "TRACKSOLID_USER_PWD_MD5"):
+        val = os.environ.get(name, "")
+        out[name] = {
+            "len":    len(val),
+            "sha256": _hl.sha256(val.encode()).hexdigest()[:16],
+        }
+    return jsonify(out)
 
 @app.errorhandler(403)
 def forbidden(e):

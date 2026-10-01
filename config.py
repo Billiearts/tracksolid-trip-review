@@ -46,14 +46,3 @@ FLASK_DEBUG  = os.environ.get("FLASK_DEBUG", "0") == "1"
 SUPABASE_URL              = _require("SUPABASE_URL")
 SUPABASE_ANON_KEY         = _require("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = _require("SUPABASE_SERVICE_ROLE_KEY")
-
-# --- DEBUG (remove after diagnosing) ---
-import hashlib as _hl
-for _name, _val in (
-    ("APP_KEY",         APP_KEY),
-    ("APP_SECRET",      APP_SECRET),
-    ("USER_ID",         USER_ID),
-    ("USER_PWD_MD5",    USER_PWD_MD5),
-):
-    print(f"[config] {_name} len={len(_val)} "
-          f"sha256={_hl.sha256(_val.encode()).hexdigest()[:16]}")
