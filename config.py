@@ -24,16 +24,9 @@ def _require(name: str) -> str:
 
 # --- Tracksolid Pro credentials ---
 APP_KEY      = _require("TRACKSOLID_APP_KEY")
-# --- DEBUG (remove after diagnosing) ---
-import hashlib as _hl
-for _name, _val in (
-    ("APP_KEY",         APP_KEY),
-    ("APP_SECRET",      APP_SECRET),
-    ("USER_ID",         USER_ID),
-    ("USER_PWD_MD5",    USER_PWD_MD5),
-):
-    print(f"[config] {_name} len={len(_val)} "
-          f"sha256={_hl.sha256(_val.encode()).hexdigest()[:16]}")
+APP_SECRET   = _require("TRACKSOLID_APP_SECRET")
+USER_ID      = _require("TRACKSOLID_USER_ID")
+USER_PWD_MD5 = _require("TRACKSOLID_USER_PWD_MD5")
 
 # --- Paths ---
 TEMPLATE_PATH = Path(os.environ.get(
@@ -53,3 +46,14 @@ FLASK_DEBUG  = os.environ.get("FLASK_DEBUG", "0") == "1"
 SUPABASE_URL              = _require("SUPABASE_URL")
 SUPABASE_ANON_KEY         = _require("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = _require("SUPABASE_SERVICE_ROLE_KEY")
+
+# --- DEBUG (remove after diagnosing) ---
+import hashlib as _hl
+for _name, _val in (
+    ("APP_KEY",         APP_KEY),
+    ("APP_SECRET",      APP_SECRET),
+    ("USER_ID",         USER_ID),
+    ("USER_PWD_MD5",    USER_PWD_MD5),
+):
+    print(f"[config] {_name} len={len(_val)} "
+          f"sha256={_hl.sha256(_val.encode()).hexdigest()[:16]}")
