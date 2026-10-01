@@ -1,5 +1,5 @@
 """
-blueprints/auth.py — login, register, logout.
+blueprints/auth.py — login, register, logout, password reset.
 """
 from __future__ import annotations
 
@@ -61,8 +61,8 @@ def register():
     if request.method == "POST":
         full_name = (request.form.get("full_name") or "").strip()
         email     = (request.form.get("email") or "").strip()
-        password  = request.form.get("password") or ""
-        password2 = request.form.get("password2") or ""
+        password  = (request.form.get("password") or "")
+        password2 = (request.form.get("password2") or "")
 
         def fail(msg):
             flash(msg, "error")
@@ -94,9 +94,10 @@ def logout():
     session.clear()
     return redirect(url_for("auth.login"))
 
-    @bp.route("/forgot-password", methods=["GET", "POST"])
-    def forgot_password():
-     if session.get("session_id"):
+
+@bp.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+    if session.get("session_id"):
         return redirect(url_for("index"))
 
     if request.method == "POST":
@@ -108,14 +109,10 @@ def logout():
         try:
             from services.supabase_client import anon_client
             client = anon_client()
-            # Supabase Auth's built-in reset. Sends an email with a link
-            # pointing to /reset-password (configured in Supabase dashboard).
             client.auth.reset_password_for_email(
                 email,
                 options={"redirect_to": url_for("auth.reset_password", _external=True)},
             )
-            # Always show success — Supabase doesn't reveal whether the
-            # email exists (prevents user enumeration).
             flash(
                 "If an account exists for that email, a reset link has been sent. "
                 "Check your inbox (and spam folder).",
@@ -123,16 +120,21 @@ def logout():
             )
             return redirect(url_for("auth.login"))
         except Exception as exc:
-            flash(f"Could not send reset email: {exc}", "error")
+            # Log the real error server-side, show generic message to user.
+            from flask import current_app
+            current_app.logger.exception("password reset request failed")
+            flash(
+                "If an account exists for that email, a reset link has been sent. "
+                "Check your inbox (and spam folder).",
+                "success",
+            )
+            return redirect(url_for("auth.login"))
 
     return render_template("auth/forgot_password.html")
 
 
 @bp.route("/reset-password", methods=["GET", "POST"])
 def reset_password():
-    # Supabase redirects here with a recovery token in the URL fragment
-    # (#access_token=...&type=recovery). The JS on this page reads it,
-    # then calls updateUser() with the new password.
     if request.method == "POST":
         new_password = request.form.get("password") or ""
         confirm      = request.form.get("confirm") or ""
@@ -154,7 +156,6 @@ def reset_password():
         try:
             from services.supabase_client import anon_client
             client = anon_client()
-            # Set the session using the recovery token, then update the user.
             client.auth.set_session(access_token, "")
             client.auth.update_user({"password": new_password})
             client.auth.sign_out()
@@ -162,6 +163,16 @@ def reset_password():
                   "success")
             return redirect(url_for("auth.login"))
         except Exception as exc:
+            from flask import current_app
+            current_app.logger.exception("password reset failed")
             flash(f"Could not reset password: {exc}", "error")
 
     return render_template("auth/reset_password.html", access_token="")
+
+
+@bp.route("/reset-callback")
+def reset_callback():
+    """Optional: Supabase sometimes redirects here with a 'code' query param
+    that must be exchanged for a session. The main /reset-password page
+    handles the fragment-token flow, so this is a pass-through."""
+    return redirect(url_for("auth.reset_password"))
