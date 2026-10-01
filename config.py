@@ -25,13 +25,15 @@ def _require(name: str) -> str:
 # --- Tracksolid Pro credentials ---
 APP_KEY      = _require("TRACKSOLID_APP_KEY")
 # --- DEBUG (remove after diagnosing) ---
-print(f"[config] APP_KEY len={len(APP_KEY)} "
-      f"first6={APP_KEY[:6]!r} last4={APP_KEY[-4:]!r} "
-      f"has_quotes={APP_KEY.startswith(chr(34)) or APP_KEY.startswith(chr(39))} "
-      f"has_whitespace={APP_KEY != APP_KEY.strip()}")
-APP_SECRET   = _require("TRACKSOLID_APP_SECRET")
-USER_ID      = _require("TRACKSOLID_USER_ID")
-USER_PWD_MD5 = _require("TRACKSOLID_USER_PWD_MD5")
+import hashlib as _hl
+for _name, _val in (
+    ("APP_KEY",         APP_KEY),
+    ("APP_SECRET",      APP_SECRET),
+    ("USER_ID",         USER_ID),
+    ("USER_PWD_MD5",    USER_PWD_MD5),
+):
+    print(f"[config] {_name} len={len(_val)} "
+          f"sha256={_hl.sha256(_val.encode()).hexdigest()[:16]}")
 
 # --- Paths ---
 TEMPLATE_PATH = Path(os.environ.get(
