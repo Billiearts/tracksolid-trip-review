@@ -287,52 +287,27 @@ def _parking_stop_intervals(parking_events: list[dict],
 def _merge_stop_intervals(parking_intervals: list[dict],
                           track_intervals: list[dict]) -> list[dict]:
     """
-    Merge overlapping intervals. Within a merged group:
-      - Times: earliest start → latest end (union).
-      - Address: the parking address if any source in the group had one,
-                 otherwise blank.
+    Parking events are authoritative. Any track-detected interval that
+    overlaps a parking interval is dropped — parking's boundaries win.
+    Any track interval that doesn't overlap a parking interval is added
+    as-is (this catches stops the parking API misses, e.g. deep-sleep
+    overnight stops reported with a single track sample).
+
+    The result is the union of:
+      - every parking interval, unchanged
+      - every track interval with no parking overlap
     """
-    items: list[dict] = []
-    for p in parking_intervals:
-        items.append({
-            "start": p["start"], "end": p["end"],
-            "address": p.get("address", ""), "src": "p",
-        })
+    def overlaps(a_start, a_end, b_start, b_end):
+        return a_start < b_end and a_end > b_start
+
+    out = list(parking_intervals)
     for t in track_intervals:
-        items.append({
-            "start": t["start"], "end": t["end"],
-            "address": t.get("address", ""), "src": "t",
-        })
+        if any(overlaps(t["start"], t["end"], p["start"], p["end"])
+               for p in parking_intervals):
+            continue
+        out.append(t)
 
-    if not items:
-        return []
-
-    items.sort(key=lambda x: x["start"])
-
-    groups: list[list[dict]] = [[items[0]]]
-    for item in items[1:]:
-        group = groups[-1]
-        group_end = max(x["end"] for x in group)
-        if item["start"] <= group_end:
-            group.append(item)
-        else:
-            groups.append([item])
-
-    out: list[dict] = []
-    for group in groups:
-        start = min(x["start"] for x in group)
-        end = max(x["end"] for x in group)
-        address = ""
-        for x in group:
-            if x["src"] == "p" and x["address"]:
-                address = x["address"]
-                break
-        out.append({
-            "start": start,
-            "end": end,
-            "seconds": (end - start).total_seconds(),
-            "address": address,
-        })
+    out.sort(key=lambda x: x["start"])
     return out
 
 
