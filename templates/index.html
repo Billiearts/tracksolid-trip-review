@@ -8,8 +8,8 @@
 
   <div class="card">
     <h2 style="font-size: 1.1rem; margin: 0 0 1rem;">New report</h2>
-    <form action="{{ url_for('preview_start') }}" method="post" id="search-form"
-          data-loading-overlay="Loading preview… this can take up to 90 seconds.">
+    <form action="{{ url_for('trips_list') }}" method="post" id="search-form"
+      data-loading-overlay="Finding trips… this can take up to 20 seconds.">
 
       <div class="field">
         <label for="truck-input">Truck</label>

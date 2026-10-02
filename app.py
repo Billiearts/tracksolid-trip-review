@@ -2,7 +2,8 @@
 app.py — Flask front-end for the Trip Review report.
 """
 from __future__ import annotations
-import os
+
+import json
 import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -16,13 +17,15 @@ from flask import (
 from config import TEMPLATE_PATH, OUTPUT_DIR, FLASK_SECRET, FLASK_DEBUG
 from decorators import login_required
 from jimi import RateLimitExceeded
-from report import compute_report, write_excel, utc_str
+from report import compute_report, write_excel, utc_str, find_trips
 from services.devices import find_device, get_devices
 from services import jobs
 from services import reports_repo
 from services import sessions as sessions_svc
 from services import storage
-from services.previews import store_preview, get_preview, mark_ready, mark_failed
+from services.previews import (
+    store_preview, get_preview, mark_ready_reports, mark_failed,
+)
 from services.ratelimit import status as ratelimit_status
 
 
@@ -39,6 +42,9 @@ app.secret_key = FLASK_SECRET
 
 executor = ThreadPoolExecutor(max_workers=2)
 
+# Hard cap on how many trips can be previewed in one go.
+MAX_SELECTED_TRIPS = 5
+
 
 # --- blueprints -----------------------------------------------------------
 from blueprints.auth  import bp as auth_bp
@@ -48,10 +54,25 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
 
 
-# --- JSON (de)serialisation for stored reports ----------------------------
+# --- startup maintenance --------------------------------------------------
+try:
+    swept = jobs.sweep_stale()
+    if swept:
+        log.info("swept %d stale report job(s) on startup", swept)
+except Exception as exc:
+    log.warning("startup sweep failed: %s", exc)
+
+try:
+    purged = sessions_svc.purge_expired()
+    if purged:
+        log.info("purged %d expired session(s) on startup", purged)
+except Exception as exc:
+    log.warning("session purge failed: %s", exc)
+
+
+# --- helpers --------------------------------------------------------------
 
 def _to_jsonable(obj):
-    """Recursively convert datetimes to a marked dict for JSON storage."""
     if isinstance(obj, datetime):
         return {"$dt": obj.isoformat()}
     if isinstance(obj, dict):
@@ -62,7 +83,6 @@ def _to_jsonable(obj):
 
 
 def _from_jsonable(obj):
-    """Reverse of _to_jsonable."""
     if isinstance(obj, dict):
         if "$dt" in obj:
             return datetime.fromisoformat(obj["$dt"])
@@ -74,7 +94,6 @@ def _from_jsonable(obj):
 
 @app.template_filter("fmt_duration")
 def fmt_duration(seconds):
-    """Render seconds as H:MM:SS."""
     try:
         total = int(seconds or 0)
     except (TypeError, ValueError):
@@ -87,14 +106,22 @@ def fmt_duration(seconds):
 
 # --- background workers ---------------------------------------------------
 
-def _run_preview(preview_id: str, imei: str, truck_id: str, driver_name: str,
-                 begin: datetime, end: datetime, include_history: bool) -> None:
+def _run_preview(preview_id, imei, truck_id, driver_name, trips, include_history):
     try:
-        computed = compute_report(
-            imei=imei, truck_id=truck_id, driver_name=driver_name,
-            begin=begin, end=end, include_history=include_history,
-        )
-        mark_ready(preview_id, computed)
+        reports = []
+        for trip in trips:
+            t_start = datetime.strptime(
+                trip["start"], "%Y-%m-%d %H:%M:%S"
+            ).replace(tzinfo=timezone.utc)
+            t_end = datetime.strptime(
+                trip["end"], "%Y-%m-%d %H:%M:%S"
+            ).replace(tzinfo=timezone.utc)
+            r = compute_report(
+                imei=imei, truck_id=truck_id, driver_name=driver_name,
+                begin=t_start, end=t_end, include_history=include_history,
+            )
+            reports.append(r)
+        mark_ready_reports(preview_id, reports)
     except RateLimitExceeded as exc:
         log.warning("preview hit rate limit: %s", exc)
         mark_failed(preview_id,
@@ -105,7 +132,7 @@ def _run_preview(preview_id: str, imei: str, truck_id: str, driver_name: str,
         mark_failed(preview_id, f"{type(exc).__name__}: {exc}")
 
 
-def _run_export(job_id: str, computed: dict, out_path) -> None:
+def _run_export(job_id, computed, out_path):
     jobs.mark_running(job_id)
     try:
         write_excel(computed, TEMPLATE_PATH, out_path)
@@ -116,13 +143,11 @@ def _run_export(job_id: str, computed: dict, out_path) -> None:
         jobs.mark_failed(job_id, error=f"{type(exc).__name__}: {exc}")
         return
 
-    # Save the full computed report as JSON for later viewing.
     try:
         reports_repo.save_computed(job_id, _to_jsonable(computed))
     except Exception:
         log.exception("could not save computed JSON for %s", job_id)
 
-    # Mirror to Supabase Storage — best effort.
     try:
         remote = storage.upload(out_path)
         if remote:
@@ -138,8 +163,7 @@ def _run_export(job_id: str, computed: dict, out_path) -> None:
 @app.route("/favicon.ico")
 def favicon():
     return send_from_directory(
-        app.static_folder, "gbc_logo.png",
-        mimetype="image/png",
+        app.static_folder, "gbc_logo.png", mimetype="image/png",
     )
 
 
@@ -149,7 +173,6 @@ def healthz():
         "status": "ok",
         "time":   datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
     })
-
 
 
 @app.errorhandler(403)
@@ -191,9 +214,9 @@ def api_devices():
     return jsonify({"devices": out})
 
 
-@app.route("/preview", methods=["POST"])
+@app.route("/trips", methods=["POST"])
 @login_required
-def preview_start():
+def trips_list():
     truck   = (request.form.get("truck") or "").strip()
     begin_s = (request.form.get("begin") or "").strip()
     end_s   = (request.form.get("end") or "").strip()
@@ -218,21 +241,100 @@ def preview_start():
     device_name = device.get("deviceName") or imei
     driver_name = device.get("driverName") or ""
 
+    try:
+        trips = find_trips(imei, begin, end)
+    except RateLimitExceeded as exc:
+        log.warning("trip list hit rate limit: %s", exc)
+        flash("Tracksolid Pro daily API limit reached. Try again later.", "error")
+        return redirect(url_for("index"))
+    except Exception as exc:
+        log.exception("trip list failed")
+        flash(f"Could not load trips: {exc}", "error")
+        return redirect(url_for("index"))
+
+    if not trips:
+        flash("No trips found in that window.", "error")
+        return redirect(url_for("index"))
+
+    trips_ser = [
+        {
+            "start": t["start"].strftime("%Y-%m-%d %H:%M:%S"),
+            "end":   t["end"].strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        for t in trips
+    ]
+
+    return render_template(
+        "trips.html",
+        truck=device_name,
+        imei=imei,
+        driver_name=driver_name,
+        trips=trips,
+        trips_json=json.dumps(trips_ser),
+        include_history=include_history,
+    )
+
+
+@app.route("/preview", methods=["POST"])
+@login_required
+def preview_start():
+    trips_json = request.form.get("trips_json") or ""
+    index_strs = request.form.getlist("trip_index")
+
+    if not trips_json or not index_strs:
+        flash("Select at least one trip.", "error")
+        return redirect(url_for("index"))
+
+    try:
+        all_trips = json.loads(trips_json)
+    except ValueError:
+        flash("Invalid trip selection.", "error")
+        return redirect(url_for("index"))
+
+    selected: list[dict] = []
+    for s in index_strs:
+        try:
+            i = int(s)
+        except ValueError:
+            continue
+        if 0 <= i < len(all_trips):
+            selected.append(all_trips[i])
+
+    if not selected:
+        flash("Select at least one trip.", "error")
+        return redirect(url_for("index"))
+
+    if len(selected) > MAX_SELECTED_TRIPS:
+        flash(
+            f"Please select at most {MAX_SELECTED_TRIPS} trips per preview.",
+            "error",
+        )
+        return redirect(url_for("index"))
+
+    imei        = (request.form.get("imei") or "").strip()
+    device_name = (request.form.get("truck_name") or "").strip()
+    driver_name = (request.form.get("driver_name") or "").strip()
+    include_history = request.form.get("include_history") == "on"
+
+    if not imei:
+        flash("Missing device IMEI.", "error")
+        return redirect(url_for("index"))
+
     preview_id = uuid.uuid4().hex[:12]
     store_preview(preview_id, {
-        "status":      "computing",
-        "queued_at":   datetime.now(timezone.utc),
-        "truck":       device_name,
-        "imei":        imei,
-        "driver_name": driver_name,
-        "begin":       begin,
-        "end":         end,
-        "data":        None,
-        "error":       None,
-        "created_by":  session.get("user_id"),
+        "status":          "computing",
+        "queued_at":       datetime.now(timezone.utc),
+        "truck":           device_name,
+        "imei":            imei,
+        "driver_name":     driver_name,
+        "trips":           selected,
+        "reports":         None,
+        "error":           None,
+        "created_by":      session.get("user_id"),
+        "include_history": include_history,
     })
     executor.submit(_run_preview, preview_id, imei, device_name,
-                    driver_name, begin, end, include_history)
+                    driver_name, selected, include_history)
     return redirect(url_for("preview_show", preview_id=preview_id))
 
 
@@ -247,16 +349,36 @@ def preview_show(preview_id):
             and state["created_by"] != session.get("user_id")
             and session.get("role") != "admin"):
         abort(403)
+
     if state["status"] == "computing":
         return render_template("preview.html",
                                loading=True, preview_id=preview_id,
                                state=state)
+
     if state["status"] == "failed":
         flash(state.get("error") or "Preview failed.", "error")
         return redirect(url_for("index"))
-    return render_template("preview.html",
-                           loading=False, preview_id=preview_id,
-                           state=state, computed=state["data"])
+
+    reports = state.get("reports") or []
+    if not reports:
+        flash("Preview has no data.", "error")
+        return redirect(url_for("index"))
+
+    try:
+        current_index = int(request.args.get("trip", 0))
+    except (ValueError, TypeError):
+        current_index = 0
+    current_index = max(0, min(current_index, len(reports) - 1))
+
+    return render_template(
+        "preview.html",
+        loading=False,
+        preview_id=preview_id,
+        state=state,
+        reports=reports,
+        current_index=current_index,
+        computed=reports[current_index],
+    )
 
 
 @app.route("/api/preview/<preview_id>")
@@ -276,6 +398,11 @@ def api_preview(preview_id):
 @login_required
 def export():
     preview_id = request.form.get("preview_id", "").strip()
+    try:
+        trip_index = int(request.form.get("trip_index", "0"))
+    except (ValueError, TypeError):
+        trip_index = 0
+
     state = get_preview(preview_id)
     if not state or state["status"] != "ready":
         flash("Preview not ready or expired. Please search again.", "error")
@@ -285,7 +412,12 @@ def export():
             and session.get("role") != "admin"):
         abort(403)
 
-    computed = state["data"]
+    reports = state.get("reports") or []
+    if trip_index < 0 or trip_index >= len(reports):
+        flash("Invalid trip selection.", "error")
+        return redirect(url_for("index"))
+    computed = reports[trip_index]
+
     safe_name = "".join(ch if ch.isalnum() or ch in " -" else "_"
                         for ch in computed["truck_id"]).strip()
     run_stamp = datetime.now(timezone.utc).strftime("%H%M%S")
@@ -357,6 +489,8 @@ def report_view(report_id):
             "truck": row.get("truck_id"),
             "imei":  row.get("imei"),
         },
+        reports=[computed],
+        current_index=0,
         computed=computed,
     )
 

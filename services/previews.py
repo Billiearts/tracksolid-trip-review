@@ -55,3 +55,13 @@ def mark_failed(preview_id: str, error: str) -> None:
         state["status"] = "failed"
         state["error"] = error
         state["finished_at"] = datetime.now(timezone.utc)
+
+def mark_ready_reports(preview_id: str, reports: list) -> None:
+    """Mark a multi-trip preview as successfully computed."""
+    with _previews_lock:
+        state = _previews.get(preview_id)
+        if state is None:
+            return
+        state["status"] = "ready"
+        state["reports"] = reports
+        state["finished_at"] = datetime.now(timezone.utc)

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+  <div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem;">
+      <h2 style="font-size: 1.1rem; margin: 0;">Select trips</h2>
+      <a href="{{ url_for('index') }}" style="font-size: 0.9rem;">← Back to search</a>
+    </div>
+
+    <p style="color: #666; font-size: 0.9rem; margin: 0 0 1rem;">
+      {{ truck }} &middot; IMEI {{ imei }}
+      &middot; {{ trips | length }} trip(s) found
+    </p>
+
+    <form action="{{ url_for('preview_start') }}" method="post" id="trips-form"
+          data-loading-overlay="Computing selected trips… this can take up to 90 seconds.">
+      <input type="hidden" name="truck" value="{{ truck }}">
+      <input type="hidden" name="imei" value="{{ imei }}">
+      <input type="hidden" name="truck_name" value="{{ truck }}">
+      <input type="hidden" name="driver_name" value="{{ driver_name }}">
+      <input type="hidden" name="include_history"
+             value="{{ 'on' if include_history else '' }}">
+      <input type="hidden" name="trips_json" value="{{ trips_json }}">
+
+      <div class="table-scroll">
+        <table class="preview-table">
+          <thead>
+            <tr>
+              <th style="width: 40px;"></th>
+              <th style="width: 40px;">#</th>
+              <th>Start</th>
+              <th>End</th>
+              <th>Duration</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in trips %}
+              <tr>
+                <td>
+                  <input type="checkbox" name="trip_index"
+                         value="{{ loop.index0 }}" checked>
+                </td>
+                <td>{{ loop.index }}</td>
+                <td style="text-align: left;">
+                  {{ t.start.strftime('%Y-%m-%d %H:%M:%S') }}
+                </td>
+                <td style="text-align: left;">
+                  {{ t.end.strftime('%Y-%m-%d %H:%M:%S') }}
+                </td>
+                <td>{{ t.duration_s | fmt_duration }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <p style="color: #888; font-size: 0.85rem; margin: 1rem 0;">
+        All trips are checked by default. Uncheck any you don't want.
+        Up to 5 trips per preview.
+      </p>
+
+      <button type="submit">Preview selected trips</button>
+    </form>
+  </div>
+
+{% endblock %}

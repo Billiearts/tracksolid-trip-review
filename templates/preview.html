@@ -6,8 +6,9 @@
     <div class="card">
       <h2 style="font-size: 1.1rem; margin: 0 0 1rem;">Computing…</h2>
       <p style="color: #666;">
-        Fetching trips, parking events, and history for
-        <strong>{{ state.truck }}</strong>.
+        Fetching details for
+        <strong>{{ state.truck }}</strong>
+        ({{ state.trips | length }} trip{{ 's' if state.trips | length != 1 else '' }}).
       </p>
       <div class="spinner" style="margin: 2rem auto;"></div>
     </div>
@@ -37,7 +38,7 @@
 
     {# ---------- Header ---------- #}
     <div class="card">
-      <div style="display: flex; justify-content: space-between; align-items: baseline;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap;">
         <div>
           <h2 style="font-size: 1.2rem; margin: 0 0 0.25rem;">
             {{ c.truck_id }}{% if view_mode %} <span class="meta-note">(saved report)</span>{% endif %}
@@ -47,22 +48,35 @@
             {% if c.trip_start %}{{ c.trip_start.strftime('%Y-%m-%d %H:%M') }}{% endif %}
             →
             {% if c.trip_end %}{{ c.trip_end.strftime('%Y-%m-%d %H:%M') }}{% endif %}
-            &middot; {{ c.trips | length }} trip(s) found
           </p>
         </div>
-        {% if view_mode %}
-          <a class="btn-download"
-             href="{{ url_for('download', filename=(c.truck_id + '.xlsx')) }}"
-             style="display: none;">Download</a>
-          {# Fallback: no direct filename; leave as-is, users download from Reports list #}
-        {% else %}
+        {% if not view_mode %}
           <form action="{{ url_for('export') }}" method="post" style="margin: 0;">
             <input type="hidden" name="preview_id" value="{{ preview_id }}">
+            <input type="hidden" name="trip_index" value="{{ current_index }}">
             <button type="submit">Export to Excel</button>
           </form>
         {% endif %}
       </div>
     </div>
+
+    {# ---------- Trip selector (only if multiple) ---------- #}
+    {% if reports | length > 1 %}
+      <div class="card" style="padding: 0.85rem 1.25rem;">
+        <label for="trip-select" style="margin-bottom: 0.4rem;">
+          Trip {{ current_index + 1 }} of {{ reports | length }}
+        </label>
+        <select id="trip-select"
+                onchange="window.location.href='{{ url_for('preview_show', preview_id=preview_id) }}?trip=' + this.value;">
+          {% for r in reports %}
+            <option value="{{ loop.index0 }}"
+                    {% if loop.index0 == current_index %}selected{% endif %}>
+              Trip {{ loop.index }} — {{ r.trip_start.strftime('%Y-%m-%d %H:%M') }} → {{ r.trip_end.strftime('%Y-%m-%d %H:%M') }} ({{ '%.1fh' | format((r.trip_end - r.trip_start).total_seconds() / 3600) }})
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+    {% endif %}
 
     {# ---------- Tabs ---------- #}
     <div class="card">
@@ -81,11 +95,8 @@
 
       {# ----------------------------- SUMMARY ----------------------------- #}
       <div class="tab-panel" data-panel="summary">
-
-        {# ===== This Trip ===== #}
         <div class="summary-section">
           <h3>This Trip</h3>
-
           <table class="preview-table">
             <thead>
               <tr><th>Rest and breaks</th><th>Value</th></tr>
@@ -141,7 +152,6 @@
           </table>
         </div>
 
-        {# ===== Previous 3 months ===== #}
         {% if h %}
           <div class="summary-section">
             <h3>
@@ -235,7 +245,6 @@
             <p class="muted">History data is not available for this report.</p>
           </div>
         {% endif %}
-
       </div>
 
       {# ----------------------------- TRIPS ----------------------------- #}
@@ -265,22 +274,24 @@
       <div class="tab-panel" data-panel="stops" hidden>
         <h3>Stops ≥ 5 min ({{ cur.intervals | length }})</h3>
         {% if cur.intervals %}
-          <table class="preview-table">
-            <thead>
-              <tr><th>#</th><th>Start</th><th>End</th><th>Duration</th><th>Address</th></tr>
-            </thead>
-            <tbody>
-              {% for s in cur.intervals %}
-                <tr>
-                  <td>{{ loop.index }}</td>
-                  <td style="text-align: left;">{{ s.start.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                  <td style="text-align: left;">{{ s.end.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                  <td>{{ s.seconds | fmt_duration }}</td>
-                  <td style="text-align: left; font-size: 0.82rem; color: #666;">{{ s.address or '' }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+          <div class="table-scroll">
+            <table class="preview-table">
+              <thead>
+                <tr><th>#</th><th>Start</th><th>End</th><th>Duration</th><th>Address</th></tr>
+              </thead>
+              <tbody>
+                {% for s in cur.intervals %}
+                  <tr>
+                    <td>{{ loop.index }}</td>
+                    <td style="text-align: left;">{{ s.start.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td style="text-align: left;">{{ s.end.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td>{{ s.seconds | fmt_duration }}</td>
+                    <td style="text-align: left; font-size: 0.82rem; color: #666;">{{ s.address or '' }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
         {% else %}
           <p class="muted">No stops detected.</p>
         {% endif %}
