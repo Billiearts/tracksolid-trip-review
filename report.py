@@ -1,9 +1,16 @@
 """
 report.py — trip detection, event summarisation, and Excel template filling.
 
-Stop detection uses jimi.open.platform.report.parking (Tracksolid's own
-parking endpoint). Durations are written to Excel as time values displayed
-as [h]:mm:ss.
+Stop detection merges two sources:
+  - Track points (jimi.device.track.list) — catches stops the parking API
+    misses, e.g. deep-sleep overnight stops reported with a single sample.
+  - Parking events (jimi.open.platform.report.parking) — accurate boundaries
+    and an address when it fires.
+
+Both sources filter their own stops at >= MIN_STOP_SECONDS before merging.
+Track detection uses raw run durations only (no extension), which prevents
+the historical over-extension bug where a 3-4 minute stop was inflated past
+the 5-minute threshold.
 """
 
 from __future__ import annotations
@@ -38,7 +45,9 @@ ALERT_CORNERING    = "43"
 ALERT_DECELERATION = "48"
 ALERT_OVERSPEED    = "overSpeed"
 
-MIN_STOP_SECONDS = 300   # stops >= 5 min count toward the report
+MIN_STOP_SECONDS     = 300   # stops >= 5 min count toward the report
+STATIONARY_SPEED_KPH = 1.5
+MERGE_GAP_SECONDS    = 10
 
 FMT = "%Y-%m-%d %H:%M:%S"
 
@@ -63,6 +72,23 @@ def _to_float(x) -> float:
         return float(x)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _speed_of(p: dict) -> float:
+    for key in ("gpsSpeed", "speed"):
+        v = p.get(key)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                pass
+    return 0.0
+
+
+def _is_stationary_point(p: dict) -> bool:
+    ignition_off = (p.get("ignition") or "").upper() == "OFF"
+    slow = _speed_of(p) < STATIONARY_SPEED_KPH
+    return ignition_off and slow
 
 
 def history_window(reference: datetime) -> tuple[datetime, datetime]:
@@ -127,64 +153,233 @@ def find_trips(imei: str, begin: datetime, end: datetime) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Stop summarisation — based on the parking API
+# Track fetch (was originally defined here, not in jimi.py)
 # ---------------------------------------------------------------------------
 
-def summarise_stops(parking_events: list[dict],
-                    trip_start: datetime | None = None,
-                    trip_end: datetime | None = None,
-                    debug: bool = False) -> dict:
-    """Summarise parking events returned by jimi.fetch_parking().
+def fetch_track(imei: str, begin: datetime, end: datetime) -> list[dict]:
+    response = api_call("jimi.device.track.list", {
+        "imei":       imei,
+        "begin_time": utc_str(begin),
+        "end_time":   utc_str(end),
+    })
+    result = response.get("result") or response.get("data") or []
+    if isinstance(result, dict):
+        result = result.get("list", [])
+    return result or []
 
-    Mandatory rest break logic is disabled — returns zeros in rest_* keys.
+
+# ---------------------------------------------------------------------------
+# Stop detection — track source
+# ---------------------------------------------------------------------------
+
+def _track_stop_intervals(track: list[dict],
+                          trip_start: datetime | None,
+                          trip_end: datetime | None,
+                          debug: bool = False) -> list[dict]:
     """
-    if not parking_events:
-        return _empty_stops()
+    Detect stops from raw track points. Uses raw run durations only —
+    no extension, no trim. This means a stop whose raw duration is under
+    MIN_STOP_SECONDS is dropped, which is correct: we don't inflate short
+    stops to look longer than they are.
+    """
+    if not track:
+        return []
 
-    filtered: list[dict] = []
+    points: list[tuple[datetime, bool]] = []
+    for p in track:
+        ts = p.get("gpsTime")
+        if not ts:
+            continue
+        try:
+            dt = parse_utc(ts)
+        except ValueError:
+            continue
+        points.append((dt, _is_stationary_point(p)))
+    points.sort(key=lambda x: x[0])
+
+    if trip_start:
+        points = [p for p in points if p[0] >= trip_start]
+    if trip_end:
+        points = [p for p in points if p[0] <= trip_end]
+    if not points:
+        return []
+
+    if debug:
+        n_stat = sum(1 for _, s in points if s)
+        log.debug("track points (filtered): %d  stationary=%d",
+                  len(points), n_stat)
+
+    raw_runs: list[tuple[int, int]] = []
+    i = 0
+    while i < len(points):
+        if points[i][1]:
+            j = i
+            while j + 1 < len(points) and points[j + 1][1]:
+                j += 1
+            raw_runs.append((i, j))
+            i = j + 1
+        else:
+            i += 1
+
+    if debug:
+        log.debug("stationary runs: %d", len(raw_runs))
+        for i0, j0 in raw_runs:
+            t0, t1 = points[i0][0], points[j0][0]
+            log.debug("    %s → %s  (%.0fs, %d pt(s))",
+                      t0.strftime("%Y-%m-%d %H:%M:%S"),
+                      t1.strftime("%Y-%m-%d %H:%M:%S"),
+                      (t1 - t0).total_seconds(), j0 - i0 + 1)
+
+    intervals: list[dict] = []
+    for i0, j0 in raw_runs:
+        start = points[i0][0]
+        end = points[j0][0]
+        dur = (end - start).total_seconds()
+        if dur < MIN_STOP_SECONDS:
+            if debug:
+                log.debug("DROP %s → %s  (%.0fs): under %ds",
+                          start.strftime("%Y-%m-%d %H:%M:%S"),
+                          end.strftime("%Y-%m-%d %H:%M:%S"),
+                          dur, MIN_STOP_SECONDS)
+            continue
+        intervals.append({
+            "start": start,
+            "end": end,
+            "seconds": dur,
+            "address": "",
+        })
+    return intervals
+
+
+# ---------------------------------------------------------------------------
+# Stop detection — parking source
+# ---------------------------------------------------------------------------
+
+def _parking_stop_intervals(parking_events: list[dict],
+                            trip_start: datetime | None,
+                            trip_end: datetime | None) -> list[dict]:
+    out: list[dict] = []
     for e in parking_events:
         s = e.get("start")
-        if s is None:
+        en = e.get("end")
+        if s is None or en is None:
             continue
         if trip_start and s < trip_start:
             continue
         if trip_end and s > trip_end:
             continue
-        filtered.append(e)
-
-    if debug:
-        log.debug("parking events: total=%d filtered=%d",
-                  len(parking_events), len(filtered))
-
-    stop_intervals: list[dict] = []
-    short_stops:    list[float] = []
-
-    for e in filtered:
         dur = e.get("seconds", 0)
         if dur < MIN_STOP_SECONDS:
-            if debug:
-                log.debug("DROP %s (%ds) — under %dm",
-                          e.get("start"), dur, MIN_STOP_SECONDS // 60)
             continue
-        stop_intervals.append({
-            "start":   e["start"],
-            "end":     e["end"],
+        out.append({
+            "start": s,
+            "end": en,
             "seconds": dur,
-            "address": e.get("address", ""),
+            "address": e.get("address", "") or "",
         })
-        short_stops.append(dur)
-        if debug:
-            log.debug("STOP %s → %s (%ds, %.2fh)",
-                      e["start"].strftime("%Y-%m-%d %H:%M:%S"),
-                      e["end"].strftime("%Y-%m-%d %H:%M:%S") if e["end"] else "?",
-                      dur, dur / 3600)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Merge stop intervals from both sources
+# ---------------------------------------------------------------------------
+
+def _merge_stop_intervals(parking_intervals: list[dict],
+                          track_intervals: list[dict]) -> list[dict]:
+    """
+    Merge overlapping intervals. Within a merged group:
+      - Times: earliest start → latest end (union).
+      - Address: the parking address if any source in the group had one,
+                 otherwise blank.
+    """
+    items: list[dict] = []
+    for p in parking_intervals:
+        items.append({
+            "start": p["start"], "end": p["end"],
+            "address": p.get("address", ""), "src": "p",
+        })
+    for t in track_intervals:
+        items.append({
+            "start": t["start"], "end": t["end"],
+            "address": t.get("address", ""), "src": "t",
+        })
+
+    if not items:
+        return []
+
+    items.sort(key=lambda x: x["start"])
+
+    groups: list[list[dict]] = [[items[0]]]
+    for item in items[1:]:
+        group = groups[-1]
+        group_end = max(x["end"] for x in group)
+        if item["start"] <= group_end:
+            group.append(item)
+        else:
+            groups.append([item])
+
+    out: list[dict] = []
+    for group in groups:
+        start = min(x["start"] for x in group)
+        end = max(x["end"] for x in group)
+        address = ""
+        for x in group:
+            if x["src"] == "p" and x["address"]:
+                address = x["address"]
+                break
+        out.append({
+            "start": start,
+            "end": end,
+            "seconds": (end - start).total_seconds(),
+            "address": address,
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Public API: summarise stops from both sources
+# ---------------------------------------------------------------------------
+
+def summarise_stops(track: list[dict],
+                    parking_events: list[dict],
+                    trip_start: datetime | None = None,
+                    trip_end: datetime | None = None,
+                    debug: bool = False) -> dict:
+    """
+    Return stop summary, merging track-based and parking-based intervals.
+
+    Return shape matches the previous version — all keys preserved.
+    """
+    track_intervals = _track_stop_intervals(
+        track, trip_start, trip_end, debug=debug)
+    parking_intervals = _parking_stop_intervals(
+        parking_events, trip_start, trip_end)
+
+    if debug:
+        log.debug("track intervals:   %d", len(track_intervals))
+        log.debug("parking intervals: %d", len(parking_intervals))
+
+    merged = _merge_stop_intervals(parking_intervals, track_intervals)
+    merged = [x for x in merged if x["seconds"] >= MIN_STOP_SECONDS]
+    merged.sort(key=lambda x: x["start"])
+
+    if debug:
+        log.debug("merged stops: %d", len(merged))
+        for s in merged:
+            log.debug("    %s → %s  (%.0fs)",
+                      s["start"].strftime("%Y-%m-%d %H:%M:%S"),
+                      s["end"].strftime("%Y-%m-%d %H:%M:%S"),
+                      s["seconds"])
+
+    durations = [x["seconds"] for x in merged]
 
     return {
-        "count":                 len(short_stops),
-        "total_seconds":         sum(short_stops),
-        "longest_seconds":       max(short_stops) if short_stops else 0,
-        "durations":             list(short_stops),
-        "intervals":             stop_intervals,
+        "count":                 len(merged),
+        "total_seconds":         sum(durations),
+        "longest_seconds":       max(durations) if durations else 0,
+        "durations":             list(durations),
+        "intervals":             merged,
+        # Mandatory rest break — logic removed for now.
         "rest_break_count":      0,
         "rest_break_seconds":    0,
         "rest_break_longest_s":  0,
@@ -204,7 +399,7 @@ def _empty_stops() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Event summarisation (alarms)
+# Event summarisation (unchanged — based on alarms)
 # ---------------------------------------------------------------------------
 
 def summarise_events(alarms: list[dict]) -> dict:
@@ -312,7 +507,18 @@ def build_history(imei: str, reference: datetime, *,
                         t["start"], exc)
             parking = []
 
-        s = summarise_stops(parking, t["start"], t["end"], debug=False)
+        try:
+            track = fetch_track(imei, t["start"], t["end"])
+        except RateLimitExceeded:
+            log.warning("history: track skipped for trip %s (rate limit)",
+                        t["start"])
+            track = []
+        except Exception as exc:
+            log.warning("history: track fetch failed for %s: %s",
+                        t["start"], exc)
+            track = []
+
+        s = summarise_stops(track, parking, t["start"], t["end"], debug=False)
         e = summarise_events(trip_alarms)
 
         stop_counts.append(s["count"])
@@ -401,8 +607,6 @@ CELL_HIST_SOV_TOTAL = "H22"; CELL_HIST_SOV_MAX = "I22"; CELL_HIST_SOV_AVG = "J22
 
 
 def _safe_write(ws, coord: str, value, number_format: str | None = None) -> None:
-    """Write to a cell, resolving merged ranges to their anchor.
-    Optionally apply a number format so the value displays correctly."""
     target = coord
     for mr in ws.merged_cells.ranges:
         if coord in mr:
@@ -417,7 +621,6 @@ def _safe_write(ws, coord: str, value, number_format: str | None = None) -> None
 
 
 def _duration(seconds) -> float:
-    """Seconds → Excel day fraction (pairs with '[h]:mm:ss' format)."""
     try:
         s = float(seconds or 0)
     except (TypeError, ValueError):
@@ -443,7 +646,6 @@ def fill_template(template_path: Path, output_path: Path, *,
     if trip_end:
         _safe_write(ws, CELL_TRIP_END,   trip_end.strftime(FMT))
 
-    # --- This trip: durations as [h]:mm:ss ---
     _safe_write(ws, CELL_REST_BREAK_HOURS,
                 _duration(stops["rest_break_seconds"]), DURATION_FORMAT)
     _safe_write(ws, CELL_STOPS_COUNT, stops["count"])
@@ -464,7 +666,6 @@ def fill_template(template_path: Path, output_path: Path, *,
 
     if history and history["trip_count"] > 0:
         h = history
-        # Durations as [h]:mm:ss
         _safe_write(ws, CELL_HIST_REST_AVG_HOURS,
                     _duration(h["rests"]["avg_seconds"]), DURATION_FORMAT)
         _safe_write(ws, CELL_HIST_REST_LONGEST_H,
@@ -472,12 +673,9 @@ def fill_template(template_path: Path, output_path: Path, *,
         _safe_write(ws, CELL_HIST_REST_SHORTEST_H,
                     _duration(h["rests"]["min_seconds"]), DURATION_FORMAT)
 
-        # Stop counts (integers)
         _safe_write(ws, CELL_HIST_STOPS_AVG,      round(h["stops"]["avg_count"], 1))
         _safe_write(ws, CELL_HIST_STOPS_LONGEST,  h["stops"]["max_count"])
         _safe_write(ws, CELL_HIST_STOPS_SHORTEST, h["stops"]["min_count"])
-
-        # Stop durations as [h]:mm:ss
         _safe_write(ws, CELL_HIST_STOPS_AVG_HOURS,
                     _duration(h["stops"]["avg_seconds"]), DURATION_FORMAT)
         _safe_write(ws, CELL_HIST_STOPS_LONGEST_HOURS,
@@ -520,7 +718,7 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
     union_begin = min(begin, hist_begin) if hist_begin else begin
     union_end   = max(end,   hist_end)   if hist_end   else end
 
-    log.info("[1/5] Fetching alarms for %s → %s ...",
+    log.info("[1/6] Fetching alarms for %s → %s ...",
              utc_str(union_begin), utc_str(union_end))
     try:
         all_alarms = fetch_alarms_chunked(imei, union_begin, union_end)
@@ -538,15 +736,23 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
     else:
         trip_start = trip_end = None
 
-    log.info("[2/5] Fetching parking events ...")
+    log.info("[2/6] Fetching track ...")
+    try:
+        track = fetch_track(imei, trip_start or begin,
+                            trip_end or end) if trip_start else []
+    except RateLimitExceeded:
+        track = []
+    log.info("      %d track points", len(track))
+
+    log.info("[3/6] Fetching parking events ...")
     try:
         parking = fetch_parking(imei, trip_start or begin,
                                 trip_end or end) if trip_start else []
     except RateLimitExceeded:
         parking = []
-    log.info("      %d parking event(s)", len(parking))
+    log.info("      %d parking events", len(parking))
 
-    log.info("[3/5] Filtering alarms for trip window ...")
+    log.info("[4/6] Filtering alarms for trip window ...")
     if trip_start and trip_end:
         alarms = [
             a for a in all_alarms
@@ -556,8 +762,8 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
         alarms = []
     log.info("      %d alarms in trip", len(alarms))
 
-    log.info("[4/5] Summarising ...")
-    stops  = summarise_stops(parking, trip_start, trip_end, debug=False)
+    log.info("[5/6] Summarising ...")
+    stops  = summarise_stops(track, parking, trip_start, trip_end, debug=False)
     events = summarise_events(alarms)
     log.info("      stops >= %dm: %d  total %.2fh",
              MIN_STOP_SECONDS // 60, stops["count"],
@@ -565,7 +771,7 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
 
     history = None
     if include_history and trip_start:
-        log.info("[5/5] Building 3-month history (reusing fetched alarms) ...")
+        log.info("[6/6] Building 3-month history (reusing fetched alarms) ...")
         try:
             history = build_history(
                 imei, trip_start,
@@ -593,7 +799,7 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
         "trips":         trips,
         "alarm_count":   len(alarms),
         "parking_count": len(parking),
-        "track_count":   0,
+        "track_count":   len(track),
         "generated_at":  datetime.now(timezone.utc),
     }
 
