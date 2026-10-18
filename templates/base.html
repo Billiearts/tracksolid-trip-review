@@ -366,7 +366,6 @@
       }
       body.wide .container { max-width: 100%; }
 
-      /* Topbar stacks: nav links row, then user/sign-out row */
       .topbar {
         margin: -0.75rem -0.75rem 0.5rem;
         padding: 0.6rem 0.75rem;
@@ -390,7 +389,6 @@
         margin-bottom: 0.75rem;
       }
 
-      /* Larger tap targets */
       button { min-height: 42px; padding: 0.6rem 1rem; }
       .btn-download,
       .btn-edit {
@@ -400,14 +398,12 @@
         align-items: center;
       }
 
-      /* Rate-limit banner spans the full width */
       .ratelimit-banner {
         margin: 0 -0.75rem;
         padding: 0.6rem 0.75rem;
         font-size: 0.85rem;
       }
 
-      /* Filter bar stacks into one column */
       .filter-bar {
         flex-direction: column;
         align-items: stretch;
@@ -416,7 +412,6 @@
       .filter-bar .field-inline { flex: 1 1 auto; }
       .filter-bar .filter-clear { width: 100%; }
 
-      /* Pagination wraps nicely */
       .pagination {
         justify-content: space-between;
         gap: 0.5rem;
@@ -428,7 +423,6 @@
         order: 3;
       }
 
-      /* Tabs get scrollable if too many */
       .tabs {
         overflow-x: auto;
         -webkit-overflow-scrolling: touch;
@@ -436,23 +430,17 @@
       }
       .tab { white-space: nowrap; padding: 0.6rem 0.75rem; }
 
-      /* Summary sections tighter */
       .summary-section { padding: 0.85rem 0.9rem; }
       .summary-section > h3 { font-size: 0.72rem; }
 
-      /* Preview table adjustments */
       .preview-table { font-size: 0.82rem; }
       .preview-table th,
       .preview-table td { padding: 0.4rem 0.4rem 0.4rem 0; }
 
-      /* Auth card */
       .auth-card { margin: 1.5rem auto 0; }
-
-      /* Modal */
       .ratelimit-modal { padding: 1rem; }
     }
 
-    /* Even narrower — phones in portrait */
     @media (max-width: 480px) {
       .topbar {
         font-size: 0.82rem;
@@ -490,14 +478,15 @@
       <span class="user">{{ session.get('full_name') or session.get('email') }}</span>
       <a href="{{ url_for('auth.logout') }}">Sign out</a>
     </nav>
-  {% endif %}
 
-  <div id="ratelimit-banner" class="ratelimit-banner" hidden>
-    <span class="ratelimit-banner-icon">&#9888;&#65039;</span>
-    <span class="ratelimit-banner-text" id="ratelimit-banner-text">
-      Tracksolid Pro daily API limit reached.
-    </span>
-  </div>
+    {# Rate-limit banner and modal are only rendered for signed-in users. #}
+    <div id="ratelimit-banner" class="ratelimit-banner" hidden>
+      <span class="ratelimit-banner-icon">&#9888;&#65039;</span>
+      <span class="ratelimit-banner-text" id="ratelimit-banner-text">
+        Tracksolid Pro daily API limit reached.
+      </span>
+    </div>
+  {% endif %}
 
   <div class="container">
     <h1>{% block heading %}Tracksolid Pro — Trip Review{% endblock %}</h1>
@@ -517,14 +506,16 @@
     <p class="timer" id="loading-timer">0s elapsed</p>
   </div>
 
-  <dialog id="ratelimit-modal" class="ratelimit-modal">
-    <h3>Daily API limit reached</h3>
-    <p id="ratelimit-modal-text"></p>
-    <p class="hint">Reports generated now would be missing data.</p>
-    <form method="dialog">
-      <button type="submit">OK, understood</button>
-    </form>
-  </dialog>
+  {% if session.get('user_id') %}
+    <dialog id="ratelimit-modal" class="ratelimit-modal">
+      <h3>Daily API limit reached</h3>
+      <p id="ratelimit-modal-text"></p>
+      <p class="hint">Reports generated now would be missing data.</p>
+      <form method="dialog">
+        <button type="submit">OK, understood</button>
+      </form>
+    </dialog>
+  {% endif %}
 
   <script>
     (function () {
@@ -553,13 +544,13 @@
       }
     })();
 
-    // --- rate-limit banner + modal -------------------------------------
+    // --- rate-limit banner + modal (only if rendered) -------------------
     (function () {
       const banner     = document.getElementById("ratelimit-banner");
       const bannerText = document.getElementById("ratelimit-banner-text");
       const modal      = document.getElementById("ratelimit-modal");
       const modalText  = document.getElementById("ratelimit-modal-text");
-      if (!banner || !modal) return;
+      if (!banner || !modal) return;   // not signed in — nothing to poll
 
       function apply(state) {
         if (!state.rate_limited) { banner.hidden = true; return; }
