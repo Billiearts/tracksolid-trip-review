@@ -1,8 +1,5 @@
 """
 services/reports_repo.py — Postgres CRUD for the reports table.
-
-Pure data access. Ownership rules and disk reconciliation live in
-services/jobs.py.
 """
 from __future__ import annotations
 
@@ -57,7 +54,8 @@ def _row_to_dict(row: dict) -> dict:
 
 def insert_queued(*, filename: str, truck_id: str, imei: str | None,
                   trip_start: datetime | None, trip_end: datetime | None,
-                  created_by: str | None, created_by_email: str | None) -> str:
+                  created_by: str | None, created_by_email: str | None,
+                  manual: dict | None = None) -> str:
     client = admin_client()
     payload = {
         "filename":         filename,
@@ -68,6 +66,7 @@ def insert_queued(*, filename: str, truck_id: str, imei: str | None,
         "trip_end":         trip_end.isoformat()   if trip_end   else None,
         "created_by":       created_by,
         "created_by_email": created_by_email,
+        "manual_json":      manual or {},
     }
     resp = client.table("reports").insert(payload).execute()
     rows = resp.data or []
@@ -106,11 +105,20 @@ def mark_failed(report_id: str, error: str) -> None:
 
 
 def save_computed(report_id: str, data: dict) -> None:
-    """Persist the full computed report as JSONB for later viewing."""
     client = admin_client()
     client.table("reports").update({
         "computed_json": data,
     }).eq("id", report_id).execute()
+
+
+def update_manual(report_id: str, manual: dict,
+                  filesize_bytes: int | None = None) -> None:
+    """Update only the manual metadata (and optionally file size) on a report."""
+    client = admin_client()
+    payload = {"manual_json": manual or {}}
+    if filesize_bytes is not None:
+        payload["filesize_bytes"] = filesize_bytes
+    client.table("reports").update(payload).eq("id", report_id).execute()
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +156,7 @@ def get_by_filename(filename: str) -> dict | None:
 
 
 def get_full(report_id: str) -> dict | None:
-    """Fetch a raw report row including computed_json, or None."""
+    """Fetch a raw report row including computed_json and manual_json."""
     client = admin_client()
     try:
         resp = (

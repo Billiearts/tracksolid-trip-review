@@ -1,9 +1,5 @@
 """
 services/jobs.py — orchestrator for report rows.
-
-Combines Postgres-backed reports (source of truth) with any legacy .xlsx
-files on disk that don't have a matching Postgres row. Legacy files are
-still shown to everyone, but new reports always go through Postgres.
 """
 from __future__ import annotations
 
@@ -23,13 +19,13 @@ _TRIP_REVIEW_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
-# Write API (used by app.py)
+# Write API
 # ---------------------------------------------------------------------------
 
 def add_job(*, truck_id: str, imei: str | None, filename: str,
             trip_start: datetime | None, trip_end: datetime | None,
-            created_by: str | None, created_by_email: str | None) -> str:
-    """Insert a queued row. Returns the row id (uuid string)."""
+            created_by: str | None, created_by_email: str | None,
+            manual: dict | None = None) -> str:
     return reports_repo.insert_queued(
         filename=filename,
         truck_id=truck_id,
@@ -38,6 +34,7 @@ def add_job(*, truck_id: str, imei: str | None, filename: str,
         trip_end=trip_end,
         created_by=created_by,
         created_by_email=created_by_email,
+        manual=manual,
     )
 
 
@@ -62,7 +59,6 @@ def sweep_stale() -> int:
 # ---------------------------------------------------------------------------
 
 def _read_sidecar(xlsx_path: Path) -> dict | None:
-    """Legacy .meta.json read (kept so old disk files still show truck/date)."""
     mp = xlsx_path.with_suffix(".meta.json")
     if not mp.exists():
         return None
@@ -73,7 +69,6 @@ def _read_sidecar(xlsx_path: Path) -> dict | None:
 
 
 def _disk_legacy_reports(known: set[str]) -> list[dict]:
-    """Every .xlsx on disk that has no Postgres row. Shown to everyone."""
     out = []
     for p in sorted(OUTPUT_DIR.glob("*.xlsx"),
                     key=lambda p: p.stat().st_mtime, reverse=True):
@@ -112,11 +107,8 @@ def _disk_legacy_reports(known: set[str]) -> list[dict]:
 
 
 def all_jobs_sorted_for(user_id: str | None, show_all: bool) -> list[dict]:
-    """Postgres rows (filtered) + legacy disk files (always visible to all)."""
     db_rows = reports_repo.list_for(user_id, show_all)
     known   = {r["filename"] for r in db_rows if r.get("filename")}
-    # Legacy disk files never have an owner, so only include them in the
-    # "show all" scope. Otherwise they'd leak across users.
     legacy  = _disk_legacy_reports(known) if show_all else []
 
     merged = db_rows + legacy
@@ -128,15 +120,9 @@ def all_jobs_sorted_for(user_id: str | None, show_all: bool) -> list[dict]:
 
 
 def get_report_owner(filename: str) -> str | None:
-    """Return the user_id that owns a report file, or None if unknown.
-
-    Reads Postgres first (canonical), falls back to the sidecar for legacy
-    files, returns None if nothing is found.
-    """
     row = reports_repo.get_by_filename(filename)
     if row is not None:
         return row.get("created_by")
-
     sidecar = _read_sidecar(OUTPUT_DIR / filename)
     if sidecar:
         return sidecar.get("created_by")
@@ -144,5 +130,4 @@ def get_report_owner(filename: str) -> str | None:
 
 
 def all_jobs_sorted() -> list[dict]:
-    """Everything — used by nothing currently, kept for compatibility."""
     return all_jobs_sorted_for(user_id=None, show_all=True)

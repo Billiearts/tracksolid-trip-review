@@ -35,6 +35,8 @@
     {% set cur = c.stops %}
     {% set ev  = c.events %}
     {% set h   = c.history %}
+    {% set y   = c.yard %}
+    {% set m   = manual or {} %}
 
     {# ---------- Header ---------- #}
     <div class="card">
@@ -51,16 +53,12 @@
           </p>
         </div>
         {% if not view_mode %}
-          <form action="{{ url_for('export') }}" method="post" style="margin: 0;">
-            <input type="hidden" name="preview_id" value="{{ preview_id }}">
-            <input type="hidden" name="trip_index" value="{{ current_index }}">
-            <button type="submit">Export to Excel</button>
-          </form>
+          <button type="submit" form="export-form">Export to Excel</button>
         {% endif %}
       </div>
     </div>
 
-    {# ---------- Trip selector (only if multiple) ---------- #}
+    {# ---------- Trip selector ---------- #}
     {% if reports | length > 1 %}
       <div class="card" style="padding: 0.85rem 1.25rem;">
         <label for="trip-select" style="margin-bottom: 0.4rem;">
@@ -78,6 +76,111 @@
       </div>
     {% endif %}
 
+    {# ---------- Manual metadata ---------- #}
+    {% if view_mode %}
+      <div class="card">
+        <details open>
+          <summary style="cursor: pointer; font-size: 1rem; font-weight: 500; padding: 0.25rem 0;">
+            Report details
+          </summary>
+          <p class="muted" style="margin: 0.5rem 0 1rem;">
+            Editing these fields regenerates the Excel file from the stored
+            data — no Tracksolid API calls are made.
+          </p>
+
+          <form action="{{ url_for('report_edit_meta', report_id=report_id) }}" method="post">
+            <div class="field">
+              <label for="meta_driver_name">Driver's Name</label>
+              <input type="text" id="meta_driver_name" name="meta_driver_name"
+                     value="{{ m.driver_name if m.driver_name else c.driver_name }}"
+                     placeholder="Optional">
+            </div>
+            <div class="field">
+              <label for="meta_out_of_fuel">Out of fuel event</label>
+              <input type="text" id="meta_out_of_fuel" name="meta_out_of_fuel"
+                     value="{{ m.out_of_fuel or '' }}"
+                     placeholder="e.g. 0, 1, None">
+            </div>
+            <div class="field">
+              <label for="meta_accidents">Accidents</label>
+              <input type="text" id="meta_accidents" name="meta_accidents"
+                     value="{{ m.accidents or '' }}"
+                     placeholder="e.g. 0, 1, None">
+            </div>
+            <div class="field">
+              <label for="meta_tyres">Tyres damaged</label>
+              <input type="text" id="meta_tyres" name="meta_tyres"
+                     value="{{ m.tyres_damaged or '' }}"
+                     placeholder="e.g. 0, 1, None">
+            </div>
+            <div class="field">
+              <label for="meta_breakdown">Breakdown</label>
+              <input type="text" id="meta_breakdown" name="meta_breakdown"
+                     value="{{ m.breakdown or '' }}"
+                     placeholder="e.g. 0, 1, None">
+            </div>
+            <div class="field">
+              <label for="meta_signature">Driver's Signature</label>
+              <input type="text" id="meta_signature" name="meta_signature"
+                     value="{{ m.signature or '' }}"
+                     placeholder="Type name or leave blank">
+            </div>
+            <button type="submit">Save details &amp; regenerate Excel</button>
+          </form>
+        </details>
+      </div>
+    {% else %}
+      <div class="card">
+        <details>
+          <summary style="cursor: pointer; font-size: 1rem; font-weight: 500; padding: 0.25rem 0;">
+            Report details (optional)
+          </summary>
+          <p class="muted" style="margin: 0.5rem 0 1rem;">
+            These fields will be written into the Excel template when you
+            export this trip. Leave any field blank to skip it.
+          </p>
+
+          <form id="export-form"
+                action="{{ url_for('export') }}" method="post">
+            <input type="hidden" name="preview_id" value="{{ preview_id }}">
+            <input type="hidden" name="trip_index" value="{{ current_index }}">
+
+            <div class="field">
+              <label for="meta_driver_name">Driver's Name</label>
+              <input type="text" id="meta_driver_name" name="meta_driver_name"
+                     value="{{ c.driver_name }}" placeholder="Optional">
+            </div>
+            <div class="field">
+              <label for="meta_out_of_fuel">Out of fuel event</label>
+              <input type="text" id="meta_out_of_fuel" name="meta_out_of_fuel"
+                     placeholder="e.g. 0, 1, None">
+            </div>
+            <div class="field">
+              <label for="meta_accidents">Accidents</label>
+              <input type="text" id="meta_accidents" name="meta_accidents"
+                     placeholder="e.g. 0, 1, None">
+            </div>
+            <div class="field">
+              <label for="meta_tyres">Tyres damaged</label>
+              <input type="text" id="meta_tyres" name="meta_tyres"
+                     placeholder="e.g. 0, 1, None">
+            </div>
+            <div class="field">
+              <label for="meta_breakdown">Breakdown</label>
+              <input type="text" id="meta_breakdown" name="meta_breakdown"
+                     placeholder="e.g. 0, 1, None">
+            </div>
+            <div class="field">
+              <label for="meta_signature">Driver's Signature</label>
+              <input type="text" id="meta_signature" name="meta_signature"
+                     placeholder="Type name or leave blank">
+            </div>
+            <button type="submit">Export to Excel</button>
+          </form>
+        </details>
+      </div>
+    {% endif %}
+
     {# ---------- Tabs ---------- #}
     <div class="card">
       <div class="tabs" role="tablist">
@@ -86,25 +189,81 @@
           Trips ({{ c.trips | length }})
         </button>
         <button type="button" class="tab" data-tab="stops" role="tab">
-          Stops &amp; Rests ({{ cur.count }})
+          Stops &amp; Rests ({{ cur.count }} / {{ cur.rest_break_count or 0 }})
         </button>
         <button type="button" class="tab" data-tab="events" role="tab">
           Events ({{ ev.events | length }})
         </button>
       </div>
 
-      {# ----------------------------- SUMMARY ----------------------------- #}
+      {# ======================= SUMMARY ======================= #}
       <div class="tab-panel" data-panel="summary">
+
+        {# ---------- Yard Operations ---------- #}
         <div class="summary-section">
-          <h3>This Trip</h3>
+          <h3>
+            Yard Operations (Before Trip)
+            {% if y and y.visit %}
+              <span class="meta-note">
+                {{ y.visit.start.strftime('%Y-%m-%d %H:%M') }} →
+                {{ y.visit.end.strftime('%Y-%m-%d %H:%M') }}
+              </span>
+            {% endif %}
+          </h3>
+
+          {% if y and y.visit %}
+            <table class="preview-table">
+              <thead>
+                <tr>
+                  <th>Station</th>
+                  <th>Duration</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Total Yard Time</strong></td>
+                  <td><strong>{{ y.total_seconds | fmt_duration }}</strong></td>
+                </tr>
+                {% for key, label in [
+                  ('maintenance', 'Time at Maintenance'),
+                  ('waybill',     'Time for Waybill'),
+                  ('fueling',     'Time for Fueling'),
+                  ('loading',     'Time for Loading'),
+                  ('weighing',    'Time for Weighing'),
+                  ('waiting',     'Time at Waiting (Dispatch)'),
+                ] %}
+                  {% set op = y.operations[key] %}
+                  <tr>
+                    <td>{{ label }}</td>
+                    <td>{{ op.total_seconds | fmt_duration }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% else %}
+            <p class="muted">No yard visit found before this trip.</p>
+          {% endif %}
+        </div>
+
+        {# ---------- Rest and Breaks ---------- #}
+        <div class="summary-section">
+          <h3>Rest and Breaks</h3>
           <table class="preview-table">
             <thead>
-              <tr><th>Rest and breaks</th><th>Value</th></tr>
+              <tr><th>Metric</th><th>Value</th></tr>
             </thead>
             <tbody>
               <tr>
-                <td>Duration of mandatory rest break</td>
+                <td>Duration of mandatory rest break (&ge; 2 hrs)</td>
                 <td>{{ cur.rest_break_seconds | fmt_duration }}</td>
+              </tr>
+              <tr>
+                <td>Number of mandatory rest breaks</td>
+                <td>{{ cur.rest_break_count or 0 }}</td>
+              </tr>
+              <tr>
+                <td>Longest rest break</td>
+                <td>{{ cur.rest_break_longest_s | fmt_duration }}</td>
               </tr>
               <tr>
                 <td>Number of stops exceeding 5 mins</td>
@@ -116,8 +275,11 @@
               </tr>
             </tbody>
           </table>
+        </div>
 
-          <h3 style="margin-top: 1.5rem;">Driver behaviour</h3>
+        {# ---------- Driver Behaviour ---------- #}
+        <div class="summary-section">
+          <h3>Driver Behaviour</h3>
           <table class="preview-table">
             <thead>
               <tr><th>Event</th><th>Count</th><th>Max speed (kph)</th></tr>
@@ -152,6 +314,7 @@
           </table>
         </div>
 
+        {# ---------- Previous 3 months ---------- #}
         {% if h %}
           <div class="summary-section">
             <h3>
@@ -164,10 +327,49 @@
               </span>
             </h3>
 
+            {% if h.yard %}
+              <h3 style="margin-top: 1rem;">Yard Operations</h3>
+              <table class="preview-table">
+                <thead>
+                  <tr>
+                    <th>Station</th>
+                    <th>Average</th>
+                    <th>Longest</th>
+                    <th>Shortest</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><strong>Total Yard Time</strong></td>
+                    <td>{{ h.yard.avg_total_seconds | fmt_duration }}</td>
+                    <td>{{ h.yard.max_total_seconds | fmt_duration }}</td>
+                    <td>{{ h.yard.min_total_seconds | fmt_duration }}</td>
+                  </tr>
+                  {% for key, label in [
+                    ('maintenance', 'Maintenance'),
+                    ('waybill',     'Waybill'),
+                    ('fueling',     'Fueling'),
+                    ('loading',     'Loading'),
+                    ('weighing',    'Weighing'),
+                    ('waiting',     'Waiting (Dispatch)'),
+                  ] %}
+                    {% set op = h.yard.operations[key] %}
+                    <tr>
+                      <td>{{ label }}</td>
+                      <td>{{ op.avg_seconds | fmt_duration }}</td>
+                      <td>{{ op.max_seconds | fmt_duration }}</td>
+                      <td>{{ op.min_seconds | fmt_duration }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% endif %}
+
+            <h3 style="margin-top: 1.5rem;">Rest and Breaks</h3>
             <table class="preview-table">
               <thead>
                 <tr>
-                  <th>Rest and breaks</th>
+                  <th>Metric</th>
                   <th>Average per trip</th>
                   <th>Longest</th>
                   <th>Shortest</th>
@@ -195,7 +397,7 @@
               </tbody>
             </table>
 
-            <h3 style="margin-top: 1.5rem;">Driver behaviour</h3>
+            <h3 style="margin-top: 1.5rem;">Driver Behaviour</h3>
             <table class="preview-table">
               <thead>
                 <tr>
@@ -247,7 +449,7 @@
         {% endif %}
       </div>
 
-      {# ----------------------------- TRIPS ----------------------------- #}
+      {# ======================= TRIPS ======================= #}
       <div class="tab-panel" data-panel="trips" hidden>
         {% if c.trips %}
           <table class="preview-table">
@@ -270,14 +472,50 @@
         {% endif %}
       </div>
 
-      {# ----------------------------- STOPS ----------------------------- #}
+      {# ======================= STOPS & RESTS ======================= #}
       <div class="tab-panel" data-panel="stops" hidden>
-        <h3>Stops ≥ 5 min ({{ cur.intervals | length }})</h3>
+        <h3>Mandatory Rest Breaks &ge; 2 hrs ({{ cur.rest_break_count or 0 }})</h3>
+        {% if cur.rest_intervals %}
+          <div class="table-scroll">
+            <table class="preview-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Start</th>
+                  <th>End</th>
+                  <th>Duration</th>
+                  <th>Address</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for r in cur.rest_intervals %}
+                  <tr>
+                    <td>{{ loop.index }}</td>
+                    <td style="text-align: left;">{{ r.start.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td style="text-align: left;">{{ r.end.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td>{{ r.seconds | fmt_duration }}</td>
+                    <td style="text-align: left; font-size: 0.82rem; color: #666;">{{ r.address or '' }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="muted">No rest breaks ≥ 2 hrs in this trip.</p>
+        {% endif %}
+
+        <h3 style="margin-top: 1.5rem;">All Stops &ge; 5 min ({{ cur.count }})</h3>
         {% if cur.intervals %}
           <div class="table-scroll">
             <table class="preview-table">
               <thead>
-                <tr><th>#</th><th>Start</th><th>End</th><th>Duration</th><th>Address</th></tr>
+                <tr>
+                  <th>#</th>
+                  <th>Start</th>
+                  <th>End</th>
+                  <th>Duration</th>
+                  <th>Address</th>
+                </tr>
               </thead>
               <tbody>
                 {% for s in cur.intervals %}
@@ -297,7 +535,7 @@
         {% endif %}
       </div>
 
-      {# ----------------------------- EVENTS ----------------------------- #}
+      {# ======================= EVENTS ======================= #}
       <div class="tab-panel" data-panel="events" hidden>
         {% if ev.events %}
           <table class="preview-table">
@@ -346,6 +584,36 @@
             tabs.forEach(function (t) { t.classList.toggle('active', t === tab); });
             panels.forEach(function (p) { p.hidden = p.dataset.panel !== target; });
           });
+        });
+      })();
+
+      (function () {
+        const form = document.getElementById('export-form');
+        if (!form) return;
+
+        const KEY     = 'trip-meta-' + '{{ preview_id }}';
+        const tripIdx = '{{ current_index }}';
+
+        let store = {};
+        try { store = JSON.parse(localStorage.getItem(KEY) || '{}'); }
+        catch (e) { store = {}; }
+
+        const saved = store[tripIdx] || {};
+        Object.keys(saved).forEach(function (name) {
+          const input = form.querySelector('[name="' + name + '"]');
+          if (input && saved[name] && !input.value) {
+            input.value = saved[name];
+          }
+        });
+
+        form.addEventListener('submit', function () {
+          const data = {};
+          form.querySelectorAll('input[name^="meta_"]').forEach(function (input) {
+            data[input.name] = input.value;
+          });
+          store[tripIdx] = data;
+          try { localStorage.setItem(KEY, JSON.stringify(store)); }
+          catch (e) { /* ignore quota errors */ }
         });
       })();
     </script>

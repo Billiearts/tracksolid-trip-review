@@ -1,0 +1,739 @@
+C:\Users\Billie\AppData\Local\Python\pythoncore-3.14-64\python.exe: can't open file 'E:\\Documents\\Programming\\tracksolid-trip-review\\probe files\\probe_gbc_only.py': [Errno 2] No such file or directory python "probe files\probe_gbc_only.py"^C\Programming\tracksolid-trip-review> 
+PS E:\Documents\Programming\tracksolid-trip-review> python "probe files\probe_gbc.py"     
+[token] fetched new token (valid ~7200s, cached for 6900s)
+Scanning 182 device(s), last 90 days
+
+[1/182] Water Bowser GT 9120 - 26 done
+[2/182] GT 6990 - 25 CANTEEN VAN done
+[3/182] GT 8573 - 25 done
+[4/182] GT 8594 - 25 done
+[5/182] GT 8009 - 25 done
+[6/182] GT 8228 - 25 done
+[7/182] GT 8639 - 25 done
+[8/182] GT 8061 - 25 done
+[9/182] GT 8633 - 25 done
+[10/182] GT 8606 - 25 done
+[11/182] GT 8131 -25 done
+[12/182] GT 8049 - 25 done
+[13/182] GT 8318-25 done
+[14/182] HLGE SERVICE VAN GT 6181 - 25 done
+[15/182] GT 8002 - 25 done
+[16/182] GT 8581-25 done
+[17/182] GT 8616 - 25 done
+[18/182] GT 8010 - 25 done
+[19/182] GT 8629-25 done
+[20/182] GT 8096 - 25 done
+[21/182] GT 8630 - 25 done
+[22/182] GT 8587 - 25 done
+[23/182] GT 6938 - 25 done
+[24/182] GT 8025-25 done
+[25/182] GT 6919 - 25 done
+[26/182] GN 2924 - 24 done
+[27/182] GN 2906 - 24 done
+[28/182] GT 7652 - 25 done
+[29/182] GT 6873 - 25 done
+[30/182] GT 7363 - 25 done
+[31/182] GT 7607 - 25 done
+[32/182] GT 7342 - 25 done
+[33/182] GT 7592 - 25 done
+[34/182]  GN 2953 - 24 done
+[35/182] GN 2930 - 24 done
+[36/182] GR 7828-19 done
+[37/182] GT 6849 - 25 done
+[38/182] GE 6772 - 25 CARGO done
+[39/182]  GT 3241 - 19 done
+[40/182] GN 2938 - 24 done
+[41/182] GN 2908 - 24 done
+[42/182] GT 6949 - 25 done
+[43/182]  GN 2925 - 24 done
+[44/182] GT 6978 - 25 done
+[45/182] GT 6880 - 25 done
+[46/182] GT 7594 - 25 done
+[47/182] GT 7521 - 25 done
+[48/182] GT 8300 - 23 done
+[49/182] GT 8580 - 23 done
+[50/182] CRANE GE 6701 - 25 done
+[51/182] GN 4998 - 22 done
+[52/182] GT 8079 - 25 done
+[53/182] GT 7570 - 25 done
+[54/182] GE 7406 - 18 done
+[55/182] Water Bowser GT 6494 - 24 done
+[56/182] GT 8017 - 25 done
+[57/182] GR 7830 - 19 done
+[58/182] GT 8064 - 25 done
+[59/182] GT 7641 - 25 done
+[60/182] GN 4945 - 22 done
+[61/182] GT 8570 - 25 done
+[62/182] GT 6942 - 25 done
+[63/182] GT 7620 - 25 done
+[64/182] GT 8075 - 25 done
+[65/182] GT 7604 - 25 done
+[66/182] GT 8613 - 25 done
+[67/182] GN 2912 - 24 done
+[68/182] GT 8021 - 25 done
+[69/182] GT 8220 - 25 done
+[70/182] GT 8588 - 25 done
+[71/182] GT 7046 - 25 done
+[72/182] GT 8622 - 25 done
+[73/182] GT 8174 - 25 done
+[74/182] GN 2937 - 24 done
+[75/182] GT 8042 - 25 done
+[76/182] GT 5643 - 24 done
+[77/182] GT 8340 - 25 done
+[78/182] GT 8990 - 23 done
+[79/182] GT 8614 - 25 done
+[80/182] GN 2915 - 24 done
+[81/182] GT 5530-24 done
+[82/182] GT 8551 - 25 done
+[83/182] GT 8293 - 25 done
+[84/182] GT 8163 - 25 done
+[85/182] GT 8598 - 25 done
+[86/182] GT 8611-25 done
+[87/182] GN 2946 - 24 done
+[88/182] GT 8304 - 25 done
+[89/182] GT 8344 - 25 done
+[90/182] GT 8553 - 25 done
+[91/182] GT 8145 - 25 done
+[92/182] GT 7057 - 25 done
+[93/182] GT 8628 - 25 done
+[94/182] GN 2913 - 24 done
+[95/182] GT 8091 - 25 done
+[96/182] GT 6821 - 25 done
+[97/182] GT 8103 -25 done
+[98/182] GT 8584 - 25 done
+[99/182] TOW TRUCK GN 2067 - 25 done
+[100/182] GT 8310 - 25 done
+[101/182] GT 6801 - 25 done
+[102/182] GT 8154 - 25 done
+[103/182] GN 2923 - 24 done
+[104/182] GT 6882 - 24 done
+[105/182] GN 2964 - 24 BOGOSO SERVICE VAN done
+[106/182] GT 5986 - 24 done
+[107/182] GN 4933 - 22 done
+[108/182] GT 8925 -23 done
+[109/182] GT 8985 - 23 done
+[110/182] GT 5048 - 24 done
+[111/182] GT 6915 - 25 done
+[112/182] GT 5804- 24 done
+[113/182] GT 6829 - 24 done
+[114/182] GN 2905 - 24 done
+[115/182] GN 2917 - 24 done
+[116/182] GT 6155 - 24 done
+[117/182] GN 4938 - 22 done
+[118/182] GN 2920 - 24 done
+[119/182] GT 5288-24 done
+[120/182] GN 2955 - 24 done
+[121/182] GN 2941 - 24 done
+[122/182] GT 5478 - 24 done
+[123/182] GT 8575 - 23 done
+[124/182] GT 6740 - 24 done
+[125/182] GR 7819 - 19 done
+[126/182] GT 5677 - 24 done
+[127/182] GT 9821 - 19 done
+[128/182] GN 1685 - 23 done
+[129/182] GT 8986 - 23 done
+[130/182] GT 8921 - 23 done
+[131/182] GN 2916 - 24 done
+[132/182] GN 2921 - 24 done
+[133/182] GN 2933 - 24 done
+[134/182] GN 2936 - 24 done
+[135/182] GT 5962 - 24 done
+[136/182] GN 2949 - 24 done
+[137/182] GN 4997 - 22 done
+[138/182] GT 6254 - 24 done
+[139/182] GT 3287-26 ( TDI SERVICE VAN ) done
+[140/182] GT 6425 - 24 done
+[141/182] GT 8577 - 23 done
+[142/182] GT 5615 - 24 done
+[143/182] GR 7832 - 19 done
+[144/182] GN 1679 - 23 done
+[145/182] GT 5210 - 24 done
+[146/182] GT 5880 - 24 done
+[147/182] GN 1686 - 23 done
+[148/182] GN 1678 - 23 done
+[149/182] GC 2083- 12 BOWSER done
+[150/182] GT 8586 - 23 done
+[151/182] GT 5484 - 24 done
+[152/182] GT 8298-23 done
+[153/182] GN 4934 - 22 done
+[154/182] GT 8987 - 23 done
+[155/182] GN 4965 - 22 done
+[156/182] GT 6046 - 24 done
+[157/182] GN 1675 - 23 done
+[158/182] GN 1682 - 23 done
+[159/182] GT 8923-23 done
+[160/182] GT 8588 - 23 done
+[161/182] GN 1681 - 23 done
+[162/182] GT 8583 - 23 done
+[163/182] GN 1677 - 23 done
+[164/182] GN 4973-22 done
+[165/182] GN 32 - 22 done
+[166/182] GT 8578 - 23 done
+[167/182] GN 4952-22 done
+[168/182] GN 4978-22 done
+[169/182] GN 4958-22 done
+[170/182] GT 3246-26 ( MINING SERVICE VAN ) done
+[171/182] GN 25 - 22 done
+[172/182]  GT 8579 - 23 done
+[173/182] GT 8146-25 done
+[174/182] GT 8922 - 23 done
+[175/182] GT 3224 - 19 done
+[176/182] GN 4937-22 done
+[177/182] GN 4943-22 done
+  [ERR] GN 4936-22 2026-08-13: ('Connection aborted.', ConnectionResetError(10054, 'An existing connection was forcibly closed by the remote host', None,10054, None))
+  [ERR] GN 4936-22 2026-08-20: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by ConnectTimeoutError(<HTTPSConnection(host='eu-open.tracksolidpro.com', port=443)at 0x1e0525e9f90>, 'Connection to eu-open.tracksolidpro.com timed out. (connect timeout=30)'))
+  [ERR] GN 4936-22 2026-08-27: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GN 4936-22 2026-09-03: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GN 4936-22 2026-09-10: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GN 4936-22 2026-09-17: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GN 4936-22 2026-09-24: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GN 4936-22 2026-10-01: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GN 4936-22 2026-10-08: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GN 4936-22 2026-10-15: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+[178/182] GN 4936-22 done
+  [ERR]  GT 5124 - 24 2026-07-23: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfofailed)"))
+  [ERR]  GT 5124 - 24 2026-07-30: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfofailed)"))
+  [ERR]  GT 5124 - 24 2026-08-06: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfofailed)"))
+  [ERR]  GT 5124 - 24 2026-08-13: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfofailed)"))
+  [ERR]  GT 5124 - 24 2026-08-20: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfofailed)"))
+  [ERR]  GT 5124 - 24 2026-08-27: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfofailed)"))
+  [ERR]  GT 5124 - 24 2026-09-03: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfofailed)"))
+  [ERR]  GT 5124 - 24 2026-09-10: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfofailed)"))
+  [ERR]  GT 5124 - 24 2026-09-17: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfofailed)"))
+  [ERR]  GT 5124 - 24 2026-09-24: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfofailed)"))
+  [ERR]  GT 5124 - 24 2026-10-01: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfofailed)"))
+  [ERR]  GT 5124 - 24 2026-10-08: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfofailed)"))
+  [ERR]  GT 5124 - 24 2026-10-15: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfofailed)"))
+[179/182]  GT 5124 - 24 done
+  [ERR] GT 5394 - 24 2026-07-23: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 5394 - 24 2026-07-30: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 5394 - 24 2026-08-06: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 5394 - 24 2026-08-13: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 5394 - 24 2026-08-20: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 5394 - 24 2026-08-27: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 5394 - 24 2026-09-03: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 5394 - 24 2026-09-10: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 5394 - 24 2026-09-17: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 5394 - 24 2026-09-24: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 5394 - 24 2026-10-01: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 5394 - 24 2026-10-08: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 5394 - 24 2026-10-15: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+[180/182] GT 5394 - 24 done
+  [ERR] GT 3209 - 19 2026-07-23: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 3209 - 19 2026-07-30: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 3209 - 19 2026-08-06: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 3209 - 19 2026-08-13: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 3209 - 19 2026-08-20: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 3209 - 19 2026-08-27: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 3209 - 19 2026-09-03: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 3209 - 19 2026-09-10: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 3209 - 19 2026-09-17: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 3209 - 19 2026-09-24: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 3209 - 19 2026-10-01: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 3209 - 19 2026-10-08: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 3209 - 19 2026-10-15: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+[181/182] GT 3209 - 19 done
+  [ERR] GT 8626-25 2026-07-23: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 8626-25 2026-07-30: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 8626-25 2026-08-06: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 8626-25 2026-08-13: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 8626-25 2026-08-20: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 8626-25 2026-08-27: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 8626-25 2026-09-03: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 8626-25 2026-09-10: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 8626-25 2026-09-17: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 8626-25 2026-09-24: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 8626-25 2026-10-01: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 8626-25 2026-10-08: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+  [ERR] GT 8626-25 2026-10-15: HTTPSConnectionPool(host='eu-open.tracksolidpro.com', port=443): Max retries exceeded with url: /route/rest (Caused by NameResolutionError("HTTPSConnection(host='eu-open.tracksolidpro.com', port=443): Failed to resolve 'eu-open.tracksolidpro.com' ([Errno 11001] getaddrinfo failed)"))
+[182/182] GT 8626-25 done
+
+======================================================================
+Distinct GBC/EXIT/ENTER/YARD fences:
+======================================================================
+
+  name:     'Enter geo-fence(GBC TAKORADI)'
+  geoid:    03fe5d6b7f4649ed9f3fce280abd813e
+  events:   3258  on 51 device(s)
+  alertIds: {'in': 3258}
+
+  name:     'Exit geo-fence(GBC TAKORADI)'
+  geoid:    03fe5d6b7f4649ed9f3fce280abd813e
+  events:   3268  on 51 device(s)
+  alertIds: {'out': 3268}
+
+  name:     'Enter geo-fence(WEIGHING TIME)'
+  geoid:    0af0240624d648e98c6d4d2b283cc738
+  events:   1900  on 150 device(s)
+  alertIds: {'in': 1900}
+
+  name:     'Exit geo-fence(WEIGHING TIME)'
+  geoid:    0af0240624d648e98c6d4d2b283cc738
+  events:   1029  on 146 device(s)
+  alertIds: {'out': 1029}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    0af0240624d648e98c6d4d2b283cc738
+  events:   507  on 169 device(s)
+  alertIds: {'stayTimeIn': 507}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    0af0240624d648e98c6d4d2b283cc738
+  events:   818  on 140 device(s)
+  alertIds: {'stayTimeOut': 818}
+
+  name:     'Enter geo-fence(WAYBILL TIME)'
+  geoid:    1a1843ca492b40afacd816f4be83bb52
+  events:   551  on 147 device(s)
+  alertIds: {'in': 551}
+
+  name:     'Exit geo-fence(WAYBILL TIME)'
+  geoid:    1a1843ca492b40afacd816f4be83bb52
+  events:   472  on 147 device(s)
+  alertIds: {'out': 472}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    1a1843ca492b40afacd816f4be83bb52
+  events:   259  on 161 device(s)
+  alertIds: {'stayTimeIn': 259}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    1a1843ca492b40afacd816f4be83bb52
+  events:   81  on 58 device(s)
+  alertIds: {'stayTimeOut': 81}
+
+  name:     'Enter geo-fence(FUELING TIME)'
+  geoid:    289bc06f1ce14986a997ab67879009c4
+  events:   1005  on 154 device(s)
+  alertIds: {'in': 1005}
+
+  name:     'Exit geo-fence(FUELING TIME)'
+  geoid:    289bc06f1ce14986a997ab67879009c4
+  events:   1002  on 154 device(s)
+  alertIds: {'out': 1002}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    289bc06f1ce14986a997ab67879009c4
+  events:   965  on 171 device(s)
+  alertIds: {'stayTimeIn': 965}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    289bc06f1ce14986a997ab67879009c4
+  events:   1  on 1 device(s)
+  alertIds: {'stayTimeOut': 1}
+
+  name:     'Enter geo-fence(FUEL AND WAYBILL)'
+  geoid:    2d5fa44addce43edb77bccf771c11532
+  events:   10251  on 157 device(s)
+  alertIds: {'in': 10251}
+
+  name:     'Exit geo-fence(FUEL AND WAYBILL)'
+  geoid:    2d5fa44addce43edb77bccf771c11532
+  events:   10229  on 157 device(s)
+  alertIds: {'out': 10229}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    2d5fa44addce43edb77bccf771c11532
+  events:   1679  on 155 device(s)
+  alertIds: {'stayTimeIn': 1679}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    2d5fa44addce43edb77bccf771c11532
+  events:   444  on 135 device(s)
+  alertIds: {'stayTimeOut': 444}
+
+  name:     'Exit geo-fence(TAKORADI ENTRY)'
+  geoid:    2e9cc908c42e4c808b6245e9eed97760
+  events:   9512  on 148 device(s)
+  alertIds: {'out': 9512}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    2e9cc908c42e4c808b6245e9eed97760
+  events:   6091  on 158 device(s)
+  alertIds: {'stayTimeIn': 6091}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    2e9cc908c42e4c808b6245e9eed97760
+  events:   50  on 17 device(s)
+  alertIds: {'stayTimeOut': 50}
+
+  name:     'Enter geo-fence(GBC AWASO)'
+  geoid:    399c56a446b744dba1fee699e2085d59
+  events:   3237  on 55 device(s)
+  alertIds: {'in': 3237}
+
+  name:     'Exit geo-fence(GBC AWASO)'
+  geoid:    399c56a446b744dba1fee699e2085d59
+  events:   3235  on 55 device(s)
+  alertIds: {'out': 3235}
+
+  name:     'Enter geo-fence(MAINTENANCE TIME)'
+  geoid:    436b0137507246a39e9a238757243c18
+  events:   1040  on 153 device(s)
+  alertIds: {'in': 1040}
+
+  name:     'Exit geo-fence(MAINTENANCE TIME)'
+  geoid:    436b0137507246a39e9a238757243c18
+  events:   1019  on 151 device(s)
+  alertIds: {'out': 1019}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    436b0137507246a39e9a238757243c18
+  events:   766  on 171 device(s)
+  alertIds: {'stayTimeIn': 766}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    436b0137507246a39e9a238757243c18
+  events:   15  on 15 device(s)
+  alertIds: {'stayTimeOut': 15}
+
+  name:     'Enter geo-fence(WAITING TIME)'
+  geoid:    442f6190169049cd8b40f648b911a6ab
+  events:   2982  on 152 device(s)
+  alertIds: {'in': 2982}
+
+  name:     'Exit geo-fence(WAITING TIME)'
+  geoid:    442f6190169049cd8b40f648b911a6ab
+  events:   2756  on 152 device(s)
+  alertIds: {'out': 2756}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    442f6190169049cd8b40f648b911a6ab
+  events:   1034  on 171 device(s)
+  alertIds: {'stayTimeIn': 1034}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    442f6190169049cd8b40f648b911a6ab
+  events:   411  on 132 device(s)
+  alertIds: {'stayTimeOut': 411}
+
+  name:     'Enter geo-fence()'
+  geoid:    5069dc535945444e8ef60d681c46591c
+  events:   15112  on 134 device(s)
+  alertIds: {'in': 15112}
+
+  name:     'Exit geo-fence()'
+  geoid:    5069dc535945444e8ef60d681c46591c
+  events:   15138  on 134 device(s)
+  alertIds: {'out': 15138}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    5069dc535945444e8ef60d681c46591c
+  events:   739  on 129 device(s)
+  alertIds: {'stayTimeIn': 739}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    5069dc535945444e8ef60d681c46591c
+  events:   68  on 40 device(s)
+  alertIds: {'stayTimeOut': 68}
+
+  name:     'Enter geo-fence()'
+  geoid:    5f5169065a3c46c6a467a4e2b435e004
+  events:   9142  on 138 device(s)
+  alertIds: {'in': 9142}
+
+  name:     'Exit geo-fence()'
+  geoid:    5f5169065a3c46c6a467a4e2b435e004
+  events:   14872  on 138 device(s)
+  alertIds: {'out': 14872}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    5f5169065a3c46c6a467a4e2b435e004
+  events:   1010  on 132 device(s)
+  alertIds: {'stayTimeIn': 1010}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    5f5169065a3c46c6a467a4e2b435e004
+  events:   396  on 123 device(s)
+  alertIds: {'stayTimeOut': 396}
+
+  name:     'Enter geo-fence(GBC TRIP TIME)'
+  geoid:    6c5a0541387f4fa0af8cd7d334efa857
+  events:   3355  on 152 device(s)
+  alertIds: {'in': 3355}
+
+  name:     'Exit geo-fence(GBC TRIP TIME)'
+  geoid:    6c5a0541387f4fa0af8cd7d334efa857
+  events:   3366  on 152 device(s)
+  alertIds: {'out': 3366}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    6c5a0541387f4fa0af8cd7d334efa857
+  events:   130  on 79 device(s)
+  alertIds: {'stayTimeIn': 130}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    6c5a0541387f4fa0af8cd7d334efa857
+  events:   533  on 142 device(s)
+  alertIds: {'stayTimeOut': 533}
+
+  name:     'Enter geo-fence(HAULAGE TRUCKS EXIT)'
+  geoid:    6d7102fd81924c4ebd708c3de4927334
+  events:   5729  on 160 device(s)
+  alertIds: {'in': 5729}
+
+  name:     'Exit geo-fence(HAULAGE TRUCKS EXIT)'
+  geoid:    6d7102fd81924c4ebd708c3de4927334
+  events:   5727  on 160 device(s)
+  alertIds: {'out': 5727}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    6d7102fd81924c4ebd708c3de4927334
+  events:   1657  on 170 device(s)
+  alertIds: {'stayTimeIn': 1657}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    6d7102fd81924c4ebd708c3de4927334
+  events:   332  on 128 device(s)
+  alertIds: {'stayTimeOut': 332}
+
+  name:     'Enter geo-fence()'
+  geoid:    78d2e75a12b1402d970aaeb4d67bb453
+  events:   14994  on 134 device(s)
+  alertIds: {'in': 14994}
+
+  name:     'Exit geo-fence()'
+  geoid:    78d2e75a12b1402d970aaeb4d67bb453
+  events:   15014  on 134 device(s)
+  alertIds: {'out': 15014}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    78d2e75a12b1402d970aaeb4d67bb453
+  events:   1203  on 132 device(s)
+  alertIds: {'stayTimeIn': 1203}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    78d2e75a12b1402d970aaeb4d67bb453
+  events:   49  on 31 device(s)
+  alertIds: {'stayTimeOut': 49}
+
+  name:     'Enter geo-fence(TRIP TIME GBC)'
+  geoid:    791a3bb604ef41cfa302e5dc8f2c356c
+  events:   4385  on 160 device(s)
+  alertIds: {'in': 4385}
+
+  name:     'Exit geo-fence(TRIP TIME GBC)'
+  geoid:    791a3bb604ef41cfa302e5dc8f2c356c
+  events:   4380  on 160 device(s)
+  alertIds: {'out': 4380}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    791a3bb604ef41cfa302e5dc8f2c356c
+  events:   659  on 168 device(s)
+  alertIds: {'stayTimeIn': 659}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    791a3bb604ef41cfa302e5dc8f2c356c
+  events:   938  on 149 device(s)
+  alertIds: {'stayTimeOut': 938}
+
+  name:     'Enter geo-fence()'
+  geoid:    88337fe875d54438a946f70d9f646a37
+  events:   363  on 145 device(s)
+  alertIds: {'in': 363}
+
+  name:     'Exit geo-fence()'
+  geoid:    88337fe875d54438a946f70d9f646a37
+  events:   372  on 143 device(s)
+  alertIds: {'out': 372}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    88337fe875d54438a946f70d9f646a37
+  events:   122  on 99 device(s)
+  alertIds: {'stayTimeIn': 122}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    88337fe875d54438a946f70d9f646a37
+  events:   13  on 11 device(s)
+  alertIds: {'stayTimeOut': 13}
+
+  name:     'Enter geo-fence(LOADED AND PARKED)'
+  geoid:    8a8aa3c24cb34f009668c9d04bcac144
+  events:   30023  on 164 device(s)
+  alertIds: {'in': 30023}
+
+  name:     'Exit geo-fence(LOADED AND PARKED)'
+  geoid:    8a8aa3c24cb34f009668c9d04bcac144
+  events:   27965  on 164 device(s)
+  alertIds: {'out': 27965}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    8a8aa3c24cb34f009668c9d04bcac144
+  events:   2611  on 169 device(s)
+  alertIds: {'stayTimeIn': 2611}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    8a8aa3c24cb34f009668c9d04bcac144
+  events:   2299  on 160 device(s)
+  alertIds: {'stayTimeOut': 2299}
+
+  name:     'Exit geo-fence(GBC EXITED)'
+  geoid:    8dbfef0c6d214015afdaf2b868c32c2e
+  events:   10113  on 164 device(s)
+  alertIds: {'out': 10113}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    8dbfef0c6d214015afdaf2b868c32c2e
+  events:   2422  on 164 device(s)
+  alertIds: {'stayTimeIn': 2422}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    8dbfef0c6d214015afdaf2b868c32c2e
+  events:   742  on 163 device(s)
+  alertIds: {'stayTimeOut': 742}
+
+  name:     'Enter geo-fence()'
+  geoid:    9a0b1acb9f17465c83937344d64cbb03
+  events:   29499  on 134 device(s)
+  alertIds: {'in': 29499}
+
+  name:     'Exit geo-fence()'
+  geoid:    9a0b1acb9f17465c83937344d64cbb03
+  events:   26979  on 134 device(s)
+  alertIds: {'out': 26979}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    9a0b1acb9f17465c83937344d64cbb03
+  events:   2259  on 133 device(s)
+  alertIds: {'stayTimeIn': 2259}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    9a0b1acb9f17465c83937344d64cbb03
+  events:   220  on 81 device(s)
+  alertIds: {'stayTimeOut': 220}
+
+  name:     'Enter geo-fence()'
+  geoid:    af486b6ded1d489d922e7ba2084431d4
+  events:   15101  on 134 device(s)
+  alertIds: {'in': 15101}
+
+  name:     'Exit geo-fence()'
+  geoid:    af486b6ded1d489d922e7ba2084431d4
+  events:   15084  on 134 device(s)
+  alertIds: {'out': 15084}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    af486b6ded1d489d922e7ba2084431d4
+  events:   951  on 134 device(s)
+  alertIds: {'stayTimeIn': 951}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    af486b6ded1d489d922e7ba2084431d4
+  events:   73  on 42 device(s)
+  alertIds: {'stayTimeOut': 73}
+
+  name:     'Enter geo-fence()'
+  geoid:    cbfb61d2aa25499a8f08d0dbc9590d77
+  events:   22933  on 133 device(s)
+  alertIds: {'in': 22933}
+
+  name:     'Exit geo-fence()'
+  geoid:    cbfb61d2aa25499a8f08d0dbc9590d77
+  events:   22947  on 133 device(s)
+  alertIds: {'out': 22947}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    cbfb61d2aa25499a8f08d0dbc9590d77
+  events:   3084  on 132 device(s)
+  alertIds: {'stayTimeIn': 3084}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    cbfb61d2aa25499a8f08d0dbc9590d77
+  events:   49  on 25 device(s)
+  alertIds: {'stayTimeOut': 49}
+
+  name:     'Enter geo-fence(GBC AWASO 2)'
+  geoid:    ceb0b0504b3c4b678fb6e95d46272bcc
+  events:   3603  on 54 device(s)
+  alertIds: {'in': 3603}
+
+  name:     'Exit geo-fence(GBC AWASO 2)'
+  geoid:    ceb0b0504b3c4b678fb6e95d46272bcc
+  events:   3756  on 54 device(s)
+  alertIds: {'out': 3756}
+
+  name:     'Enter geo-fence()'
+  geoid:    d05076f7c77d4de6bc45fc2c3adeaeff
+  events:   15053  on 134 device(s)
+  alertIds: {'in': 15053}
+
+  name:     'Exit geo-fence()'
+  geoid:    d05076f7c77d4de6bc45fc2c3adeaeff
+  events:   15134  on 134 device(s)
+  alertIds: {'out': 15134}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    d05076f7c77d4de6bc45fc2c3adeaeff
+  events:   1204  on 130 device(s)
+  alertIds: {'stayTimeIn': 1204}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    d05076f7c77d4de6bc45fc2c3adeaeff
+  events:   119  on 53 device(s)
+  alertIds: {'stayTimeOut': 119}
+
+  name:     'Enter geo-fence(GBC EXIT)'
+  geoid:    ddbdb7f901f64c1eb4633db95a9c0ab7
+  events:   3530  on 152 device(s)
+  alertIds: {'in': 3530}
+
+  name:     'Exit geo-fence(GBC EXIT)'
+  geoid:    ddbdb7f901f64c1eb4633db95a9c0ab7
+  events:   3519  on 152 device(s)
+  alertIds: {'out': 3519}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    ddbdb7f901f64c1eb4633db95a9c0ab7
+  events:   608  on 148 device(s)
+  alertIds: {'stayTimeIn': 608}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    ddbdb7f901f64c1eb4633db95a9c0ab7
+  events:   120  on 76 device(s)
+  alertIds: {'stayTimeOut': 120}
+
+  name:     'Enter geo-fence()'
+  geoid:    e76b3f6be1cd4f9081c488383592fbd9
+  events:   15111  on 134 device(s)
+  alertIds: {'in': 15111}
+
+  name:     'Exit geo-fence()'
+  geoid:    e76b3f6be1cd4f9081c488383592fbd9
+  events:   15061  on 134 device(s)
+  alertIds: {'out': 15061}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    e76b3f6be1cd4f9081c488383592fbd9
+  events:   1803  on 134 device(s)
+  alertIds: {'stayTimeIn': 1803}
+
+  name:     'Long time not exit the Geo-fence'
+  geoid:    e76b3f6be1cd4f9081c488383592fbd9
+  events:   42  on 30 device(s)
+  alertIds: {'stayTimeOut': 42}
+
+  name:     'Enter geo-fence(GBC TAKORADI 2)'
+  geoid:    f8a099e44cac4d77aacb2d78c8658453
+  events:   3389  on 53 device(s)
+  alertIds: {'in': 3389}
+
+  name:     'Exit geo-fence(GBC TAKORADI 2)'
+  geoid:    f8a099e44cac4d77aacb2d78c8658453
+  events:   3399  on 53 device(s)
+  alertIds: {'out': 3399}
+
+  name:     'Enter geo-fence(LOADING TIME)'
+  geoid:    fcfce074bcca4074adcb481a2c6ea983
+  events:   1118  on 153 device(s)
+  alertIds: {'in': 1118}
+
+  name:     'Exit geo-fence(LOADING TIME)'
+  geoid:    fcfce074bcca4074adcb481a2c6ea983
+  events:   1120  on 153 device(s)
+  alertIds: {'out': 1120}
+
+  name:     'Long time not enter the Geo-fence'
+  geoid:    fcfce074bcca4074adcb481a2c6ea983
+  events:   867  on 170 device(s)
+  alertIds: {'stayTimeIn': 867}
+PS E:\Documents\Programming\tracksolid-trip-review> 

@@ -42,7 +42,6 @@ app.secret_key = FLASK_SECRET
 
 executor = ThreadPoolExecutor(max_workers=2)
 
-# Hard cap on how many trips can be previewed in one go.
 MAX_SELECTED_TRIPS = 5
 
 
@@ -104,6 +103,18 @@ def fmt_duration(seconds):
     return f"{h}:{m:02d}:{s:02d}"
 
 
+def _collect_manual_from_form():
+    raw = {
+        "driver_name":   (request.form.get("meta_driver_name")   or "").strip(),
+        "out_of_fuel":   (request.form.get("meta_out_of_fuel")   or "").strip(),
+        "accidents":     (request.form.get("meta_accidents")     or "").strip(),
+        "tyres_damaged": (request.form.get("meta_tyres")         or "").strip(),
+        "breakdown":     (request.form.get("meta_breakdown")     or "").strip(),
+        "signature":     (request.form.get("meta_signature")     or "").strip(),
+    }
+    return {k: v for k, v in raw.items() if v}
+
+
 # --- background workers ---------------------------------------------------
 
 def _run_preview(preview_id, imei, truck_id, driver_name, trips, include_history):
@@ -132,10 +143,10 @@ def _run_preview(preview_id, imei, truck_id, driver_name, trips, include_history
         mark_failed(preview_id, f"{type(exc).__name__}: {exc}")
 
 
-def _run_export(job_id, computed, out_path):
+def _run_export(job_id, computed, out_path, manual):
     jobs.mark_running(job_id)
     try:
-        write_excel(computed, TEMPLATE_PATH, out_path)
+        write_excel(computed, TEMPLATE_PATH, out_path, manual=manual)
         size = out_path.stat().st_size if out_path.exists() else None
         jobs.mark_done(job_id, filesize_bytes=size)
     except Exception as exc:
@@ -378,6 +389,8 @@ def preview_show(preview_id):
         reports=reports,
         current_index=current_index,
         computed=reports[current_index],
+        manual={},
+        report_id=None,
     )
 
 
@@ -415,8 +428,10 @@ def export():
     reports = state.get("reports") or []
     if trip_index < 0 or trip_index >= len(reports):
         flash("Invalid trip selection.", "error")
-        return redirect(url_for("index"))
+        return redirect(url_for("preview_show", preview_id=preview_id))
     computed = reports[trip_index]
+
+    manual = _collect_manual_from_form()
 
     safe_name = "".join(ch if ch.isalnum() or ch in " -" else "_"
                         for ch in computed["truck_id"]).strip()
@@ -435,14 +450,23 @@ def export():
             trip_end=computed["trip_end"],
             created_by=session.get("user_id"),
             created_by_email=session.get("email"),
+            manual=manual,
         )
     except Exception as exc:
         log.exception("could not create report row")
         flash(f"Could not queue export: {exc}", "error")
-        return redirect(url_for("reports"))
+        return redirect(url_for("preview_show", preview_id=preview_id,
+                                trip=trip_index))
 
-    executor.submit(_run_export, job_id, computed, out_path)
-    flash(f"Export queued for {computed['truck_id']}.", "success")
+    executor.submit(_run_export, job_id, computed, out_path, manual)
+    flash(
+        f"Export queued for {computed['truck_id']} "
+        f"(trip {trip_index + 1} of {len(reports)}). "
+        f"Download from the Reports page.",
+        "success",
+    )
+    # Redirect to the Reports page so the user sees job progress and can
+    # download when it finishes — matches single-trip and multi-trip flows.
     return redirect(url_for("reports"))
 
 
@@ -485,6 +509,7 @@ def report_view(report_id):
         loading=False,
         view_mode=True,
         preview_id=report_id,
+        report_id=report_id,
         state={
             "truck": row.get("truck_id"),
             "imei":  row.get("imei"),
@@ -492,7 +517,57 @@ def report_view(report_id):
         reports=[computed],
         current_index=0,
         computed=computed,
+        manual=row.get("manual_json") or {},
     )
+
+
+@app.route("/reports/<report_id>/edit-meta", methods=["POST"])
+@login_required
+def report_edit_meta(report_id):
+    row = reports_repo.get_full(report_id)
+    if not row:
+        flash("Report not found.", "error")
+        return redirect(url_for("reports"))
+
+    owner = row.get("created_by")
+    if (owner
+            and owner != session.get("user_id")
+            and session.get("role") != "admin"):
+        abort(403)
+
+    computed = row.get("computed_json")
+    if not computed:
+        flash("This report has no stored detail — regenerate it first.",
+              "error")
+        return redirect(url_for("reports"))
+
+    computed = _from_jsonable(computed)
+    manual = _collect_manual_from_form()
+
+    filename = row.get("filename")
+    if not filename:
+        flash("Report has no filename — cannot regenerate.", "error")
+        return redirect(url_for("reports"))
+
+    out_path = OUTPUT_DIR / filename
+
+    try:
+        write_excel(computed, TEMPLATE_PATH, out_path, manual=manual)
+        size = out_path.stat().st_size if out_path.exists() else None
+        reports_repo.update_manual(report_id, manual, filesize_bytes=size)
+        try:
+            storage.upload(out_path)
+        except Exception:
+            log.exception("storage mirror failed for %s", out_path.name)
+        flash("Report details updated and Excel regenerated.", "success")
+    except Exception as exc:
+        log.exception("edit-meta failed")
+        flash(f"Could not update report: {exc}", "error")
+        return redirect(url_for("report_view", report_id=report_id))
+
+    # Redirect to the Reports listing so the user can download the
+    # freshly regenerated file — matches the export flow above.
+    return redirect(url_for("reports"))
 
 
 @app.route("/api/jobs")
