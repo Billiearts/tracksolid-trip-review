@@ -17,7 +17,10 @@ from flask import (
 from config import TEMPLATE_PATH, OUTPUT_DIR, FLASK_SECRET, FLASK_DEBUG
 from decorators import login_required
 from jimi import RateLimitExceeded
-from report import compute_report, write_excel, utc_str, find_trips
+from report import (
+    compute_report, write_excel, write_bulk_excel,
+    utc_str, find_trips,
+)
 from services.devices import find_device, get_devices
 from services import jobs
 from services import reports_repo
@@ -42,7 +45,8 @@ app.secret_key = FLASK_SECRET
 
 executor = ThreadPoolExecutor(max_workers=2)
 
-MAX_SELECTED_TRIPS = 5
+MAX_TRUCKS          = 200
+MAX_TRIPS_PER_TRUCK = 5
 
 
 # --- blueprints -----------------------------------------------------------
@@ -91,6 +95,10 @@ def _from_jsonable(obj):
     return obj
 
 
+def _is_bulk_payload(stored) -> bool:
+    return isinstance(stored, list)
+
+
 @app.template_filter("fmt_duration")
 def fmt_duration(seconds):
     try:
@@ -104,20 +112,153 @@ def fmt_duration(seconds):
 
 
 def _collect_manual_from_form():
+    """Collect the *edit* form fields.
+
+    Signature semantics:
+      - Empty ``meta_signature`` means "keep whatever is already stored".
+        We therefore omit both ``signature`` and ``signature_kind`` in that
+        case, and the caller merges the old values back in.
+      - A non-empty ``meta_signature`` always carries a ``signature_kind``
+        (``image`` for the canvas, or omitted for a legacy text value).
+        We keep ``signature_kind`` in that case even if it looks odd, so the
+        Excel writer can pick the correct branch.
+    """
+    signature = (request.form.get("meta_signature") or "").strip()
     raw = {
         "driver_name":   (request.form.get("meta_driver_name")   or "").strip(),
         "out_of_fuel":   (request.form.get("meta_out_of_fuel")   or "").strip(),
         "accidents":     (request.form.get("meta_accidents")     or "").strip(),
         "tyres_damaged": (request.form.get("meta_tyres")         or "").strip(),
         "breakdown":     (request.form.get("meta_breakdown")     or "").strip(),
-        "signature":     (request.form.get("meta_signature")     or "").strip(),
     }
-    return {k: v for k, v in raw.items() if v}
+    out = {k: v for k, v in raw.items() if v}
+    if signature:
+        out["signature"] = signature
+        out["signature_kind"] = "image"
+    return out
+
+
+def _normalise_submitted_manual(raw: dict) -> dict:
+    """Convert raw preview-form fields (meta_*) into the manual dict shape
+    that ``fill_sheet`` / ``write_bulk_excel`` expect.
+
+    The preview page stores form fields in ``localStorage`` under their raw
+    ``meta_*`` names, then injects them into the bulk-export POST. Without
+    this transformation the server would receive ``meta_driver_name`` while
+    ``fill_sheet`` looks for ``driver_name`` — so nothing would be written
+    and the report would appear to have no manual data.
+    """
+    if not isinstance(raw, dict):
+        return {}
+
+    out: dict = {}
+    mapping = {
+        "meta_driver_name": "driver_name",
+        "meta_out_of_fuel": "out_of_fuel",
+        "meta_accidents":   "accidents",
+        "meta_tyres":       "tyres_damaged",
+        "meta_breakdown":   "breakdown",
+    }
+    for form_key, manual_key in mapping.items():
+        val = (raw.get(form_key) or "").strip()
+        if val:
+            out[manual_key] = val
+
+    sig = (raw.get("meta_signature") or "").strip()
+    if sig:
+        out["signature"] = sig
+        out["signature_kind"] = raw.get("meta_signature_kind") or "image"
+
+    return out
+
+
+def _parse_requested_trucks():
+    raw = request.form.get("trucks") or "[]"
+    try:
+        items = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(items, list):
+        return None
+    out = []
+    seen = set()
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        imei = (it.get("imei") or "").strip()
+        if not imei or imei in seen:
+            continue
+        seen.add(imei)
+        out.append({
+            "imei":   imei,
+            "name":   (it.get("name") or imei).strip(),
+            "driver": (it.get("driver") or "").strip(),
+        })
+    return out
+
+
+def _group_trips_by_truck(selected: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for s in selected:
+        imei = (s.get("imei") or "").strip()
+        if not imei:
+            continue
+        counts[imei] = counts.get(imei, 0) + 1
+    return counts
+
+
+def _unique_trucks_from_reports(reports: list[dict]) -> list[str]:
+    out = []
+    seen = set()
+    for r in reports:
+        tid = r.get("truck_id") or ""
+        if tid and tid not in seen:
+            seen.add(tid)
+            out.append(tid)
+    return out
+
+
+def _bulk_truck_label(reports: list[dict]) -> str:
+    trucks = _unique_trucks_from_reports(reports)
+    if not trucks:
+        return "Bulk"
+    if len(trucks) == 1:
+        return trucks[0]
+    return f"Bulk ({len(trucks)} trucks)"
+
+
+def _bulk_safe_filename_label(reports: list[dict]) -> str:
+    trucks = _unique_trucks_from_reports(reports)
+    if not trucks:
+        return "Bulk"
+    if len(trucks) == 1:
+        label = trucks[0]
+    else:
+        label = f"Bulk {len(trucks)} trucks"
+    return "".join(ch if ch.isalnum() or ch in " -" else "_" for ch in label).strip()
+
+
+def _merge_manual(old: dict | None, new: dict) -> dict:
+    """Preserve old values when the form left a field out.
+
+    The edit forms intentionally omit ``signature``/``signature_kind`` when
+    the canvas was empty — we take that to mean "leave the existing
+    signature alone" and carry the old ones forward.
+    """
+    old = old or {}
+    merged = dict(old)
+    # Every key in `new` overrides what was there; missing keys fall back
+    # to the old dict via the initial `dict(old)`.
+    for k, v in new.items():
+        if k in ("signature", "signature_kind") and not v:
+            continue
+        merged[k] = v
+    return merged
 
 
 # --- background workers ---------------------------------------------------
 
-def _run_preview(preview_id, imei, truck_id, driver_name, trips, include_history):
+def _run_preview(preview_id, trips, include_history):
     try:
         reports = []
         for trip in trips:
@@ -128,8 +269,11 @@ def _run_preview(preview_id, imei, truck_id, driver_name, trips, include_history
                 trip["end"], "%Y-%m-%d %H:%M:%S"
             ).replace(tzinfo=timezone.utc)
             r = compute_report(
-                imei=imei, truck_id=truck_id, driver_name=driver_name,
-                begin=t_start, end=t_end, include_history=include_history,
+                imei=trip["imei"],
+                truck_id=trip["truck"],
+                driver_name=trip.get("driver") or "",
+                begin=t_start, end=t_end,
+                include_history=include_history,
             )
             reports.append(r)
         mark_ready_reports(preview_id, reports)
@@ -156,8 +300,12 @@ def _run_export(job_id, computed, out_path, manual):
 
     try:
         reports_repo.save_computed(job_id, _to_jsonable(computed))
+        # Persist the manual (incl. signature) so the row can be viewed and
+        # re-edited straight away — without this the second open shows an
+        # empty signature.
+        reports_repo.update_manual(job_id, manual)
     except Exception:
-        log.exception("could not save computed JSON for %s", job_id)
+        log.exception("could not save computed/manual for %s", job_id)
 
     try:
         remote = storage.upload(out_path)
@@ -165,6 +313,34 @@ def _run_export(job_id, computed, out_path, manual):
             log.info("report mirrored to storage: %s", remote)
         else:
             log.warning("report not mirrored: %s", out_path.name)
+    except Exception:
+        log.exception("storage mirror failed for %s", out_path.name)
+
+
+def _run_bulk_export(job_id, reports, out_path, per_trip_manual):
+    jobs.mark_running(job_id)
+    try:
+        write_bulk_excel(reports, TEMPLATE_PATH, out_path,
+                         per_trip_manual=per_trip_manual)
+        size = out_path.stat().st_size if out_path.exists() else None
+        jobs.mark_done(job_id, filesize_bytes=size)
+    except Exception as exc:
+        log.exception("bulk export failed")
+        jobs.mark_failed(job_id, error=f"{type(exc).__name__}: {exc}")
+        return
+
+    try:
+        reports_repo.save_computed(job_id, _to_jsonable(list(reports)))
+        reports_repo.update_manual(job_id, per_trip_manual or {})
+    except Exception:
+        log.exception("could not save computed/manual for bulk %s", job_id)
+
+    try:
+        remote = storage.upload(out_path)
+        if remote:
+            log.info("bulk report mirrored to storage: %s", remote)
+        else:
+            log.warning("bulk report not mirrored: %s", out_path.name)
     except Exception:
         log.exception("storage mirror failed for %s", out_path.name)
 
@@ -228,14 +404,23 @@ def api_devices():
 @app.route("/trips", methods=["POST"])
 @login_required
 def trips_list():
-    truck   = (request.form.get("truck") or "").strip()
-    begin_s = (request.form.get("begin") or "").strip()
-    end_s   = (request.form.get("end") or "").strip()
+    trucks          = _parse_requested_trucks()
+    begin_s         = (request.form.get("begin") or "").strip()
+    end_s           = (request.form.get("end") or "").strip()
     include_history = request.form.get("include_history") == "on"
 
-    if not truck or not begin_s or not end_s:
-        flash("All three fields are required.", "error")
+    if not trucks:
+        flash("Please select at least one truck.", "error")
         return redirect(url_for("index"))
+
+    if len(trucks) > MAX_TRUCKS:
+        flash(f"Please select at most {MAX_TRUCKS} trucks per search.", "error")
+        return redirect(url_for("index"))
+
+    if not begin_s or not end_s:
+        flash("Begin and end dates are required.", "error")
+        return redirect(url_for("index"))
+
     try:
         begin = datetime.strptime(begin_s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         end   = datetime.strptime(end_s,   "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
@@ -243,109 +428,113 @@ def trips_list():
         flash("Dates must be 'YYYY-MM-DD HH:MM:SS'.", "error")
         return redirect(url_for("index"))
 
-    device = find_device(truck)
-    if not device:
-        flash(f"No unique device matched '{truck}'.", "error")
+    resolved = []
+    not_found = []
+    for t in trucks:
+        device = find_device(t["imei"])
+        if not device:
+            not_found.append(t["name"])
+            continue
+        resolved.append({
+            "imei":        device["imei"],
+            "truck":       device.get("deviceName") or device["imei"],
+            "driver_name": device.get("driverName") or "",
+        })
+
+    if not resolved:
+        flash("None of the selected trucks could be found.", "error")
         return redirect(url_for("index"))
 
-    imei        = device["imei"]
-    device_name = device.get("deviceName") or imei
-    driver_name = device.get("driverName") or ""
+    groups = []
+    total  = 0
+    rate_limited = False
+    for dev in resolved:
+        try:
+            trips = find_trips(dev["imei"], begin, end)
+        except RateLimitExceeded as exc:
+            log.warning("trip list hit rate limit: %s", exc)
+            rate_limited = True
+            break
+        except Exception as exc:
+            log.exception("trip list failed for %s", dev["imei"])
+            flash(f"Could not load trips for {dev['truck']}: {exc}", "error")
+            continue
 
-    try:
-        trips = find_trips(imei, begin, end)
-    except RateLimitExceeded as exc:
-        log.warning("trip list hit rate limit: %s", exc)
+        if not trips:
+            continue
+        groups.append({
+            "imei":        dev["imei"],
+            "truck":       dev["truck"],
+            "driver_name": dev["driver_name"],
+            "trips":       trips,
+        })
+        total += len(trips)
+
+    if rate_limited:
         flash("Tracksolid Pro daily API limit reached. Try again later.", "error")
         return redirect(url_for("index"))
-    except Exception as exc:
-        log.exception("trip list failed")
-        flash(f"Could not load trips: {exc}", "error")
-        return redirect(url_for("index"))
 
-    if not trips:
-        flash("No trips found in that window.", "error")
+    if not groups:
+        flash("No trips found for any of the selected trucks in that window.", "error")
         return redirect(url_for("index"))
-
-    trips_ser = [
-        {
-            "start": t["start"].strftime("%Y-%m-%d %H:%M:%S"),
-            "end":   t["end"].strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        for t in trips
-    ]
 
     return render_template(
         "trips.html",
-        truck=device_name,
-        imei=imei,
-        driver_name=driver_name,
-        trips=trips,
-        trips_json=json.dumps(trips_ser),
+        truck_groups=groups,
+        total_trips=total,
+        not_found=not_found,
+        begin_str=begin_s,
+        end_str=end_s,
         include_history=include_history,
+        max_per_truck=MAX_TRIPS_PER_TRUCK,
     )
 
 
 @app.route("/preview", methods=["POST"])
 @login_required
 def preview_start():
-    trips_json = request.form.get("trips_json") or ""
-    index_strs = request.form.getlist("trip_index")
-
-    if not trips_json or not index_strs:
-        flash("Select at least one trip.", "error")
-        return redirect(url_for("index"))
-
-    try:
-        all_trips = json.loads(trips_json)
-    except ValueError:
-        flash("Invalid trip selection.", "error")
-        return redirect(url_for("index"))
-
-    selected: list[dict] = []
-    for s in index_strs:
-        try:
-            i = int(s)
-        except ValueError:
-            continue
-        if 0 <= i < len(all_trips):
-            selected.append(all_trips[i])
-
-    if not selected:
-        flash("Select at least one trip.", "error")
-        return redirect(url_for("index"))
-
-    if len(selected) > MAX_SELECTED_TRIPS:
-        flash(
-            f"Please select at most {MAX_SELECTED_TRIPS} trips per preview.",
-            "error",
-        )
-        return redirect(url_for("index"))
-
-    imei        = (request.form.get("imei") or "").strip()
-    device_name = (request.form.get("truck_name") or "").strip()
-    driver_name = (request.form.get("driver_name") or "").strip()
+    selected_raw = request.form.get("selected_trips") or "[]"
     include_history = request.form.get("include_history") == "on"
 
-    if not imei:
-        flash("Missing device IMEI.", "error")
+    try:
+        selected = json.loads(selected_raw)
+    except (ValueError, TypeError):
+        selected = []
+
+    if not isinstance(selected, list) or not selected:
+        flash("Select at least one trip.", "error")
         return redirect(url_for("index"))
+
+    per_truck = _group_trips_by_truck(selected)
+    for imei, n in per_truck.items():
+        if n > MAX_TRIPS_PER_TRUCK:
+            flash(
+                f"At most {MAX_TRIPS_PER_TRUCK} trips per truck. "
+                f"One truck has {n}.",
+                "error",
+            )
+            return redirect(url_for("index"))
+
+    for s in selected:
+        for key in ("imei", "truck", "start", "end"):
+            if not (s.get(key) or "").strip():
+                flash("Invalid trip selection.", "error")
+                return redirect(url_for("index"))
 
     preview_id = uuid.uuid4().hex[:12]
     store_preview(preview_id, {
         "status":          "computing",
         "queued_at":       datetime.now(timezone.utc),
-        "truck":           device_name,
-        "imei":            imei,
-        "driver_name":     driver_name,
+        "truck":           ", ".join(sorted({s["truck"] for s in selected}))[:120],
+        "imei":            selected[0]["imei"],
+        "driver_name":     "",
         "trips":           selected,
         "reports":         None,
         "error":           None,
         "created_by":      session.get("user_id"),
         "include_history": include_history,
     })
-    executor.submit(_run_preview, preview_id, imei, device_name,
-                    driver_name, selected, include_history)
+    executor.submit(_run_preview, preview_id, selected, include_history)
     return redirect(url_for("preview_show", preview_id=preview_id))
 
 
@@ -384,6 +573,8 @@ def preview_show(preview_id):
     return render_template(
         "preview.html",
         loading=False,
+        view_mode=False,
+        is_bulk=False,
         preview_id=preview_id,
         state=state,
         reports=reports,
@@ -465,8 +656,102 @@ def export():
         f"Download from the Reports page.",
         "success",
     )
-    # Redirect to the Reports page so the user sees job progress and can
-    # download when it finishes — matches single-trip and multi-trip flows.
+    return redirect(url_for("reports"))
+
+
+@app.route("/export-bulk", methods=["POST"])
+@login_required
+def export_bulk():
+    preview_id = request.form.get("preview_id", "").strip()
+    scope      = (request.form.get("scope") or "all").strip()
+
+    state = get_preview(preview_id)
+    if not state or state["status"] != "ready":
+        flash("Preview not ready or expired. Please search again.", "error")
+        return redirect(url_for("index"))
+    if (state.get("created_by")
+            and state["created_by"] != session.get("user_id")
+            and session.get("role") != "admin"):
+        abort(403)
+
+    all_reports = state.get("reports") or []
+    if not all_reports:
+        flash("Preview has no data.", "error")
+        return redirect(url_for("preview_show", preview_id=preview_id))
+
+    # ---------------------------------------------------------------
+    # Parse per-trip manual data injected by the client from
+    # localStorage. Raw keys are ``meta_*`` — normalise them to the
+    # manual-dict shape fill_sheet() expects.
+    # ---------------------------------------------------------------
+    submitted_manual: dict[str, dict] = {}
+    per_trip_manual_raw = request.form.get("per_trip_manual") or "{}"
+    try:
+        parsed = json.loads(per_trip_manual_raw)
+        if isinstance(parsed, dict):
+            for k, v in parsed.items():
+                if isinstance(v, dict):
+                    submitted_manual[str(k)] = _normalise_submitted_manual(v)
+    except (ValueError, TypeError):
+        log.warning("export_bulk: could not parse per_trip_manual")
+
+    if scope == "truck":
+        truck_filter = (request.form.get("truck") or "").strip()
+        if not truck_filter:
+            flash("No truck specified for bulk export.", "error")
+            return redirect(url_for("preview_show", preview_id=preview_id))
+
+        all_indices = [i for i, r in enumerate(all_reports)
+                       if r["truck_id"] == truck_filter]
+        if not all_indices:
+            flash("No reports for that truck in this preview.", "error")
+            return redirect(url_for("preview_show", preview_id=preview_id))
+
+        reports = [all_reports[i] for i in all_indices]
+        per_trip_manual: dict[str, dict] = {}
+        for new_idx, orig_idx in enumerate(all_indices):
+            if str(orig_idx) in submitted_manual:
+                per_trip_manual[str(new_idx)] = submitted_manual[str(orig_idx)]
+    else:
+        reports = list(all_reports)
+        per_trip_manual = submitted_manual
+
+    bulk_label = _bulk_truck_label(reports)
+    safe_label = _bulk_safe_filename_label(reports)
+    run_stamp  = datetime.now(timezone.utc).strftime("%H%M%S")
+    today      = datetime.now(timezone.utc).date()
+    filename   = f"Trip Review - {safe_label} - {today} - {run_stamp}.xlsx"
+    out_path   = OUTPUT_DIR / filename
+
+    starts = [r["trip_start"] for r in reports if r.get("trip_start")]
+    ends   = [r["trip_end"]   for r in reports if r.get("trip_end")]
+    job_trip_start = min(starts) if starts else None
+    job_trip_end   = max(ends)   if ends   else None
+
+    try:
+        job_id = jobs.add_job(
+            truck_id=bulk_label,
+            imei=None,
+            filename=filename,
+            trip_start=job_trip_start,
+            trip_end=job_trip_end,
+            created_by=session.get("user_id"),
+            created_by_email=session.get("email"),
+            manual=None,
+        )
+    except Exception as exc:
+        log.exception("could not create bulk report row")
+        flash(f"Could not queue bulk export: {exc}", "error")
+        return redirect(url_for("preview_show", preview_id=preview_id))
+
+    executor.submit(_run_bulk_export, job_id, reports, out_path, per_trip_manual)
+
+    truck_count = len({r["truck_id"] for r in reports})
+    flash(
+        f"Bulk export queued: {len(reports)} trip(s) across "
+        f"{truck_count} truck(s). Download from the Reports page.",
+        "success",
+    )
     return redirect(url_for("reports"))
 
 
@@ -496,28 +781,47 @@ def report_view(report_id):
             and session.get("role") != "admin"):
         abort(403)
 
-    computed = row.get("computed_json")
-    if not computed:
+    stored = row.get("computed_json")
+    if not stored:
         flash("This report has no stored detail — regenerate it to view.",
               "error")
         return redirect(url_for("reports"))
 
-    computed = _from_jsonable(computed)
+    stored = _from_jsonable(stored)
+    is_bulk = _is_bulk_payload(stored)
+    reports = stored if is_bulk else [stored]
+
+    if not reports:
+        flash("This report is empty.", "error")
+        return redirect(url_for("reports"))
+
+    try:
+        current_index = int(request.args.get("trip", 0))
+    except (ValueError, TypeError):
+        current_index = 0
+    current_index = max(0, min(current_index, len(reports) - 1))
+
+    existing_manual = row.get("manual_json") or {}
+    if is_bulk:
+        current_manual = existing_manual.get(str(current_index), {})
+    else:
+        current_manual = existing_manual
 
     return render_template(
         "preview.html",
         loading=False,
         view_mode=True,
+        is_bulk=is_bulk,
         preview_id=report_id,
         report_id=report_id,
         state={
             "truck": row.get("truck_id"),
             "imei":  row.get("imei"),
         },
-        reports=[computed],
-        current_index=0,
-        computed=computed,
-        manual=row.get("manual_json") or {},
+        reports=reports,
+        current_index=current_index,
+        computed=reports[current_index],
+        manual=current_manual,
     )
 
 
@@ -535,14 +839,30 @@ def report_edit_meta(report_id):
             and session.get("role") != "admin"):
         abort(403)
 
-    computed = row.get("computed_json")
-    if not computed:
+    stored = row.get("computed_json")
+    if not stored:
         flash("This report has no stored detail — regenerate it first.",
               "error")
         return redirect(url_for("reports"))
 
-    computed = _from_jsonable(computed)
-    manual = _collect_manual_from_form()
+    stored = _from_jsonable(stored)
+    is_bulk = _is_bulk_payload(stored)
+    reports = stored if is_bulk else [stored]
+
+    if not reports:
+        flash("This report is empty.", "error")
+        return redirect(url_for("reports"))
+
+    try:
+        trip_index = int(request.form.get("trip_index", "0"))
+    except (ValueError, TypeError):
+        trip_index = 0
+    if trip_index < 0 or trip_index >= len(reports):
+        flash("Invalid trip selection.", "error")
+        return redirect(url_for("report_view", report_id=report_id))
+    computed = reports[trip_index]
+
+    incoming = _collect_manual_from_form()
 
     filename = row.get("filename")
     if not filename:
@@ -552,21 +872,53 @@ def report_edit_meta(report_id):
     out_path = OUTPUT_DIR / filename
 
     try:
-        write_excel(computed, TEMPLATE_PATH, out_path, manual=manual)
-        size = out_path.stat().st_size if out_path.exists() else None
-        reports_repo.update_manual(report_id, manual, filesize_bytes=size)
+        if is_bulk:
+            existing = row.get("manual_json") or {}
+            if not isinstance(existing, dict):
+                existing = {}
+            per_trip_manual: dict[str, dict] = {}
+            for i, _r in enumerate(reports):
+                key = str(i)
+                if i == trip_index:
+                    per_trip_manual[key] = _merge_manual(
+                        existing.get(key) or {}, incoming)
+                elif key in existing and isinstance(existing[key], dict):
+                    per_trip_manual[key] = existing[key]
+                else:
+                    per_trip_manual[key] = {}
+
+            write_bulk_excel(reports, TEMPLATE_PATH, out_path,
+                             per_trip_manual=per_trip_manual)
+            size = out_path.stat().st_size if out_path.exists() else None
+            reports_repo.update_manual(report_id, per_trip_manual,
+                                       filesize_bytes=size)
+        else:
+            merged_manual = _merge_manual(row.get("manual_json") or {}, incoming)
+            write_excel(computed, TEMPLATE_PATH, out_path, manual=merged_manual)
+            size = out_path.stat().st_size if out_path.exists() else None
+            reports_repo.update_manual(report_id, merged_manual,
+                                       filesize_bytes=size)
+
         try:
             storage.upload(out_path)
         except Exception:
             log.exception("storage mirror failed for %s", out_path.name)
+
+        if is_bulk:
+            flash(
+                f"Trip {trip_index + 1} ({computed['truck_id']}) updated; "
+                f"bulk workbook regenerated.",
+                "success",
+            )
+            return redirect(url_for(
+                "report_view", report_id=report_id, trip=trip_index,
+            ))
         flash("Report details updated and Excel regenerated.", "success")
     except Exception as exc:
         log.exception("edit-meta failed")
         flash(f"Could not update report: {exc}", "error")
         return redirect(url_for("report_view", report_id=report_id))
 
-    # Redirect to the Reports listing so the user can download the
-    # freshly regenerated file — matches the export flow above.
     return redirect(url_for("reports"))
 
 

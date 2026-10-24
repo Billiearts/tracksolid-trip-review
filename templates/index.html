@@ -9,28 +9,30 @@
   <div class="card">
     <h2 style="font-size: 1.1rem; margin: 0 0 1rem;">New report</h2>
     <form action="{{ url_for('trips_list') }}" method="post" id="search-form"
-      data-loading-overlay="Finding trips… this can take up to 20 seconds.">
+      data-loading-overlay="Finding trips for the selected trucks… this can take a while.">
 
       <div class="field">
-        <label for="truck-input">Truck</label>
-        <div class="combobox" data-combobox>
-          <input type="hidden" name="truck" id="truck-value">
+        <label for="truck-input">Trucks</label>
+        <div class="combobox" data-combobox-multi>
+          <input type="hidden" name="trucks" class="combobox-value" value="[]">
+          <div class="combobox-chips" aria-live="polite"></div>
           <div class="combobox-input-wrap">
             <input type="text" id="truck-input" class="combobox-input"
-                   placeholder="Select or search a truck"
+                   placeholder="Search trucks…"
                    autocomplete="off"
                    role="combobox"
                    aria-expanded="false"
                    aria-controls="truck-listbox"
-                   aria-autocomplete="list"
-                   required>
+                   aria-autocomplete="list">
             <button type="button" class="combobox-clear" hidden
-                    aria-label="Clear selection">&times;</button>
+                    aria-label="Clear all selections">&times;</button>
             <button type="button" class="combobox-toggle"
                     aria-label="Toggle list">&#9662;</button>
           </div>
+          <div class="combobox-count" hidden></div>
+          <div class="combobox-warn" hidden></div>
           <ul class="combobox-listbox" id="truck-listbox"
-              role="listbox" hidden></ul>
+              role="listbox" aria-multiselectable="true" hidden></ul>
           <div class="combobox-status" hidden></div>
         </div>
       </div>
@@ -38,6 +40,7 @@
       <div class="field">
         <label>Date range (your local time)</label>
         <div class="date-presets">
+          <button type="button" class="date-preset" data-preset="shift">Yesterday 7am → Today 7am</button>
           <button type="button" class="date-preset" data-preset="24h">Last 24h</button>
           <button type="button" class="date-preset" data-preset="7d">Last 7 days</button>
           <button type="button" class="date-preset" data-preset="30d">Last 30 days</button>
@@ -58,9 +61,9 @@
 
       <div class="field">
         <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-          <input type="checkbox" name="include_history" checked>
+          <input type="checkbox" name="include_history">
           Include 3-month history
-          <span style="color: #888; font-size: 0.8rem;">(uses ~15 extra API calls)</span>
+          <span style="color: #888; font-size: 0.8rem;">(uses ~15 extra API calls per truck)</span>
         </label>
       </div>
 
@@ -106,16 +109,31 @@
       document.querySelectorAll('.date-preset').forEach(function (btn) {
         btn.addEventListener('click', function () {
           const now = new Date();
-          let begin;
+          let begin, end;
           switch (btn.dataset.preset) {
-            case '24h':   begin = new Date(now.getTime() - 24 * 3600 * 1000); break;
-            case '7d':    begin = new Date(now.getTime() - 7 * 24 * 3600 * 1000); break;
-            case '30d':   begin = new Date(now.getTime() - 30 * 24 * 3600 * 1000); break;
-            case 'month': begin = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0); break;
+            case 'shift': {
+              // Yesterday 07:00 (local) → Today 07:00 (local).
+              // If it is currently before 07:00, "today" would be in the
+              // future — anchor to the most recent completed 7am-to-7am
+              // window instead, so the button always yields a past range.
+              const today7 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 0, 0);
+              if (now < today7) {
+                // Today's 7am hasn't happened yet: use yesterday 7am → today 7am
+                // of the previous day (i.e. two days ago → yesterday).
+                today7.setDate(today7.getDate() - 1);
+              }
+              begin = new Date(today7.getTime() - 24 * 3600 * 1000);
+              end = today7;
+              break;
+            }
+            case '24h':   begin = new Date(now.getTime() - 24 * 3600 * 1000); end = now; break;
+            case '7d':    begin = new Date(now.getTime() - 7 * 24 * 3600 * 1000); end = now; break;
+            case '30d':   begin = new Date(now.getTime() - 30 * 24 * 3600 * 1000); end = now; break;
+            case 'month': begin = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0); end = now; break;
             default: return;
           }
           beginPicker.value = localPickerValue(begin);
-          endPicker.value   = localPickerValue(now);
+          endPicker.value   = localPickerValue(end);
         });
       });
 
@@ -134,10 +152,14 @@
           return;
         }
 
-        const tv = document.getElementById('truck-value');
-        const ti = document.getElementById('truck-input');
-        if (!tv.value && ti.value.trim()) {
-          tv.value = ti.value.trim();
+        const trucksField = document.querySelector('.combobox-value');
+        let trucks = [];
+        try { trucks = JSON.parse(trucksField.value || '[]'); } catch (e) { trucks = []; }
+        if (!Array.isArray(trucks) || trucks.length === 0) {
+          e.preventDefault();
+          alert('Please select at least one truck.');
+          trucksField.focus();
+          return;
         }
       });
     })();

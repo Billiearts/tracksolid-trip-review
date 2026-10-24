@@ -38,38 +38,98 @@
     {% set y   = c.yard %}
     {% set m   = manual or {} %}
 
+    {% set unique_trucks = reports | map(attribute='truck_id') | unique | list %}
+    {% set same_truck_count = reports | selectattr('truck_id', 'equalto', c.truck_id) | list | length %}
+
     {# ---------- Header ---------- #}
     <div class="card">
       <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap;">
         <div>
-          <h2 style="font-size: 1.2rem; margin: 0 0 0.25rem;">
-            {{ c.truck_id }}{% if view_mode %} <span class="meta-note">(saved report)</span>{% endif %}
-          </h2>
-          <p style="color: #666; font-size: 0.9rem; margin: 0;">
-            IMEI {{ c.imei }} &middot;
-            {% if c.trip_start %}{{ c.trip_start.strftime('%Y-%m-%d %H:%M') }}{% endif %}
-            →
-            {% if c.trip_end %}{{ c.trip_end.strftime('%Y-%m-%d %H:%M') }}{% endif %}
-          </p>
+          {% if view_mode and is_bulk %}
+            <h2 style="font-size: 1.2rem; margin: 0 0 0.25rem;">
+              Bulk report
+              <span class="meta-note">
+                {{ reports | length }} trip{{ 's' if reports | length != 1 else '' }}
+                across {{ unique_trucks | length }}
+                truck{{ 's' if unique_trucks | length != 1 else '' }}
+              </span>
+            </h2>
+            <p style="color: #666; font-size: 0.9rem; margin: 0;">
+              Viewing trip {{ current_index + 1 }} of {{ reports | length }} —
+              <strong>{{ c.truck_id }}</strong> ·
+              {% if c.trip_start %}{{ c.trip_start.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+              →
+              {% if c.trip_end %}{{ c.trip_end.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+            </p>
+          {% else %}
+            <h2 style="font-size: 1.2rem; margin: 0 0 0.25rem;">
+              {{ c.truck_id }}{% if view_mode %} <span class="meta-note">(saved report)</span>{% endif %}
+            </h2>
+            <p style="color: #666; font-size: 0.9rem; margin: 0;">
+              IMEI {{ c.imei }} &middot;
+              {% if c.trip_start %}{{ c.trip_start.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+              →
+              {% if c.trip_end %}{{ c.trip_end.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+            </p>
+          {% endif %}
         </div>
         {% if not view_mode %}
-          <button type="submit" form="export-form">Export to Excel</button>
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <button type="submit" form="export-form">Export this trip</button>
+            {% if reports | length > 1 %}
+              <button type="submit" form="export-bulk-all-form"
+                      style="background: #2b8a3e;">Export all {{ reports | length }} trips</button>
+            {% endif %}
+            {% if unique_trucks | length > 1 and same_truck_count > 1 %}
+              <button type="submit" form="export-bulk-truck-form"
+                      style="background: #1e5f9e;">
+                Export all trips for {{ c.truck_id }} ({{ same_truck_count }})
+              </button>
+            {% endif %}
+          </div>
         {% endif %}
       </div>
     </div>
+
+    {# ---------- Bulk export forms ---------- #}
+    {% if not view_mode %}
+      {% if reports | length > 1 %}
+        <form id="export-bulk-all-form" method="post"
+              action="{{ url_for('export_bulk') }}"
+              data-loading-overlay="Building multi-truck workbook… this can take a while."
+              style="display: none;">
+          <input type="hidden" name="preview_id" value="{{ preview_id }}">
+          <input type="hidden" name="scope" value="all">
+        </form>
+      {% endif %}
+      {% if unique_trucks | length > 1 and same_truck_count > 1 %}
+        <form id="export-bulk-truck-form" method="post"
+              action="{{ url_for('export_bulk') }}"
+              data-loading-overlay="Building workbook for {{ c.truck_id }}…"
+              style="display: none;">
+          <input type="hidden" name="preview_id" value="{{ preview_id }}">
+          <input type="hidden" name="scope" value="truck">
+          <input type="hidden" name="truck" value="{{ c.truck_id }}">
+        </form>
+      {% endif %}
+    {% endif %}
 
     {# ---------- Trip selector ---------- #}
     {% if reports | length > 1 %}
       <div class="card" style="padding: 0.85rem 1.25rem;">
         <label for="trip-select" style="margin-bottom: 0.4rem;">
           Trip {{ current_index + 1 }} of {{ reports | length }}
+          {% if view_mode %} — pick a trip to view / edit{% endif %}
         </label>
-        <select id="trip-select"
-                onchange="window.location.href='{{ url_for('preview_show', preview_id=preview_id) }}?trip=' + this.value;">
+        {% set base_url = url_for('report_view', report_id=report_id) if view_mode
+                          else url_for('preview_show', preview_id=preview_id) %}
+        <select id="trip-select" data-base-url="{{ base_url }}"
+                onchange="if(window.__saveCurrentTripMeta){window.__saveCurrentTripMeta();}window.location.href=this.dataset.baseUrl + '?trip=' + this.value;">
           {% for r in reports %}
             <option value="{{ loop.index0 }}"
                     {% if loop.index0 == current_index %}selected{% endif %}>
-              Trip {{ loop.index }} — {{ r.trip_start.strftime('%Y-%m-%d %H:%M') }} → {{ r.trip_end.strftime('%Y-%m-%d %H:%M') }} ({{ '%.1fh' | format((r.trip_end - r.trip_start).total_seconds() / 3600) }})
+              {{ r.truck_id }} — {{ r.trip_start.strftime('%Y-%m-%d %H:%M') }} → {{ r.trip_end.strftime('%Y-%m-%d %H:%M') }}
+              ({{ '%.1fh' | format((r.trip_end - r.trip_start).total_seconds() / 3600) }})
             </option>
           {% endfor %}
         </select>
@@ -81,14 +141,23 @@
       <div class="card">
         <details open>
           <summary style="cursor: pointer; font-size: 1rem; font-weight: 500; padding: 0.25rem 0;">
-            Report details
+            Report details — editing trip {{ current_index + 1 }} of {{ reports | length }}
+            ({{ c.truck_id }})
           </summary>
           <p class="muted" style="margin: 0.5rem 0 1rem;">
-            Editing these fields regenerates the Excel file from the stored
-            data — no Tracksolid API calls are made.
+            {% if is_bulk %}
+              Editing these fields rewrites only this trip's sheet in the
+              bulk workbook. Other trips are untouched. No Tracksolid API
+              calls are made.
+            {% else %}
+              Editing these fields regenerates the Excel file from the stored
+              data — no Tracksolid API calls are made.
+            {% endif %}
           </p>
 
-          <form action="{{ url_for('report_edit_meta', report_id=report_id) }}" method="post">
+          <form id="edit-meta-form"
+                action="{{ url_for('report_edit_meta', report_id=report_id) }}" method="post">
+            <input type="hidden" name="trip_index" value="{{ current_index }}">
             <div class="field">
               <label for="meta_driver_name">Driver's Name</label>
               <input type="text" id="meta_driver_name" name="meta_driver_name"
@@ -119,13 +188,41 @@
                      value="{{ m.breakdown or '' }}"
                      placeholder="e.g. 0, 1, None">
             </div>
-            <div class="field">
-              <label for="meta_signature">Driver's Signature</label>
-              <input type="text" id="meta_signature" name="meta_signature"
-                     value="{{ m.signature or '' }}"
-                     placeholder="Type name or leave blank">
+
+            {# Signature drawing pad #}
+            <div class="field signature-field">
+              <label>Driver's Signature</label>
+              {% if m.signature %}
+                <div style="margin: 0.25rem 0 0.6rem; font-size: 0.82rem; color: #666;">
+                  Current signature:
+                  {% if m.signature_kind == 'image' and m.signature.startswith('data:image/') %}
+                    <div style="margin-top: 0.4rem; background: #fff; border: 1px solid #d7dbe0; border-radius: 4px; padding: 0.25rem; display: inline-block;">
+                      <img src="{{ m.signature }}" alt="signature"
+                           style="display: block; max-width: 220px; max-height: 70px;">
+                    </div>
+                  {% else %}
+                    <span style="font-family: 'Brush Script MT', cursive; font-size: 1.4rem; color: #1e5f9e;">
+                      {{ m.signature }}
+                    </span>
+                  {% endif %}
+                </div>
+              {% endif %}
+              <div class="signature-pad">
+                <canvas id="signature-canvas" width="640" height="160"></canvas>
+                <button type="button" class="signature-clear" id="signature-clear">Clear</button>
+              </div>
+              <input type="hidden" name="meta_signature" id="meta_signature">
+              <input type="hidden" name="meta_signature_kind" id="meta_signature_kind"
+                     value="image">
+              <p class="muted" style="font-size: 0.78rem; margin: 0.35rem 0 0;">
+                Draw with mouse, stylus, or finger. Leave blank to keep the
+                existing signature (or none).
+              </p>
             </div>
-            <button type="submit">Save details &amp; regenerate Excel</button>
+
+            <button type="submit">
+              {% if is_bulk %}Save details &amp; regenerate bulk workbook{% else %}Save details &amp; regenerate Excel{% endif %}
+            </button>
           </form>
         </details>
       </div>
@@ -134,10 +231,13 @@
         <details>
           <summary style="cursor: pointer; font-size: 1rem; font-weight: 500; padding: 0.25rem 0;">
             Report details (optional)
+            <span id="auto-save-indicator"
+                  style="font-size: 0.75rem; color: #2b8a3e; font-weight: 400; margin-left: 0.5rem;"></span>
           </summary>
           <p class="muted" style="margin: 0.5rem 0 1rem;">
-            These fields will be written into the Excel template when you
-            export this trip. Leave any field blank to skip it.
+            These fields are saved automatically as you type and drawn —
+            switching trips never loses them. The values are written into
+            the Excel file when you export.
           </p>
 
           <form id="export-form"
@@ -170,12 +270,22 @@
               <input type="text" id="meta_breakdown" name="meta_breakdown"
                      placeholder="e.g. 0, 1, None">
             </div>
-            <div class="field">
-              <label for="meta_signature">Driver's Signature</label>
-              <input type="text" id="meta_signature" name="meta_signature"
-                     placeholder="Type name or leave blank">
+
+            <div class="field signature-field">
+              <label>Driver's Signature</label>
+              <div class="signature-pad">
+                <canvas id="signature-canvas" width="640" height="160"></canvas>
+                <button type="button" class="signature-clear" id="signature-clear">Clear</button>
+              </div>
+              <input type="hidden" name="meta_signature" id="meta_signature">
+              <input type="hidden" name="meta_signature_kind" id="meta_signature_kind"
+                     value="image">
+              <p class="muted" style="font-size: 0.78rem; margin: 0.35rem 0 0;">
+                Draw with mouse, stylus, or finger. Leave blank to skip.
+              </p>
             </div>
-            <button type="submit">Export to Excel</button>
+
+            <button type="submit">Export this trip</button>
           </form>
         </details>
       </div>
@@ -199,7 +309,6 @@
       {# ======================= SUMMARY ======================= #}
       <div class="tab-panel" data-panel="summary">
 
-        {# ---------- Yard Operations ---------- #}
         <div class="summary-section">
           <h3>
             Yard Operations (Before Trip)
@@ -245,7 +354,6 @@
           {% endif %}
         </div>
 
-        {# ---------- Rest and Breaks ---------- #}
         <div class="summary-section">
           <h3>Rest and Breaks</h3>
           <table class="preview-table">
@@ -277,7 +385,6 @@
           </table>
         </div>
 
-        {# ---------- Driver Behaviour ---------- #}
         <div class="summary-section">
           <h3>Driver Behaviour</h3>
           <table class="preview-table">
@@ -314,7 +421,6 @@
           </table>
         </div>
 
-        {# ---------- Previous 3 months ---------- #}
         {% if h %}
           <div class="summary-section">
             <h3>
@@ -574,6 +680,39 @@
 
 {% block scripts %}
   {% if not loading %}
+    <style>
+      .signature-pad {
+        position: relative;
+        border: 1px dashed #b9c6d3;
+        border-radius: 6px;
+        background: #fbfcfe;
+        width: 100%;
+        max-width: 640px;
+      }
+      .signature-pad canvas {
+        display: block;
+        width: 100%;
+        height: auto;
+        aspect-ratio: 4 / 1;
+        touch-action: none;
+        cursor: crosshair;
+        border-radius: 6px;
+      }
+      .signature-pad .signature-clear {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        background: rgba(255,255,255,0.9);
+        color: #a02525;
+        border: 1px solid #e2b3b3;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        padding: 2px 8px;
+        cursor: pointer;
+      }
+      .signature-pad .signature-clear:hover { background: #fde7e7; }
+    </style>
+
     <script>
       (function () {
         const tabs = document.querySelectorAll('.tab');
@@ -588,34 +727,184 @@
       })();
 
       (function () {
+        const canvas = document.getElementById('signature-canvas');
+        const clearBtn = document.getElementById('signature-clear');
+        const hiddenSig = document.getElementById('meta_signature');
+        const hiddenKind = document.getElementById('meta_signature_kind');
+        if (!canvas || !hiddenSig) return;
+
+        const ctx = canvas.getContext('2d');
+        let drawing = false;
+
+        function reset() {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.strokeStyle = '#1b3a57';
+          ctx.lineWidth = 2.2;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          hiddenSig.value = '';
+        }
+
+        function pos(ev) {
+          const r = canvas.getBoundingClientRect();
+          const x = (ev.clientX - r.left) * (canvas.width / r.width);
+          const y = (ev.clientY - r.top)  * (canvas.height / r.height);
+          return { x, y };
+        }
+
+        function snapshot() {
+          hiddenSig.value = canvas.toDataURL('image/png');
+          hiddenKind.value = 'image';
+        }
+
+        canvas.addEventListener('pointerdown', (ev) => {
+          ev.preventDefault();
+          canvas.setPointerCapture(ev.pointerId);
+          drawing = true;
+          const p = pos(ev);
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p.x + 0.01, p.y);
+          ctx.stroke();
+        });
+
+        canvas.addEventListener('pointermove', (ev) => {
+          if (!drawing) return;
+          ev.preventDefault();
+          const p = pos(ev);
+          ctx.lineTo(p.x, p.y);
+          ctx.stroke();
+        });
+
+        function endStroke(ev) {
+          if (!drawing) return;
+          drawing = false;
+          try { canvas.releasePointerCapture(ev.pointerId); } catch (e) {}
+          snapshot();
+        }
+        canvas.addEventListener('pointerup', endStroke);
+        canvas.addEventListener('pointerleave', endStroke);
+        canvas.addEventListener('pointercancel', endStroke);
+
+        clearBtn.addEventListener('click', () => {
+          reset();
+          canvas.focus();
+        });
+
+        // Expose a restore function so the localStorage layer can redraw
+        // a previously saved signature after a page reload.
+        window.__signatureRestore = function (dataUrl) {
+          if (!dataUrl || !dataUrl.startsWith('data:image/')) return;
+          const img = new Image();
+          img.onload = function () {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          };
+          img.src = dataUrl;
+        };
+
+        reset();
+      })();
+
+      {% if not view_mode %}
+      // -------------------------------------------------------------------
+      // Preview mode: auto-save every trip's optional metadata to
+      // localStorage so switching trips (or trucks) never loses input.
+      // -------------------------------------------------------------------
+      (function () {
         const form = document.getElementById('export-form');
         if (!form) return;
 
-        const KEY     = 'trip-meta-' + '{{ preview_id }}';
-        const tripIdx = '{{ current_index }}';
+        const PREVIEW_KEY = 'trip-preview-meta-' + '{{ preview_id }}';
+        const CURRENT_TRIP = {{ current_index }};
 
         let store = {};
-        try { store = JSON.parse(localStorage.getItem(KEY) || '{}'); }
+        try { store = JSON.parse(localStorage.getItem(PREVIEW_KEY) || '{}'); }
         catch (e) { store = {}; }
 
-        const saved = store[tripIdx] || {};
-        Object.keys(saved).forEach(function (name) {
-          const input = form.querySelector('[name="' + name + '"]');
-          if (input && saved[name] && !input.value) {
-            input.value = saved[name];
+        // --- restore current trip's saved data ---
+        (function restoreCurrent() {
+          const saved = store[String(CURRENT_TRIP)] || {};
+          Object.keys(saved).forEach(function (name) {
+            if (name === 'meta_signature' || name === 'meta_signature_kind') return;
+            const input = form.querySelector('[name="' + name + '"]');
+            if (input && saved[name] !== undefined) input.value = saved[name];
+          });
+          if (saved.meta_signature) {
+            const hidden = document.getElementById('meta_signature');
+            const kind = document.getElementById('meta_signature_kind');
+            if (hidden) hidden.value = saved.meta_signature;
+            if (kind) kind.value = saved.meta_signature_kind || 'image';
+            if (window.__signatureRestore) {
+              window.__signatureRestore(saved.meta_signature);
+            }
           }
-        });
+        })();
 
-        form.addEventListener('submit', function () {
+        // --- debounced "auto-saved" indicator ---
+        let indicatorTimer = null;
+        function flashSaved() {
+          const el = document.getElementById('auto-save-indicator');
+          if (!el) return;
+          el.textContent = '· auto-saved ✓';
+          clearTimeout(indicatorTimer);
+          indicatorTimer = setTimeout(function () { el.textContent = ''; }, 1800);
+        }
+
+        function saveCurrent() {
           const data = {};
           form.querySelectorAll('input[name^="meta_"]').forEach(function (input) {
             data[input.name] = input.value;
           });
-          store[tripIdx] = data;
-          try { localStorage.setItem(KEY, JSON.stringify(store)); }
-          catch (e) { /* ignore quota errors */ }
+          store[String(CURRENT_TRIP)] = data;
+          try { localStorage.setItem(PREVIEW_KEY, JSON.stringify(store)); }
+          catch (e) { console.warn('Could not save trip metadata:', e); }
+          flashSaved();
+        }
+        // The trip-select's inline onchange calls this before navigating.
+        window.__saveCurrentTripMeta = saveCurrent;
+
+        // Auto-save on any field change.
+        form.querySelectorAll('input[name^="meta_"]').forEach(function (input) {
+          input.addEventListener('input', saveCurrent);
+          input.addEventListener('change', saveCurrent);
+        });
+
+        // Auto-save after each signature stroke. endStroke() (registered by
+        // the signature-pad IIFE above) runs first and updates the hidden
+        // field, so saveCurrent() sees the fresh data URL.
+        const canvas = document.getElementById('signature-canvas');
+        if (canvas) {
+          canvas.addEventListener('pointerup', saveCurrent);
+        }
+
+        // Clear button: reset() empties the hidden field, then saveCurrent()
+        // persists the cleared state.
+        const clearBtn = document.getElementById('signature-clear');
+        if (clearBtn) {
+          clearBtn.addEventListener('click', saveCurrent);
+        }
+
+        // Bulk exports: inject every saved trip's metadata into the form so
+        // the server can persist signatures/manual fields for all trips, not
+        // just the one currently displayed.
+        document.querySelectorAll('form[id^="export-bulk-"]').forEach(function (bulkForm) {
+          bulkForm.addEventListener('submit', function () {
+            saveCurrent();   // make sure the current trip is included
+            const existing = bulkForm.querySelector('input[name="per_trip_manual"]');
+            if (existing) existing.remove();
+            const hidden = document.createElement('input');
+            hidden.type = 'hidden';
+            hidden.name = 'per_trip_manual';
+            hidden.value = JSON.stringify(store);
+            bulkForm.appendChild(hidden);
+          });
         });
       })();
+      {% endif %}
     </script>
   {% endif %}
 {% endblock %}

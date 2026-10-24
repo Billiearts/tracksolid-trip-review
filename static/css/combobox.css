@@ -1,5 +1,48 @@
+/* ============================================================
+   Multi-select truck combobox
+   ============================================================ */
+
 .combobox { position: relative; }
 
+/* ---------- selected chips ---------- */
+.combobox-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+.combobox-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: #eaf2fb;
+  color: #1e5f9e;
+  border: 1px solid #c7ddf3;
+  border-radius: 14px;
+  padding: 0.15rem 0.5rem 0.15rem 0.65rem;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  max-width: 100%;
+}
+.combobox-chip-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.combobox-chip-remove {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: #1e5f9e;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 0.15rem;
+  border-radius: 50%;
+}
+.combobox-chip-remove:hover { color: #a02525; }
+
+/* ---------- input row ---------- */
 .combobox-input-wrap {
   position: relative;
   display: flex;
@@ -33,6 +76,17 @@
 .combobox-clear:hover,
 .combobox-toggle:hover { color: #222; background: transparent; }
 
+/* ---------- selection count badge ---------- */
+.combobox-count {
+  font-size: 0.78rem;
+  color: #666;
+  margin-top: 0.35rem;
+  font-variant-numeric: tabular-nums;
+}
+.combobox-count[hidden] { display: none; }
+.combobox-count strong { color: #1e5f9e; }
+
+/* ---------- listbox ---------- */
 .combobox-listbox {
   position: absolute;
   top: 100%;
@@ -45,26 +99,92 @@
   border: 1px solid #ccc;
   border-radius: 4px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-  max-height: 280px;
+  max-height: 320px;
   overflow-y: auto;
   z-index: 100;
 }
 
+/* sticky header row inside the listbox: select-all / clear-all */
+.combobox-listbox-header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  background: #f7f8fa;
+  border-bottom: 1px solid #e2e6ea;
+  font-size: 0.82rem;
+  color: #555;
+  z-index: 1;
+}
+.combobox-listbox-header label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  margin: 0;
+  font-size: 0.82rem;
+  color: #333;
+}
+.combobox-selectall-link {
+  background: none;
+  border: none;
+  color: #1e5f9e;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-family: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
+.combobox-selectall-link:hover { color: #a02525; }
+
+/* ---------- option row ---------- */
 .combobox-option {
   display: flex;
-  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.6rem;
   padding: 0.45rem 0.75rem;
   cursor: pointer;
   font-size: 0.9rem;
+  border-left: 3px solid transparent;
 }
-.combobox-option[aria-selected="true"] { background: #eaf2fb; }
-.combobox-option-name { font-weight: 500; color: #222; }
+.combobox-option:hover { background: #f4f7fb; }
+.combobox-option[aria-selected="true"] {
+  background: #eaf2fb;
+  border-left-color: #4a90e2;
+}
+.combobox-option input[type="checkbox"] {
+  margin: 0.15rem 0 0;
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  cursor: pointer;
+  accent-color: #4a90e2;
+}
+.combobox-option-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.combobox-option-name {
+  font-weight: 500;
+  color: #222;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .combobox-option-meta {
   font-size: 0.78rem;
   color: #888;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
+/* ---------- status / retry ---------- */
 .combobox-status {
   position: absolute;
   top: 100%;
@@ -79,6 +199,7 @@
   color: #666;
   z-index: 100;
 }
+.combobox-status[hidden] { display: none; }
 .combobox-retry {
   background: none;
   border: none;
@@ -90,7 +211,21 @@
   text-decoration: underline;
 }
 
-/* Date presets */
+/* ---------- warning when many trucks selected ---------- */
+.combobox-warn {
+  margin-top: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  background: #fff7e6;
+  color: #8a5a00;
+  border: 1px solid #f0d9a8;
+  border-radius: 4px;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+.combobox-warn[hidden] { display: none; }
+.combobox-warn strong { font-weight: 600; }
+
+/* ---------- date presets (unchanged) ---------- */
 .date-presets {
   display: flex;
   gap: 0.4rem;
@@ -109,11 +244,17 @@
 }
 .date-preset:hover { background: #e2e6eb; }
 
-    input[type="datetime-local"] {
-      width: 100%; padding: 0.5rem 0.75rem;
-      border: 1px solid #ccc; border-radius: 4px;
-      font-size: 0.95rem; font-family: inherit;
-      background: #fff;
-      color: inherit;
-    }
-    input[type="datetime-local"]:focus { outline: none; border-color: #4a90e2; }
+input[type="datetime-local"] {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  background: #fff;
+  color: inherit;
+}
+input[type="datetime-local"]:focus {
+  outline: none;
+  border-color: #4a90e2;
+}

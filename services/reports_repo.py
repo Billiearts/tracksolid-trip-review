@@ -104,16 +104,22 @@ def mark_failed(report_id: str, error: str) -> None:
     }).eq("id", report_id).execute()
 
 
-def save_computed(report_id: str, data: dict) -> None:
+def save_computed(report_id: str, data) -> None:
+    """Persist `computed_json`. `data` is a dict for single-trip reports and
+    a list of dicts for bulk reports."""
     client = admin_client()
     client.table("reports").update({
         "computed_json": data,
     }).eq("id", report_id).execute()
 
 
-def update_manual(report_id: str, manual: dict,
+def update_manual(report_id: str, manual,
                   filesize_bytes: int | None = None) -> None:
-    """Update only the manual metadata (and optionally file size) on a report."""
+    """Update the manual metadata (and optionally file size) on a report.
+
+    `manual` is a dict for single-trip reports, or a dict keyed by str(trip_index)
+    for bulk reports.
+    """
     client = admin_client()
     payload = {"manual_json": manual or {}}
     if filesize_bytes is not None:

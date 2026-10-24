@@ -9,59 +9,230 @@
     </div>
 
     <p style="color: #666; font-size: 0.9rem; margin: 0 0 1rem;">
-      {{ truck }} &middot; IMEI {{ imei }}
-      &middot; {{ trips | length }} trip(s) found
+      {{ truck_groups | length }} truck{{ 's' if truck_groups | length != 1 else '' }}
+      &middot; {{ total_trips }} trip{{ 's' if total_trips != 1 else '' }} found
+      &middot; date range {{ begin_str }} → {{ end_str }}
     </p>
 
+    {% if not_found %}
+      <div class="flash error" style="margin-bottom: 1rem;">
+        Could not resolve
+        {{ not_found | length }} truck{{ 's' if not_found | length != 1 else '' }}:
+        {{ not_found | join(', ') }}.
+        They have been skipped.
+      </div>
+    {% endif %}
+
     <form action="{{ url_for('preview_start') }}" method="post" id="trips-form"
-          data-loading-overlay="Computing selected trips… this can take up to 90 seconds.">
-      <input type="hidden" name="truck" value="{{ truck }}">
-      <input type="hidden" name="imei" value="{{ imei }}">
-      <input type="hidden" name="truck_name" value="{{ truck }}">
-      <input type="hidden" name="driver_name" value="{{ driver_name }}">
+          data-loading-overlay="Computing selected trips… this can take up to 90 seconds per trip.">
       <input type="hidden" name="include_history"
              value="{{ 'on' if include_history else '' }}">
-      <input type="hidden" name="trips_json" value="{{ trips_json }}">
+      <input type="hidden" name="selected_trips" id="selected-trips" value="[]">
 
-      <div class="table-scroll">
-        <table class="preview-table">
-          <thead>
-            <tr>
-              <th style="width: 40px;"></th>
-              <th style="width: 40px;">#</th>
-              <th>Start</th>
-              <th>End</th>
-              <th>Duration</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for t in trips %}
-              <tr>
-                <td>
-                  <input type="checkbox" name="trip_index"
-                         value="{{ loop.index0 }}" checked>
-                </td>
-                <td>{{ loop.index }}</td>
-                <td style="text-align: left;">
-                  {{ t.start.strftime('%Y-%m-%d %H:%M:%S') }}
-                </td>
-                <td style="text-align: left;">
-                  {{ t.end.strftime('%Y-%m-%d %H:%M:%S') }}
-                </td>
-                <td>{{ t.duration_s | fmt_duration }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
+      {% for g in truck_groups %}
+        <div class="truck-block" data-truck-imei="{{ g.imei }}"
+             style="margin-bottom: 1.75rem;">
+          <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
+            <h3 style="font-size: 0.95rem; margin: 0; color: #1e5f9e;">
+              {{ g.truck }}
+              <span style="color: #888; font-weight: 400; font-size: 0.8rem;">
+                &middot; IMEI {{ g.imei }}
+                &middot; {{ g.trips | length }} trip{{ 's' if g.trips | length != 1 else '' }}
+              </span>
+            </h3>
+            <div style="display: flex; align-items: center; gap: 0.6rem;">
+              <span class="truck-counter" data-imei="{{ g.imei }}"
+                    style="font-size: 0.8rem; color: #666; font-variant-numeric: tabular-nums;">
+                0 of {{ max_per_truck }} selected
+              </span>
+              <button type="button" class="role-btn truck-select-all"
+                      data-truck-imei="{{ g.imei }}">
+                Select up to {{ max_per_truck }}
+              </button>
+              <button type="button" class="role-btn truck-clear-all"
+                      data-truck-imei="{{ g.imei }}">
+                Clear
+              </button>
+            </div>
+          </div>
+
+          <div class="table-scroll">
+            <table class="preview-table">
+              <thead>
+                <tr>
+                  <th style="width: 40px;"></th>
+                  <th style="width: 40px;">#</th>
+                  <th>Start</th>
+                  <th>End</th>
+                  <th>Duration</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for t in g.trips %}
+                  <tr>
+                    <td>
+                      <input type="checkbox" class="trip-checkbox"
+                             data-truck="{{ g.truck }}"
+                             data-imei="{{ g.imei }}"
+                             data-driver="{{ g.driver_name or '' }}"
+                             data-start="{{ t.start.strftime('%Y-%m-%d %H:%M:%S') }}"
+                             data-end="{{ t.end.strftime('%Y-%m-%d %H:%M:%S') }}"
+                             value="{{ loop.index0 }}" checked>
+                    </td>
+                    <td>{{ loop.index }}</td>
+                    <td style="text-align: left;">{{ t.start.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td style="text-align: left;">{{ t.end.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td>{{ t.duration_s | fmt_duration }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      {% endfor %}
 
       <p style="color: #888; font-size: 0.85rem; margin: 1rem 0;">
-        All trips are checked by default. Uncheck any you don't want.
-        Up to 5 trips per preview.
+        Up to <strong>{{ max_per_truck }} trips per truck</strong>.
+        Uncheck any trips you don't want.
       </p>
 
-      <button type="submit">Preview selected trips</button>
+      <p id="trip-cap-warning" class="flash error" style="display: none;"></p>
+
+      <button type="submit" id="preview-btn">Preview selected trips</button>
     </form>
   </div>
 
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    (function () {
+      const MAX_PER_TRUCK = {{ max_per_truck }};
+      const form    = document.getElementById('trips-form');
+      const hidden  = document.getElementById('selected-trips');
+      const warnEl  = document.getElementById('trip-cap-warning');
+      const btn     = document.getElementById('preview-btn');
+      const boxes   = () => Array.from(document.querySelectorAll('.trip-checkbox'));
+
+      function checkedForTruck(imei) {
+        return boxes().filter((b) => b.checked && b.dataset.imei === imei);
+      }
+      function allForTruck(imei) {
+        return boxes().filter((b) => b.dataset.imei === imei);
+      }
+      function checkedBoxes() { return boxes().filter((b) => b.checked); }
+
+      function updateCounter(imei) {
+        const el = document.querySelector('.truck-counter[data-imei="' + imei + '"]');
+        if (!el) return;
+        const n = checkedForTruck(imei).length;
+        el.textContent = n + ' of ' + MAX_PER_TRUCK + ' selected';
+        el.style.color = n >= MAX_PER_TRUCK ? '#a02525' : '#666';
+      }
+
+      function enforce() {
+        // If a truck somehow has more than MAX_PER_TRUCK checked (e.g. after
+        // a select-all), uncheck the overflow deterministically.
+        const byTruck = {};
+        for (const b of boxes()) {
+          if (!b.checked) continue;
+          (byTruck[b.dataset.imei] = byTruck[b.dataset.imei] || []).push(b);
+        }
+        let overflow = false;
+        for (const imei in byTruck) {
+          const list = byTruck[imei];
+          if (list.length > MAX_PER_TRUCK) {
+            overflow = true;
+            // Keep the first MAX_PER_TRUCK; uncheck the rest.
+            for (let i = MAX_PER_TRUCK; i < list.length; i++) {
+              list[i].checked = false;
+            }
+          }
+        }
+        return overflow;
+      }
+
+      function sync() {
+        enforce();
+        const sel = checkedBoxes();
+        hidden.value = JSON.stringify(sel.map((b) => ({
+          truck:  b.dataset.truck,
+          imei:   b.dataset.imei,
+          driver: b.dataset.driver,
+          start:  b.dataset.start,
+          end:    b.dataset.end,
+        })));
+
+        const imeis = new Set(boxes().map((b) => b.dataset.imei));
+        imeis.forEach(updateCounter);
+
+        if (sel.length === 0) {
+          warnEl.style.display = 'none';
+          btn.disabled = true;
+        } else {
+          warnEl.style.display = 'none';
+          btn.disabled = false;
+        }
+      }
+
+      document.querySelectorAll('.trip-checkbox').forEach((b) => {
+        b.addEventListener('change', () => {
+          // If the user is trying to check a 6th for this truck, refuse.
+          if (b.checked && checkedForTruck(b.dataset.imei).length > MAX_PER_TRUCK) {
+            b.checked = false;
+            warnEl.textContent =
+              'You can select at most ' + MAX_PER_TRUCK +
+              ' trips per truck.';
+            warnEl.style.display = 'block';
+            return;
+          }
+          sync();
+        });
+      });
+
+      document.querySelectorAll('.truck-select-all').forEach((btnEl) => {
+        btnEl.addEventListener('click', function () {
+          const imei = btnEl.dataset.truckImei;
+          const group = allForTruck(imei);
+          let chosen = 0;
+          group.forEach((b) => {
+            if (chosen < MAX_PER_TRUCK) { b.checked = true; chosen++; }
+            else b.checked = false;
+          });
+          sync();
+        });
+      });
+
+      document.querySelectorAll('.truck-clear-all').forEach((btnEl) => {
+        btnEl.addEventListener('click', function () {
+          allForTruck(btnEl.dataset.truckImei).forEach((b) => { b.checked = false; });
+          sync();
+        });
+      });
+
+      form.addEventListener('submit', function (e) {
+        const sel = checkedBoxes();
+        if (sel.length === 0) {
+          e.preventDefault();
+          alert('Please select at least one trip.');
+          return;
+        }
+        // Per-truck cap re-check (defensive — shouldn't trip because sync()
+        // enforces it, but a user could disable JS).
+        const byTruck = {};
+        for (const b of sel) {
+          byTruck[b.dataset.imei] = (byTruck[b.dataset.imei] || 0) + 1;
+        }
+        for (const imei in byTruck) {
+          if (byTruck[imei] > MAX_PER_TRUCK) {
+            e.preventDefault();
+            alert('A truck has more than ' + MAX_PER_TRUCK + ' trips selected.');
+            return;
+          }
+        }
+      });
+
+      sync();
+    })();
+  </script>
 {% endblock %}
