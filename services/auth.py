@@ -101,33 +101,50 @@ def login(email: str, password: str) -> dict:
 
 
 def get_user_profile(user_id: str) -> dict:
-    """Return {'role': ..., 'full_name': ...}. Defaults are safe."""
+    """Return {'role', 'full_name', 'email', 'extra_roles'}. Defaults are safe."""
     client = admin_client()
     try:
         resp = (
             client.table("profiles")
-            .select("role,full_name,email")
+            .select("role,full_name,email,extra_roles")
             .eq("id", user_id)
             .limit(1)
             .execute()
         )
     except Exception as exc:
         log.warning("get_user_profile failed for %s: %s", user_id, exc)
-        return {"role": "user", "full_name": "", "email": ""}
+        return {"role": "user", "full_name": "", "email": "", "extra_roles": []}
 
     rows = resp.data or []
     if not rows:
-        return {"role": "user", "full_name": "", "email": ""}
+        return {"role": "user", "full_name": "", "email": "", "extra_roles": []}
     row = rows[0]
     return {
-        "role":      row.get("role") or "user",
-        "full_name": row.get("full_name") or "",
-        "email":     row.get("email") or "",
+        "role":        row.get("role") or "user",
+        "full_name":   row.get("full_name") or "",
+        "email":       row.get("email") or "",
+        "extra_roles": row.get("extra_roles") or [],
     }
 
 
 def get_user_role(user_id: str) -> str:
     return get_user_profile(user_id)["role"]
+
+
+def get_user_roles(user_id: str) -> set[str]:
+    """Return the full role set: base role + extra_roles.
+
+    A user with role='admin' and extra_roles=['live_fleet_view'] returns
+    {'admin', 'live_fleet_view'}. A user with role='user' and no extra_roles
+    returns {'user'}.
+    """
+    profile = get_user_profile(user_id)
+    roles: set[str] = set()
+    if profile.get("role"):
+        roles.add(profile["role"])
+    for r in profile.get("extra_roles") or []:
+        roles.add(r)
+    return roles
 
 
 def list_users_with_roles() -> list[dict]:
@@ -160,6 +177,7 @@ def list_users_with_roles() -> list[dict]:
             "email":           email,
             "full_name":       profile.get("full_name") or _default_name(email),
             "role":            profile.get("role", "user"),
+            "extra_roles":     profile.get("extra_roles") or [],
             "created_at":      _to_iso(getattr(u, "created_at", None)),
             "last_sign_in_at": _to_iso(getattr(u, "last_sign_in_at", None)),
         })
@@ -197,6 +215,7 @@ def list_users_with_roles_paginated(page: int = 1, per_page: int = 50) -> dict:
             "email":           email,
             "full_name":       profile.get("full_name") or _default_name(email),
             "role":            profile.get("role", "user"),
+            "extra_roles":     profile.get("extra_roles") or [],
             "created_at":      _to_iso(getattr(u, "created_at", None)),
             "last_sign_in_at": _to_iso(getattr(u, "last_sign_in_at", None)),
         })
@@ -210,6 +229,17 @@ def set_role(user_id: str, role: str) -> None:
     client = admin_client()
     try:
         client.table("profiles").update({"role": role}).eq("id", user_id).execute()
+    except Exception as exc:
+        raise AuthError(_clean(exc)) from exc
+
+
+def set_extra_roles(user_id: str, extra_roles: list[str]) -> None:
+    """Replace a user's extra_roles list."""
+    client = admin_client()
+    try:
+        client.table("profiles").update({
+            "extra_roles": list(extra_roles),
+        }).eq("id", user_id).execute()
     except Exception as exc:
         raise AuthError(_clean(exc)) from exc
 
@@ -248,7 +278,8 @@ def update_user(user_id: str, *,
                 email: str | None = None,
                 password: str | None = None,
                 role: str | None = None,
-                full_name: str | None = None) -> None:
+                full_name: str | None = None,
+                extra_roles: list[str] | None = None) -> None:
     client = admin_client()
 
     attributes: dict = {}
@@ -273,6 +304,8 @@ def update_user(user_id: str, *,
         profile_update["role"] = role
     if full_name is not None:
         profile_update["full_name"] = full_name
+    if extra_roles is not None:
+        profile_update["extra_roles"] = list(extra_roles)
 
     if profile_update:
         try:

@@ -21,7 +21,7 @@ from report import (
     compute_report, write_excel, write_bulk_excel,
     utc_str, find_trips,
 )
-from services.devices import find_device, get_devices
+from services.devices import classify_device, find_device, get_devices
 from services import jobs
 from services import reports_repo
 from services import sessions as sessions_svc
@@ -50,11 +50,13 @@ MAX_TRIPS_PER_TRUCK = 5
 
 
 # --- blueprints -----------------------------------------------------------
-from blueprints.auth  import bp as auth_bp
-from blueprints.admin import bp as admin_bp
+from blueprints.auth       import bp as auth_bp
+from blueprints.admin      import bp as admin_bp
+from blueprints.live_fleet import bp as live_fleet_bp
 
 app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
+app.register_blueprint(live_fleet_bp)
 
 
 # --- startup maintenance --------------------------------------------------
@@ -112,17 +114,6 @@ def fmt_duration(seconds):
 
 
 def _collect_manual_from_form():
-    """Collect the *edit* form fields.
-
-    Signature semantics:
-      - Empty ``meta_signature`` means "keep whatever is already stored".
-        We therefore omit both ``signature`` and ``signature_kind`` in that
-        case, and the caller merges the old values back in.
-      - A non-empty ``meta_signature`` always carries a ``signature_kind``
-        (``image`` for the canvas, or omitted for a legacy text value).
-        We keep ``signature_kind`` in that case even if it looks odd, so the
-        Excel writer can pick the correct branch.
-    """
     signature = (request.form.get("meta_signature") or "").strip()
     raw = {
         "driver_name":   (request.form.get("meta_driver_name")   or "").strip(),
@@ -135,40 +126,6 @@ def _collect_manual_from_form():
     if signature:
         out["signature"] = signature
         out["signature_kind"] = "image"
-    return out
-
-
-def _normalise_submitted_manual(raw: dict) -> dict:
-    """Convert raw preview-form fields (meta_*) into the manual dict shape
-    that ``fill_sheet`` / ``write_bulk_excel`` expect.
-
-    The preview page stores form fields in ``localStorage`` under their raw
-    ``meta_*`` names, then injects them into the bulk-export POST. Without
-    this transformation the server would receive ``meta_driver_name`` while
-    ``fill_sheet`` looks for ``driver_name`` — so nothing would be written
-    and the report would appear to have no manual data.
-    """
-    if not isinstance(raw, dict):
-        return {}
-
-    out: dict = {}
-    mapping = {
-        "meta_driver_name": "driver_name",
-        "meta_out_of_fuel": "out_of_fuel",
-        "meta_accidents":   "accidents",
-        "meta_tyres":       "tyres_damaged",
-        "meta_breakdown":   "breakdown",
-    }
-    for form_key, manual_key in mapping.items():
-        val = (raw.get(form_key) or "").strip()
-        if val:
-            out[manual_key] = val
-
-    sig = (raw.get("meta_signature") or "").strip()
-    if sig:
-        out["signature"] = sig
-        out["signature_kind"] = raw.get("meta_signature_kind") or "image"
-
     return out
 
 
@@ -239,21 +196,40 @@ def _bulk_safe_filename_label(reports: list[dict]) -> str:
 
 
 def _merge_manual(old: dict | None, new: dict) -> dict:
-    """Preserve old values when the form left a field out.
-
-    The edit forms intentionally omit ``signature``/``signature_kind`` when
-    the canvas was empty — we take that to mean "leave the existing
-    signature alone" and carry the old ones forward.
-    """
     old = old or {}
     merged = dict(old)
-    # Every key in `new` overrides what was there; missing keys fall back
-    # to the old dict via the initial `dict(old)`.
     for k, v in new.items():
         if k in ("signature", "signature_kind") and not v:
             continue
         merged[k] = v
     return merged
+
+
+def _normalise_submitted_manual(raw: dict) -> dict:
+    """Convert raw preview-form fields (meta_*) into the manual dict shape
+    that fill_sheet / write_bulk_excel expect."""
+    if not isinstance(raw, dict):
+        return {}
+
+    out: dict = {}
+    mapping = {
+        "meta_driver_name": "driver_name",
+        "meta_out_of_fuel": "out_of_fuel",
+        "meta_accidents":   "accidents",
+        "meta_tyres":       "tyres_damaged",
+        "meta_breakdown":   "breakdown",
+    }
+    for form_key, manual_key in mapping.items():
+        val = (raw.get(form_key) or "").strip()
+        if val:
+            out[manual_key] = val
+
+    sig = (raw.get("meta_signature") or "").strip()
+    if sig:
+        out["signature"] = sig
+        out["signature_kind"] = raw.get("meta_signature_kind") or "image"
+
+    return out
 
 
 # --- background workers ---------------------------------------------------
@@ -300,9 +276,6 @@ def _run_export(job_id, computed, out_path, manual):
 
     try:
         reports_repo.save_computed(job_id, _to_jsonable(computed))
-        # Persist the manual (incl. signature) so the row can be viewed and
-        # re-edited straight away — without this the second open shows an
-        # empty signature.
         reports_repo.update_manual(job_id, manual)
     except Exception:
         log.exception("could not save computed/manual for %s", job_id)
@@ -381,6 +354,7 @@ def api_status():
 @app.route("/api/devices")
 @login_required
 def api_devices():
+    include_operational = request.args.get("include_operational") == "1"
     try:
         devices = get_devices()
     except Exception as exc:
@@ -392,10 +366,15 @@ def api_devices():
         imei = d.get("imei")
         if not imei:
             continue
+        name = d.get("deviceName") or imei
+        category = classify_device(name)
+        if category != "regular" and not include_operational:
+            continue
         out.append({
-            "imei":   imei,
-            "name":   d.get("deviceName") or imei,
-            "driver": d.get("driverName") or "",
+            "imei":     imei,
+            "name":     name,
+            "driver":   d.get("driverName") or "",
+            "category": category,
         })
     out.sort(key=lambda x: x["name"].lower())
     return jsonify({"devices": out})
@@ -679,11 +658,6 @@ def export_bulk():
         flash("Preview has no data.", "error")
         return redirect(url_for("preview_show", preview_id=preview_id))
 
-    # ---------------------------------------------------------------
-    # Parse per-trip manual data injected by the client from
-    # localStorage. Raw keys are ``meta_*`` — normalise them to the
-    # manual-dict shape fill_sheet() expects.
-    # ---------------------------------------------------------------
     submitted_manual: dict[str, dict] = {}
     per_trip_manual_raw = request.form.get("per_trip_manual") or "{}"
     try:

@@ -38,6 +38,19 @@
           <option value="admin" {{ 'selected' if user.role == 'admin' else '' }}>Admin</option>
         </select>
       </div>
+      <div class="field">
+        <label>Additional roles</label>
+        <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.9rem;cursor:pointer;margin-bottom:0.35rem;">
+          <input type="checkbox" name="extra_live_fleet_view"
+                 {% if 'live_fleet_view' in (user.extra_roles or []) %}checked{% endif %}>
+          Live fleet view
+          <span class="muted" style="font-size:0.8rem;">(access the Live tab)</span>
+        </label>
+        <p class="muted" style="font-size:0.78rem;margin:0.25rem 0 0;">
+          Additional roles are independent of the base role. An admin without
+          this role cannot access the Live page.
+        </p>
+      </div>
       <button type="submit" style="width: 100%;">Save changes</button>
     </form>
 

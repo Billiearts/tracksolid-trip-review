@@ -7,10 +7,14 @@ both the Flask app and the CLI.
 Pagination: the first call mirrors the original minimal request (target
 only). If the response advertises a total larger than the batch, we page.
 If the API rejects page/page_size, we log and accept the single page.
+
+Truck classification (regular / operational / ambiguous) is used by the
+live fleet feature to hide non-corridor trucks from the map.
 """
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 from jimi import api_call, USER_ID
@@ -25,12 +29,28 @@ _PAGE_SIZE = 500
 _MAX_PAGES = 50
 
 
-def _extract_batch_and_total(response: dict) -> tuple[list[dict], int | None]:
-    """Return (batch, total) from whatever shape the API sends.
+# Tier 1 — strict "regular fleet truck" name pattern.
+_REGULAR_TRUCK_RE = re.compile(
+    r"^\s*(?:GT|GN|GR|GE|GC)\s*\d{3,5}\s*-\s*\d{2}\s*$",
+    re.IGNORECASE,
+)
 
-    Handles: {"result": [...]}, {"result": {"list": [...]}},
-    {"result": {"list": [...], "total": N}}, {"result": {"items": [...]}}.
-    """
+# Tier 2 — known operational-fleet keywords (case-insensitive substring).
+_OPERATIONAL_KEYWORDS = (
+    "canteen",
+    "service van",
+    "bowser",
+    "crane",
+    "tow truck",
+    "tdi",
+    "hlge",
+    "bogoso",
+    "mining",
+)
+
+
+def _extract_batch_and_total(response: dict) -> tuple[list[dict], int | None]:
+    """Return (batch, total) from whatever shape the API sends."""
     result = response.get("result")
     if result is None:
         result = response.get("data")
@@ -59,8 +79,6 @@ def _extract_batch_and_total(response: dict) -> tuple[list[dict], int | None]:
 
 
 def _fetch_page(page: int) -> tuple[list[dict], int | None]:
-    """Fetch one page. Page 1 uses the minimal call; later pages add
-    pagination params. If the API rejects them, we stop paging."""
     if page == 1:
         response = api_call("jimi.user.device.list", {"target": USER_ID})
         return _extract_batch_and_total(response)
@@ -111,13 +129,22 @@ def get_devices() -> list[dict]:
     return devices
 
 
-def find_device(query: str) -> dict | None:
-    """Resolve a query to a single device.
+def classify_device(device_name: str) -> str:
+    """Return 'regular', 'operational', or 'ambiguous' for a truck name."""
+    name = (device_name or "").strip()
+    if not name:
+        return "operational"
+    lower = name.lower()
+    for kw in _OPERATIONAL_KEYWORDS:
+        if kw in lower:
+            return "operational"
+    if _REGULAR_TRUCK_RE.match(name):
+        return "regular"
+    return "ambiguous"
 
-      - IMEI (>=10 digits)  → exact match.
-      - Otherwise          → case-insensitive substring against deviceName,
-                             and only if exactly one device matches.
-    """
+
+def find_device(query: str) -> dict | None:
+    """Resolve a query to a single device."""
     devices = get_devices()
     q = query.strip().lower()
     if not q:
@@ -134,8 +161,6 @@ def find_device(query: str) -> dict | None:
 
 
 def resolve_device(query: str) -> tuple[dict | None, list[dict]]:
-    """Like find_device, but returns (match, all_matches) so callers can
-    show a helpful 'multiple matches' message instead of a dead end."""
     devices = get_devices()
     q = query.strip().lower()
     if not q:

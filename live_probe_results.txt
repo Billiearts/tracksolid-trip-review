@@ -1,0 +1,1522 @@
+Scan window: 2026-10-19 18:13:03 to 2026-10-26 18:13:03
+
+================================================================================
+[1/169] GT 8573 - 25 (865135061393573)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 13:22:43 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 13:22:43 | in | TRIP TIME GBC
+    2026-10-26 13:22:43 | out | FUEL AND WAYBILL
+    2026-10-26 13:22:33 | out | GBC EXITED
+    2026-10-26 13:22:33 | out | HAULAGE TRUCKS EXIT
+    2026-10-26 13:17:43 | out | WAITING TIME
+----------------------------------------
+[2/169] GT 8594 - 25 (865135061382576)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 18:03:58 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:03:58 | out | TAKORADI ENTRY
+    2026-10-26 18:00:55 | ACC_ON | 
+    2026-10-26 17:52:27 | ACC_OFF | 
+    2026-10-26 17:42:09 | ACC_ON | 
+    2026-10-26 16:58:04 | stayAlert | 
+----------------------------------------
+[3/169] GT 8009 - 25 (865135061397855)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 11:00:06 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:30:57 | ACC_ON | 
+    2026-10-26 17:09:18 | stayAlert | 
+    2026-10-26 16:54:18 | ACC_OFF | 
+    2026-10-26 16:53:51 | ACC_ON | 
+    2026-10-26 16:49:41 | ACC_OFF | 
+----------------------------------------
+[4/169] GT 8228 - 25 (865135061396881)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 10:13:38 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:46:39 | overSpeed | platform
+    2026-10-26 16:25:04 | ACC_ON | 
+    2026-10-26 16:24:56 | ACC_OFF | 
+    2026-10-26 16:02:42 | ACC_ON | 
+    2026-10-26 16:00:50 | ACC_OFF | 
+----------------------------------------
+[5/169] GT 8639 - 25 (865135061397863)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 15:50:18 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:15:36 | stayTimeIn | 
+    2026-10-26 15:50:18 | in | TRIP TIME GBC
+    2026-10-26 15:50:18 | out | FUEL AND WAYBILL
+    2026-10-26 15:49:58 | out | GBC EXITED
+    2026-10-26 15:49:58 | out | HAULAGE TRUCKS EXIT
+----------------------------------------
+[6/169] GT 8061 - 25 (865135061397954)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 10:45:13 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 15:30:27 | stayTimeIn | 
+    2026-10-26 15:30:27 | stayTimeIn | 
+    2026-10-26 15:30:27 | stayTimeOut | 
+    2026-10-26 15:30:17 | stayTimeIn | 
+    2026-10-26 15:24:57 | stayTimeIn | 
+----------------------------------------
+[7/169] GT 8633 - 25 (865135061397830)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 18:08:34 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:08:34 | out | FUEL AND WAYBILL
+    2026-10-26 18:08:34 | in | TRIP TIME GBC
+    2026-10-26 18:08:24 | out | GBC EXITED
+    2026-10-26 18:08:24 | out | HAULAGE TRUCKS EXIT
+    2026-10-26 18:01:44 | in | WEIGHING TIME
+----------------------------------------
+[8/169] GT 8606 - 25 (865135061392385)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 10:35:06 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 13:55:29 | ACC_ON | 
+    2026-10-26 13:48:34 | ACC_OFF | 
+    2026-10-26 13:39:55 | ACC_ON | 
+    2026-10-26 13:37:07 | ACC_OFF | 
+    2026-10-26 13:37:01 | ACC_ON | 
+----------------------------------------
+[9/169] GT 8131 -25 (865135061392260)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 16:39:00 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:43:03 | ACC_ON | 
+    2026-10-26 16:40:47 | ACC_OFF | 
+    2026-10-26 16:39:00 | out | FUEL AND WAYBILL
+    2026-10-26 16:39:00 | in | TRIP TIME GBC
+    2026-10-26 16:38:50 | out | HAULAGE TRUCKS EXIT
+----------------------------------------
+[10/169] GT 8049 - 25 (865135061390942)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 11:02:25 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:58:01 | stayTimeIn | 
+    2026-10-26 17:35:04 | ACC_ON | 
+    2026-10-26 17:28:23 | ACC_OFF | 
+    2026-10-26 17:27:21 | ACC_ON | 
+    2026-10-26 17:24:08 | ACC_OFF | 
+----------------------------------------
+[11/169] GT 8318-25 (865135061394043)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 17:22:47 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:53:47 | stayTimeIn | 
+    2026-10-26 17:52:51 | ACC_ON | 
+    2026-10-26 17:47:31 | ACC_OFF | 
+    2026-10-26 17:45:52 | ACC_ON | 
+    2026-10-26 17:35:46 | stayTimeOut | 
+----------------------------------------
+[12/169] GT 8002 - 25 (865135061390843)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 11:57:17 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:05:35 | stayTimeOut | 
+    2026-10-26 17:43:12 | ACC_ON | 
+    2026-10-26 17:35:27 | stayAlert | 
+    2026-10-26 17:20:27 | ACC_OFF | 
+    2026-10-26 15:56:17 | ACC_ON | 
+----------------------------------------
+[13/169] GT 8581-25 (865135061407373)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 16:30:07 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:29:10 | 41 | 
+    2026-10-26 17:28:30 | offline | 
+    2026-10-26 16:30:07 | in | TRIP TIME GBC
+    2026-10-26 16:29:57 | out | FUEL AND WAYBILL
+    2026-10-26 16:29:57 | out | GBC EXITED
+----------------------------------------
+[14/169] GT 8616 - 25 (865135061407423)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 12:48:40 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:07:11 | in | FUELING TIME
+    2026-10-26 18:05:35 | out | WAYBILL TIME
+    2026-10-26 18:04:25 | ACC_ON | 
+    2026-10-26 18:00:33 | ACC_OFF | 
+    2026-10-26 18:00:32 | out | MAINTENANCE TIME
+----------------------------------------
+[15/169] GT 8010 - 25 (865135061392658)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 10:22:54 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:37:52 | overSpeed | platform
+    2026-10-26 10:22:54 | in | TRIP TIME GBC
+    2026-10-26 10:22:54 | out | FUEL AND WAYBILL
+    2026-10-26 10:22:44 | out | GBC EXITED
+    2026-10-26 10:22:44 | out | HAULAGE TRUCKS EXIT
+----------------------------------------
+[16/169] GT 8629-25 (865135061404065)
+  -> DERIVED STATE: unknown
+  -> MATCHED EVENT: None found
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-23 11:26:40 | stayTimeOut | 
+    2026-10-23 11:18:15 | stayTimeIn | 
+    2026-10-23 11:14:45 | stayTimeIn | 
+    2026-10-23 11:13:45 | stayTimeIn | 
+    2026-10-22 14:04:11 | offline | 
+----------------------------------------
+[17/169] GT 8096 - 25 (865135061392336)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 12:30:35 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:34:10 | stayAlert | 
+    2026-10-26 17:19:10 | ACC_OFF | 
+    2026-10-26 17:19:09 | out | LOADED AND PARKED
+    2026-10-26 17:16:49 | ACC_ON | 
+    2026-10-26 17:07:05 | in | WAITING TIME
+----------------------------------------
+[18/169] GT 8630 - 25 (865135061383624)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 18:11:14 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:11:14 | in | TRIP TIME GBC
+    2026-10-26 18:11:14 | out | FUEL AND WAYBILL
+    2026-10-26 18:11:04 | out | GBC EXITED
+    2026-10-26 18:10:54 | out | HAULAGE TRUCKS EXIT
+    2026-10-26 18:03:14 | out | WAITING TIME
+----------------------------------------
+[19/169] GT 8587 - 25 (865135061391338)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 17:28:47 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:43:53 | ACC_ON | 
+    2026-10-26 17:31:13 | ACC_OFF | 
+    2026-10-26 17:28:47 | in | TRIP TIME GBC
+    2026-10-26 17:28:47 | out | FUEL AND WAYBILL
+    2026-10-26 17:28:37 | out | HAULAGE TRUCKS EXIT
+----------------------------------------
+[20/169] GT 6938 - 25 (865135060677604)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 16:44:37 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:10:54 | offline | 
+    2026-10-26 18:03:36 | overSpeed | platform
+    2026-10-26 17:00:10 | ACC_ON | 
+    2026-10-26 16:52:58 | ACC_OFF | 
+    2026-10-26 16:45:27 | out | GBC AWASO
+----------------------------------------
+[21/169] GT 8025-25 (865135060664651)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 10:38:22 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:12:34 | offline | 
+    2026-10-26 18:06:39 | stayTimeIn | 
+    2026-10-26 18:02:07 | stayTimeIn | 
+    2026-10-26 17:42:37 | stayTimeIn | 
+    2026-10-26 17:12:27 | stayTimeIn | 
+----------------------------------------
+[22/169] GT 6919 - 25 (865135060672035)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 12:00:48 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 15:47:30 | offline | 
+    2026-10-26 12:52:57 | overSpeed | platform
+    2026-10-26 12:33:04 | stayTimeOut | 
+    2026-10-26 12:01:28 | out | GBC AWASO
+    2026-10-26 12:00:48 | in | TRIP TIME GBC
+----------------------------------------
+[23/169] GN 2924 - 24 (865135060664875) - NO ALARMS RETURNED
+[24/169] GN 2906 - 24 (865135060674379)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 17:36:24 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:06:57 | ACC_OFF | 
+    2026-10-26 17:37:14 | out | GBC AWASO
+    2026-10-26 17:36:24 | out | FUEL AND WAYBILL
+    2026-10-26 17:36:24 | in | TRIP TIME GBC
+    2026-10-26 17:36:14 | out | GBC EXITED
+----------------------------------------
+[25/169] GT 7652 - 25 (865135060664560)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 16:59:44 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:11:52 | out | WAYBILL TIME
+    2026-10-26 18:06:52 | in | WAYBILL TIME
+    2026-10-26 18:06:52 | out | MAINTENANCE TIME
+    2026-10-26 18:04:41 | ACC_ON | 
+    2026-10-26 17:49:52 | ACC_ON | 
+----------------------------------------
+[26/169] GT 6873 - 25 (865135060666441)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 17:03:35 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:04:25 | out | GBC AWASO
+    2026-10-26 17:03:35 | out | FUEL AND WAYBILL
+    2026-10-26 17:03:35 | in | TRIP TIME GBC
+    2026-10-26 17:03:25 | out | HAULAGE TRUCKS EXIT
+    2026-10-26 17:03:25 | out | GBC EXITED
+----------------------------------------
+[27/169] GT 7363 - 25 (865135060665203)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 12:08:50 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:12:24 | ACC_OFF | 
+    2026-10-26 18:11:54 | ACC_ON | 
+    2026-10-26 15:26:07 | stayTimeOut | 
+    2026-10-26 15:19:38 | stayAlert | 
+    2026-10-26 15:04:38 | ACC_OFF | 
+----------------------------------------
+[28/169] GT 7607 - 25 (865135060667456)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 13:36:56 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 14:27:36 | overSpeed | platform
+    2026-10-26 13:40:26 | out | GBC AWASO 2
+    2026-10-26 13:36:56 | in | TRIP TIME GBC
+    2026-10-26 13:36:46 | out | HAULAGE TRUCKS EXIT
+    2026-10-26 13:36:46 | out | FUEL AND WAYBILL
+----------------------------------------
+[29/169] GT 7342 - 25 (865135060666599)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 15:13:58 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:11:50 | stayAlert | 
+    2026-10-26 15:56:50 | ACC_OFF | 
+    2026-10-26 15:14:08 | out | GBC TAKORADI
+    2026-10-26 15:13:58 | out | TAKORADI ENTRY
+    2026-10-26 15:10:41 | ACC_ON | 
+----------------------------------------
+[30/169] GT 7592 - 25 (865135060665195)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 16:13:45 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:13:55 | out | GBC TAKORADI
+    2026-10-26 16:13:45 | out | TAKORADI ENTRY
+    2026-10-26 16:09:01 | ACC_ON | 
+    2026-10-26 16:06:15 | ACC_OFF | 
+    2026-10-26 16:03:48 | ACC_ON | 
+----------------------------------------
+[31/169]  GN 2953 - 24 (865135060665062)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 16:42:19 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:42:19 | out | FUEL AND WAYBILL
+    2026-10-26 16:42:19 | in | TRIP TIME GBC
+    2026-10-26 16:42:09 | out | GBC EXITED
+    2026-10-26 16:41:59 | out | HAULAGE TRUCKS EXIT
+    2026-10-26 16:34:07 | stayTimeOut | 
+----------------------------------------
+[32/169] GN 2930 - 24 (865135060660618)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 09:20:26 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:12:40 | ACC_OFF | 
+    2026-10-26 18:08:30 | out | LOADED AND PARKED
+    2026-10-26 18:08:20 | out | WAITING TIME
+    2026-10-26 18:07:10 | ACC_ON | 
+    2026-10-26 17:54:25 | ACC_OFF | 
+----------------------------------------
+[33/169] GR 7828-19 (865135060658752)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-25 14:43:48 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 14:43:58 | stayTimeOut | 
+    2026-10-26 14:43:58 | stayTimeOut | 
+    2026-10-26 14:43:48 | stayTimeOut | 
+    2026-10-26 14:43:48 | stayTimeIn | 
+    2026-10-26 13:15:51 | stayAlert | 
+----------------------------------------
+[34/169] GT 6849 - 25 (865135060658406)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 12:08:39 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 13:35:39 | offline | 
+    2026-10-26 12:24:35 | ACC_ON | 
+    2026-10-26 12:12:18 | ACC_OFF | 
+    2026-10-26 12:11:29 | out | GBC AWASO
+    2026-10-26 12:08:39 | in | TRIP TIME GBC
+----------------------------------------
+[35/169]  GT 3241 - 19 (865135060668363) - NO ALARMS RETURNED
+[36/169] GN 2938 - 24 (865135060662945)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 16:29:53 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:26:49 | overSpeed | platform
+    2026-10-26 16:30:53 | out | GBC AWASO
+    2026-10-26 16:29:53 | in | TRIP TIME GBC
+    2026-10-26 16:29:43 | out | FUEL AND WAYBILL
+    2026-10-26 16:29:33 | out | HAULAGE TRUCKS EXIT
+----------------------------------------
+[37/169] GN 2908 - 24 (865135060667381)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 10:50:59 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:12:24 | out | WAITING TIME
+    2026-10-26 17:57:44 | ACC_OFF | 
+    2026-10-26 17:57:33 | ACC_ON | 
+    2026-10-26 17:16:21 | stayAlert | 
+    2026-10-26 17:01:21 | ACC_OFF | 
+----------------------------------------
+[38/169] GT 6949 - 25 (865135060656384)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 18:04:13 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:05:03 | out | GBC AWASO
+    2026-10-26 18:04:13 | in | TRIP TIME GBC
+    2026-10-26 18:04:13 | out | FUEL AND WAYBILL
+    2026-10-26 18:04:03 | out | HAULAGE TRUCKS EXIT
+    2026-10-26 18:04:03 | out | GBC EXITED
+----------------------------------------
+[39/169]  GN 2925 - 24 (865135060660584)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 14:06:04 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:06:24 | in | FUELING TIME
+    2026-10-26 18:04:08 | out | WAYBILL TIME
+    2026-10-26 17:59:39 | ACC_ON | 
+    2026-10-26 17:57:42 | ACC_OFF | 
+    2026-10-26 17:57:41 | in | WAYBILL TIME
+----------------------------------------
+[40/169] GT 6978 - 25 (865135060670484)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 13:42:16 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:34:06 | stayTimeIn | 
+    2026-10-26 16:55:42 | ACC_ON | 
+    2026-10-26 16:35:38 | stayAlert | 
+    2026-10-26 16:20:38 | ACC_OFF | 
+    2026-10-26 16:20:27 | ACC_ON | 
+----------------------------------------
+[41/169] GT 6880 - 25 (865135060671219)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 16:42:44 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:40:31 | overSpeed | platform
+    2026-10-26 16:43:24 | out | GBC AWASO
+    2026-10-26 16:42:44 | in | TRIP TIME GBC
+    2026-10-26 16:42:44 | out | FUEL AND WAYBILL
+    2026-10-26 16:42:34 | out | HAULAGE TRUCKS EXIT
+----------------------------------------
+[42/169] GT 7594 - 25 (865135060663414)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 11:15:06 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:14:49 | ACC_ON | 
+    2026-10-26 17:10:54 | ACC_OFF | 
+    2026-10-26 17:06:00 | stayTimeIn | 
+    2026-10-26 17:04:42 | ACC_ON | 
+    2026-10-26 17:04:35 | ACC_OFF | 
+----------------------------------------
+[43/169] GT 7521 - 25 (865135060664867)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 10:43:35 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:45:07 | stayTimeIn | 
+    2026-10-26 17:34:28 | stayTimeIn | 
+    2026-10-26 17:31:03 | stayTimeIn | 
+    2026-10-26 12:14:22 | ACC_ON | 
+    2026-10-26 11:54:04 | stayAlert | 
+----------------------------------------
+[44/169] GT 8300 - 23 (865135060618756)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 17:09:20 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:06:07 | stayTimeIn | 
+    2026-10-26 17:40:44 | stayAlert | 
+    2026-10-26 17:25:44 | ACC_OFF | 
+    2026-10-26 17:23:14 | stayTimeIn | 
+    2026-10-26 17:19:11 | ACC_ON | 
+----------------------------------------
+[45/169] GT 8580 - 23 (865135060633789)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 10:49:58 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:30:51 | ACC_ON | 
+    2026-10-26 17:00:24 | stayAlert | 
+    2026-10-26 16:45:09 | ACC_ON | 
+    2026-10-26 16:43:41 | ACC_OFF | 
+    2026-10-26 15:54:42 | overSpeed | platform
+----------------------------------------
+[46/169] GN 4998 - 22 (865135060618228) - NO ALARMS RETURNED
+[47/169] GT 8079 - 25 (865135060561774)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 11:09:21 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:16:18 | offline | 
+    2026-10-26 16:27:08 | ACC_ON | 
+    2026-10-26 16:22:29 | stayAlert | 
+    2026-10-26 16:07:27 | ACC_ON | 
+    2026-10-26 16:07:15 | ACC_OFF | 
+----------------------------------------
+[48/169] GT 7570 - 25 (865135060564836)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 12:04:35 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:09:31 | ACC_ON | 
+    2026-10-26 16:04:56 | ACC_OFF | 
+    2026-10-26 16:04:00 | ACC_ON | 
+    2026-10-26 15:57:24 | ACC_OFF | 
+    2026-10-26 15:56:45 | ACC_ON | 
+----------------------------------------
+[49/169] GE 7406 - 18 (865135060562889) - NO ALARMS RETURNED
+[50/169] GT 8017 - 25 (865135060560891)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 17:55:04 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:55:14 | out | GBC TAKORADI
+    2026-10-26 17:55:04 | out | TAKORADI ENTRY
+    2026-10-26 17:52:16 | ACC_ON | 
+    2026-10-26 17:49:20 | ACC_OFF | 
+    2026-10-26 17:43:56 | ACC_ON | 
+----------------------------------------
+[51/169] GR 7830 - 19 (865135060562822) - NO ALARMS RETURNED
+[52/169] GT 8064 - 25 (865135060560883)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 17:23:07 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:12:24 | ACC_OFF | 
+    2026-10-26 18:12:24 | out | MAINTENANCE TIME
+    2026-10-26 18:12:24 | in | WAYBILL TIME
+    2026-10-26 18:09:36 | ACC_ON | 
+    2026-10-26 18:04:22 | ACC_OFF | 
+----------------------------------------
+[53/169] GT 7641 - 25 (865135060582671)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-24 03:46:33 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-25 03:50:56 | stayTimeIn | 
+    2026-10-25 03:50:56 | stayTimeOut | 
+    2026-10-25 03:50:46 | stayTimeIn | 
+    2026-10-25 03:46:43 | stayTimeOut | 
+    2026-10-25 03:46:43 | stayTimeOut | 
+----------------------------------------
+[54/169] GN 4945 - 22 (865135060585948) - NO ALARMS RETURNED
+[55/169] GT 8570 - 25 (865135060577978)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 12:06:08 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:03:22 | stayAlert | 
+    2026-10-26 17:48:22 | ACC_OFF | 
+    2026-10-26 17:36:19 | in | LOADED AND PARKED
+    2026-10-26 17:36:19 | in | WEIGHING TIME
+    2026-10-26 17:36:19 | in | WAITING TIME
+----------------------------------------
+[56/169] GT 6942 - 25 (865135060577705)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 17:58:15 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:11:42 | ACC_OFF | 
+    2026-10-26 18:07:40 | out | WAITING TIME
+    2026-10-26 18:07:40 | in | MAINTENANCE TIME
+    2026-10-26 18:07:40 | out | LOADED AND PARKED
+    2026-10-26 18:07:10 | in | WAITING TIME
+----------------------------------------
+[57/169] GT 7620 - 25 (865135060563275)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 10:50:42 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:07:03 | stayAlert | 
+    2026-10-26 16:52:03 | ACC_OFF | 
+    2026-10-26 16:50:23 | ACC_ON | 
+    2026-10-26 16:44:04 | stayAlert | 
+    2026-10-26 16:29:04 | ACC_OFF | 
+----------------------------------------
+[58/169] GT 8075 - 25 (865135060566500)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 11:23:28 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:50:33 | stayTimeIn | 
+    2026-10-26 17:21:36 | stayTimeOut | 
+    2026-10-26 17:14:03 | ACC_ON | 
+    2026-10-26 16:58:29 | stayTimeIn | 
+    2026-10-26 16:50:21 | stayTimeIn | 
+----------------------------------------
+[59/169] GT 7604 - 25 (865135060582655)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 13:29:06 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 15:23:22 | stayTimeOut | 
+    2026-10-26 15:12:36 | stayTimeOut | 
+    2026-10-26 15:12:36 | stayTimeOut | 
+    2026-10-26 14:30:47 | offline | 
+    2026-10-26 14:21:47 | overSpeed | platform
+----------------------------------------
+[60/169] GT 8613 - 25 (865135060559885) - NO ALARMS RETURNED
+[61/169] GN 2912 - 24 (865135060578158)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 14:11:51 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 15:38:33 | stayTimeIn | 
+    2026-10-26 15:08:36 | overSpeed | platform
+    2026-10-26 14:12:31 | out | GBC AWASO
+    2026-10-26 14:11:51 | in | TRIP TIME GBC
+    2026-10-26 14:11:41 | out | FUEL AND WAYBILL
+----------------------------------------
+[62/169] GT 8021 - 25 (865135060565072)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 16:55:00 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:55:00 | out | FUEL AND WAYBILL
+    2026-10-26 16:55:00 | in | TRIP TIME GBC
+    2026-10-26 16:54:50 | out | GBC EXITED
+    2026-10-26 16:54:50 | out | HAULAGE TRUCKS EXIT
+    2026-10-26 16:48:30 | out | WAITING TIME
+----------------------------------------
+[63/169] GT 8220 - 25 (865135060565015)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 16:50:23 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:40:29 | stayAlert | 
+    2026-10-26 17:25:29 | ACC_OFF | 
+    2026-10-26 17:25:10 | ACC_ON | 
+    2026-10-26 17:15:13 | stayAlert | 
+    2026-10-26 17:00:14 | ACC_OFF | 
+----------------------------------------
+[64/169] GT 8588 - 25 (865135060580402)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 02:26:27 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 15:56:18 | ACC_ON | 
+    2026-10-26 15:53:03 | ACC_OFF | 
+    2026-10-26 15:48:32 | ACC_ON | 
+    2026-10-26 12:52:45 | stayAlert | 
+    2026-10-26 12:37:45 | ACC_OFF | 
+----------------------------------------
+[65/169] GT 7046 - 25 (865135060566369)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 07:10:44 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:13:02 | ACC_OFF | 
+    2026-10-26 18:12:36 | ACC_ON | 
+    2026-10-26 18:10:37 | ACC_OFF | 
+    2026-10-26 18:10:00 | ACC_ON | 
+    2026-10-26 18:04:19 | ACC_OFF | 
+----------------------------------------
+[66/169] GT 8622 - 25 (865135060572805)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 14:12:22 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:01:21 | offline | 
+    2026-10-26 16:06:55 | offline | 
+    2026-10-26 15:31:09 | overSpeed | platform
+    2026-10-26 14:46:46 | ACC_ON | 
+    2026-10-26 14:38:08 | ACC_OFF | 
+----------------------------------------
+[67/169] GT 8174 - 25 (865135060570627)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 10:15:31 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:46:46 | stayTimeIn | 
+    2026-10-26 13:54:49 | ACC_ON | 
+    2026-10-26 13:46:52 | ACC_OFF | 
+    2026-10-26 13:40:31 | ACC_ON | 
+    2026-10-26 13:38:08 | ACC_OFF | 
+----------------------------------------
+[68/169] GN 2937 - 24 (865135060558242)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 11:58:53 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:05:13 | stayAlert | 
+    2026-10-26 17:50:13 | ACC_OFF | 
+    2026-10-26 17:50:12 | out | LOADED AND PARKED
+    2026-10-26 17:41:30 | in | LOADED AND PARKED
+    2026-10-26 17:41:30 | in | WAITING TIME
+----------------------------------------
+[69/169] GT 8042 - 25 (865135060580196)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 16:34:42 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:34:52 | out | GBC TAKORADI
+    2026-10-26 16:34:42 | out | TAKORADI ENTRY
+    2026-10-26 16:31:33 | ACC_ON | 
+    2026-10-26 16:28:18 | ACC_OFF | 
+    2026-10-26 16:18:59 | ACC_ON | 
+----------------------------------------
+[70/169] GT 5643 - 24 (865135060574967)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 15:51:12 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:45:28 | ACC_ON | 
+    2026-10-26 16:23:33 | stayAlert | 
+    2026-10-26 16:08:33 | ACC_OFF | 
+    2026-10-26 15:51:12 | out | TAKORADI ENTRY
+    2026-10-26 15:47:47 | ACC_ON | 
+----------------------------------------
+[71/169] GT 8340 - 25 (865135060561899)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 12:14:59 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:33:30 | stayAlert | 
+    2026-10-26 17:18:30 | ACC_OFF | 
+    2026-10-26 13:36:19 | offline | 
+    2026-10-26 12:14:59 | in | TRIP TIME GBC
+    2026-10-26 12:14:59 | out | FUEL AND WAYBILL
+----------------------------------------
+[72/169] GT 8990 - 23 (865135060562764)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-22 08:55:16 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 05:51:13 | stayAlert | 
+    2026-10-26 05:35:39 | ACC_OFF | 
+    2026-10-26 05:35:33 | ACC_ON | 
+    2026-10-23 09:04:49 | stayTimeIn | 
+    2026-10-23 09:04:49 | stayTimeOut | 
+----------------------------------------
+[73/169] GT 8614 - 25 (865135060579800)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 12:25:54 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 14:48:42 | overSpeed | platform
+    2026-10-26 14:05:23 | ACC_ON | 
+    2026-10-26 13:53:25 | ACC_OFF | 
+    2026-10-26 13:52:38 | ACC_ON | 
+    2026-10-26 13:42:43 | ACC_OFF | 
+----------------------------------------
+[74/169] GN 2915 - 24 (865135060584115)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 15:21:55 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:12:03 | out | LOADING TIME
+    2026-10-26 18:07:13 | ACC_ON | 
+    2026-10-26 17:58:56 | ACC_OFF | 
+    2026-10-26 17:55:12 | in | LOADING TIME
+    2026-10-26 17:53:22 | out | FUELING TIME
+----------------------------------------
+[75/169] GT 5530-24 (865135060562574)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 13:33:14 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:45:12 | offline | 
+    2026-10-26 17:27:40 | ACC_ON | 
+    2026-10-26 17:21:30 | stayAlert | 
+    2026-10-26 17:06:30 | ACC_OFF | 
+    2026-10-26 13:33:14 | in | TRIP TIME GBC
+----------------------------------------
+[76/169] GT 8551 - 25 (865135060575642)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 18:10:44 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:10:54 | out | GBC TAKORADI
+    2026-10-26 18:10:44 | out | TAKORADI ENTRY
+    2026-10-26 18:07:05 | ACC_ON | 
+    2026-10-26 18:02:16 | ACC_OFF | 
+    2026-10-26 18:01:36 | ACC_ON | 
+----------------------------------------
+[77/169] GT 8293 - 25 (865135060586268)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 16:48:06 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:36:43 | stayAlert | 
+    2026-10-26 17:21:43 | ACC_OFF | 
+    2026-10-26 17:21:25 | ACC_ON | 
+    2026-10-26 17:13:59 | ACC_OFF | 
+    2026-10-26 17:04:57 | ACC_ON | 
+----------------------------------------
+[78/169] GT 8163 - 25 (865135060566690)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 09:57:51 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:28:29 | ACC_OFF | 
+    2026-10-26 16:28:27 | ACC_ON | 
+    2026-10-26 16:25:43 | ACC_OFF | 
+    2026-10-26 13:53:01 | stayTimeIn | 
+    2026-10-26 11:02:02 | overSpeed | platform
+----------------------------------------
+[79/169] GT 8598 - 25 (865135060560909)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 18:10:57 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:11:17 | out | GBC TAKORADI
+    2026-10-26 18:10:57 | out | TAKORADI ENTRY
+    2026-10-26 18:07:00 | ACC_ON | 
+    2026-10-26 18:03:01 | ACC_OFF | 
+    2026-10-26 18:01:53 | ACC_ON | 
+----------------------------------------
+[80/169] GT 8611-25 (865135060566682)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 16:21:09 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:07:48 | stayAlert | 
+    2026-10-26 17:52:48 | in | WAITING TIME
+    2026-10-26 17:52:48 | in | LOADED AND PARKED
+    2026-10-26 17:52:48 | ACC_OFF | 
+    2026-10-26 17:49:59 | out | WAITING TIME
+----------------------------------------
+[81/169] GN 2946 - 24 (865135060584099)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 15:24:19 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:03:33 | offline | 
+    2026-10-26 17:07:49 | offline | 
+    2026-10-26 16:10:12 | stayTimeOut | 
+    2026-10-26 16:03:28 | stayTimeOut | 
+    2026-10-26 15:56:06 | stayTimeOut | 
+----------------------------------------
+[82/169] GT 8304 - 25 (865135060559976)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 10:19:05 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:59:53 | offline | 
+    2026-10-26 17:43:48 | stayTimeIn | 
+    2026-10-26 15:43:53 | ACC_ON | 
+    2026-10-26 15:30:32 | ACC_OFF | 
+    2026-10-26 15:27:56 | ACC_ON | 
+----------------------------------------
+[83/169] GT 8344 - 25 (865135060580303)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 10:26:17 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:32:36 | stayTimeIn | 
+    2026-10-26 16:32:36 | stayTimeOut | 
+    2026-10-26 16:32:26 | stayTimeIn | 
+    2026-10-26 16:32:26 | stayTimeIn | 
+    2026-10-26 16:27:36 | stayTimeIn | 
+----------------------------------------
+[84/169] GT 8553 - 25 (865135060586094)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-25 19:28:02 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:00:54 | ACC_ON | 
+    2026-10-26 17:57:25 | stayAlert | 
+    2026-10-26 17:42:25 | ACC_OFF | 
+    2026-10-26 17:42:25 | in | MAINTENANCE TIME
+    2026-10-26 17:31:45 | ACC_ON | 
+----------------------------------------
+[85/169] GT 8145 - 25 (865135060567342)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 11:29:35 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:02:31 | ACC_ON | 
+    2026-10-26 18:02:15 | ACC_OFF | 
+    2026-10-26 17:35:54 | ACC_ON | 
+    2026-10-26 17:32:12 | ACC_OFF | 
+    2026-10-26 17:28:50 | ACC_ON | 
+----------------------------------------
+[86/169] GT 7057 - 25 (865135060566484)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 10:53:15 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 10:53:25 | out | GBC TAKORADI
+    2026-10-26 10:53:15 | out | TAKORADI ENTRY
+    2026-10-26 10:49:25 | ACC_ON | 
+    2026-10-26 10:44:37 | ACC_OFF | 
+    2026-10-26 10:14:50 | ACC_ON | 
+----------------------------------------
+[87/169] GT 8628 - 25 (865135060579792)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 08:14:49 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:49:50 | stayTimeIn | 
+    2026-10-26 17:23:01 | ACC_ON | 
+    2026-10-26 17:15:41 | ACC_OFF | 
+    2026-10-26 17:02:24 | overSpeed | platform
+    2026-10-26 15:46:08 | ACC_ON | 
+----------------------------------------
+[88/169] GN 2913 - 24 (865135060527668) - NO ALARMS RETURNED
+[89/169] GT 8091 - 25 (865135060537642)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 16:21:33 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:21:43 | out | GBC TAKORADI
+    2026-10-26 16:21:33 | out | TAKORADI ENTRY
+    2026-10-26 16:18:48 | ACC_ON | 
+    2026-10-26 16:14:14 | ACC_OFF | 
+    2026-10-26 16:11:49 | ACC_ON | 
+----------------------------------------
+[90/169] GT 6821 - 25 (865135060529649)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 18:08:35 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:09:25 | out | GBC AWASO
+    2026-10-26 18:08:35 | in | TRIP TIME GBC
+    2026-10-26 18:08:35 | out | FUEL AND WAYBILL
+    2026-10-26 18:08:25 | out | HAULAGE TRUCKS EXIT
+    2026-10-26 18:08:25 | out | GBC EXITED
+----------------------------------------
+[91/169] GT 8103 -25 (865135060522578) - NO ALARMS RETURNED
+[92/169] GT 8584 - 25 (865135060533492)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 07:13:56 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:54:23 | overSpeed | platform
+    2026-10-26 13:40:37 | ACC_ON | 
+    2026-10-26 13:33:28 | ACC_OFF | 
+    2026-10-26 13:32:33 | offline | 
+    2026-10-26 13:11:50 | ACC_ON | 
+----------------------------------------
+[93/169] GT 8310 - 25 (865135060533336)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 02:24:37 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:06:26 | ACC_ON | 
+    2026-10-26 15:46:52 | offline | 
+    2026-10-26 15:25:40 | offline | 
+    2026-10-26 07:57:06 | stayAlert | 
+    2026-10-26 07:42:06 | ACC_OFF | 
+----------------------------------------
+[94/169] GT 6801 - 25 (865135060521497)
+  -> DERIVED STATE: unknown
+  -> MATCHED EVENT: None found
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:59:50 | ACC_ON | 
+    2026-10-26 17:59:34 | ACC_OFF | 
+    2026-10-26 14:45:55 | offline | 
+    2026-10-26 11:49:54 | ACC_ON | 
+    2026-10-26 11:47:41 | stayAlert | 
+----------------------------------------
+[95/169] GT 8154 - 25 (865135060522586)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 11:57:53 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:08:50 | ACC_ON | 
+    2026-10-26 16:05:51 | ACC_OFF | 
+    2026-10-26 16:05:41 | ACC_ON | 
+    2026-10-26 15:56:23 | ACC_OFF | 
+    2026-10-26 15:56:17 | ACC_ON | 
+----------------------------------------
+[96/169] GN 2923 - 24 (865135060469408)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 13:34:50 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:06:34 | ACC_OFF | 
+    2026-10-26 18:00:37 | ACC_ON | 
+    2026-10-26 16:55:11 | stayAlert | 
+    2026-10-26 16:40:11 | ACC_OFF | 
+    2026-10-26 16:39:53 | ACC_ON | 
+----------------------------------------
+[97/169] GT 6882 - 24 (865135060482526)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 17:25:57 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:09:42 | ACC_ON | 
+    2026-10-26 18:03:17 | ACC_OFF | 
+    2026-10-26 17:51:15 | ACC_ON | 
+    2026-10-26 17:47:20 | ACC_OFF | 
+    2026-10-26 17:25:57 | in | TRIP TIME GBC
+----------------------------------------
+[98/169] GT 5986 - 24 (865135060480249)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 11:49:17 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:31:36 | stayTimeIn | 
+    2026-10-26 15:06:20 | offline | 
+    2026-10-26 14:00:48 | ACC_ON | 
+    2026-10-26 13:58:56 | stayAlert | 
+    2026-10-26 13:43:57 | ACC_OFF | 
+----------------------------------------
+[99/169] GN 4933 - 22 (865135060484738)
+  -> DERIVED STATE: unknown
+  -> MATCHED EVENT: None found
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:48:41 | stayAlert | 
+    2026-10-26 08:10:10 | stayAlert | 
+    2026-10-26 07:05:02 | stayAlert | 
+    2026-10-26 01:01:01 | offline | 
+    2026-10-25 16:57:07 | stayAlert | 
+----------------------------------------
+[100/169] GT 8925 -23 (865135060482203) - NO ALARMS RETURNED
+[101/169] GT 8985 - 23 (865135060481247)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 17:19:12 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:12:55 | ACC_OFF | 
+    2026-10-26 18:06:15 | ACC_ON | 
+    2026-10-26 18:04:47 | ACC_OFF | 
+    2026-10-26 18:04:46 | in | WAYBILL TIME
+    2026-10-26 18:03:57 | ACC_ON | 
+----------------------------------------
+[102/169] GT 5048 - 24 (865135060472535)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 11:03:52 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:52:35 | stayAlert | 
+    2026-10-26 17:37:35 | ACC_OFF | 
+    2026-10-26 17:37:26 | ACC_ON | 
+    2026-10-26 17:33:27 | 2 | 
+    2026-10-26 16:13:58 | stayAlert | 
+----------------------------------------
+[103/169] GT 6915 - 25 (865135060481361)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 10:27:18 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 13:56:04 | stayTimeOut | 
+    2026-10-26 13:56:04 | stayTimeIn | 
+    2026-10-26 13:55:54 | stayTimeIn | 
+    2026-10-26 13:55:54 | stayTimeIn | 
+    2026-10-26 13:52:47 | ACC_ON | 
+----------------------------------------
+[104/169] GT 5804- 24 (865135060484761)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 17:45:27 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:45:27 | in | TRIP TIME GBC
+    2026-10-26 17:45:17 | out | FUEL AND WAYBILL
+    2026-10-26 17:45:07 | out | HAULAGE TRUCKS EXIT
+    2026-10-26 17:45:07 | out | GBC EXITED
+    2026-10-26 17:40:01 | out | WAITING TIME
+----------------------------------------
+[105/169] GT 6829 - 24 (865135060483433)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 16:29:03 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:06:39 | offline | 
+    2026-10-26 16:34:23 | out | GBC AWASO
+    2026-10-26 16:29:03 | in | TRIP TIME GBC
+    2026-10-26 16:28:53 | out | FUEL AND WAYBILL
+    2026-10-26 16:28:43 | out | GBC EXITED
+----------------------------------------
+[106/169] GN 2905 - 24 (865135060470240)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 11:09:35 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:00:24 | stayTimeIn | 
+    2026-10-26 17:38:38 | stayTimeOut | 
+    2026-10-26 17:38:38 | stayTimeIn | 
+    2026-10-26 16:37:19 | ACC_ON | 
+    2026-10-26 16:13:55 | stayAlert | 
+----------------------------------------
+[107/169] GN 2917 - 24 (865135060469358)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 10:19:05 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:47:38 | offline | 
+    2026-10-26 17:25:30 | stayTimeIn | 
+    2026-10-26 17:25:30 | stayTimeOut | 
+    2026-10-26 17:25:20 | stayTimeIn | 
+    2026-10-26 17:25:20 | stayTimeIn | 
+----------------------------------------
+[108/169] GT 6155 - 24 (865135060481858)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 06:16:59 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:06:43 | ACC_ON | 
+    2026-10-26 17:31:00 | stayAlert | 
+    2026-10-26 17:16:00 | ACC_OFF | 
+    2026-10-26 16:41:57 | ACC_ON | 
+    2026-10-26 16:38:54 | ACC_ON | 
+----------------------------------------
+[109/169] GN 4938 - 22 (865135060482831)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 15:51:58 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:01:30 | stayTimeOut | 
+    2026-10-26 15:52:18 | out | GBC TAKORADI 2
+    2026-10-26 15:51:58 | out | TAKORADI ENTRY
+    2026-10-26 15:47:19 | ACC_ON | 
+    2026-10-26 15:41:09 | stayAlert | 
+----------------------------------------
+[110/169] GN 2920 - 24 (865135060469457)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 16:44:12 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:44:22 | out | GBC TAKORADI 2
+    2026-10-26 16:44:12 | out | TAKORADI ENTRY
+    2026-10-26 16:31:12 | ACC_ON | 
+    2026-10-26 16:31:07 | stayAlert | 
+    2026-10-26 16:16:07 | ACC_OFF | 
+----------------------------------------
+[111/169] GT 5288-24 (865135060476296)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 08:36:58 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:00:53 | ACC_ON | 
+    2026-10-26 18:00:06 | ACC_OFF | 
+    2026-10-26 17:58:26 | in | FUELING TIME
+    2026-10-26 17:56:24 | out | WAYBILL TIME
+    2026-10-26 17:55:49 | in | WAYBILL TIME
+----------------------------------------
+[112/169] GN 2955 - 24 (865135060469432)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 17:45:33 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:45:43 | out | GBC TAKORADI 2
+    2026-10-26 17:45:33 | out | TAKORADI ENTRY
+    2026-10-26 17:42:48 | ACC_ON | 
+    2026-10-26 16:54:23 | stayAlert | 
+    2026-10-26 16:39:23 | ACC_OFF | 
+----------------------------------------
+[113/169] GN 2941 - 24 (865135060469788)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 13:55:51 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:09:58 | stayAlert | 
+    2026-10-26 18:07:27 | stayTimeIn | 
+    2026-10-26 18:00:04 | stayTimeOut | 
+    2026-10-26 17:54:58 | ACC_OFF | 
+    2026-10-26 17:54:21 | stayTimeIn | 
+----------------------------------------
+[114/169] GT 5478 - 24 (865135060469424) - NO ALARMS RETURNED
+[115/169] GT 8575 - 23 (865135060485107)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 06:52:05 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:28:08 | stayAlert | 
+    2026-10-26 16:17:53 | out | LOADED AND PARKED
+    2026-10-26 16:13:11 | ACC_OFF | 
+    2026-10-26 16:12:09 | in | WAITING TIME
+    2026-10-26 16:12:09 | in | LOADED AND PARKED
+----------------------------------------
+[116/169] GT 6740 - 24 (865135060486311) - NO ALARMS RETURNED
+[117/169] GR 7819 - 19 (865135060485354)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 07:13:03 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:59:53 | stayTimeIn | 
+    2026-10-26 17:20:31 | stayAlertOn | 
+    2026-10-26 16:40:31 | ACC_ON | 
+    2026-10-26 16:40:27 | ACC_OFF | 
+    2026-10-26 16:04:23 | ACC_ON | 
+----------------------------------------
+[118/169] GT 5677 - 24 (865135060475207) - NO ALARMS RETURNED
+[119/169] GT 9821 - 19 (865135060486378) - NO ALARMS RETURNED
+[120/169] GN 1685 - 23 (865135060487475)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 17:28:40 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:08:34 | 2 | 
+    2026-10-26 18:08:30 | ACC_OFF | 
+    2026-10-26 18:04:20 | ACC_ON | 
+    2026-10-26 18:02:56 | ACC_OFF | 
+    2026-10-26 17:58:36 | ACC_ON | 
+----------------------------------------
+[121/169] GT 8986 - 23 (865135060484894)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 06:15:38 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:10:39 | stayAlert | 
+    2026-10-26 17:55:39 | ACC_OFF | 
+    2026-10-26 17:49:58 | in | GBC TAKORADI 2
+    2026-10-26 14:53:34 | ACC_ON | 
+    2026-10-26 14:34:24 | stayAlert | 
+----------------------------------------
+[122/169] GT 8921 - 23 (865135060483201)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 10:00:34 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:22:28 | ACC_ON | 
+    2026-10-26 17:22:26 | ACC_OFF | 
+    2026-10-26 16:59:39 | ACC_ON | 
+    2026-10-26 16:59:38 | ACC_OFF | 
+    2026-10-26 16:30:31 | ACC_ON | 
+----------------------------------------
+[123/169] GN 2916 - 24 (865135060472550)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 10:46:21 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:02:02 | ACC_ON | 
+    2026-10-26 17:55:44 | ACC_OFF | 
+    2026-10-26 17:48:38 | stayTimeIn | 
+    2026-10-26 16:11:58 | ACC_ON | 
+    2026-10-26 16:01:49 | ACC_OFF | 
+----------------------------------------
+[124/169] GN 2921 - 24 (865135060469812)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 12:39:26 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:09:41 | stayTimeIn | 
+    2026-10-26 14:34:53 | ACC_ON | 
+    2026-10-26 14:34:49 | ACC_OFF | 
+    2026-10-26 14:15:36 | stayTimeOut | 
+    2026-10-26 12:39:46 | out | GBC TAKORADI 2
+----------------------------------------
+[125/169] GN 2933 - 24 (865135060472568)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 17:41:09 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:07:25 | ACC_OFF | 
+    2026-10-26 17:41:49 | out | GBC AWASO
+    2026-10-26 17:41:09 | in | TRIP TIME GBC
+    2026-10-26 17:40:59 | out | FUEL AND WAYBILL
+    2026-10-26 17:40:59 | out | GBC EXITED
+----------------------------------------
+[126/169] GN 2936 - 24 (865135060472584)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 16:01:37 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:08:35 | ACC_ON | 
+    2026-10-26 16:06:34 | ACC_OFF | 
+    2026-10-26 16:01:47 | out | GBC TAKORADI 2
+    2026-10-26 16:01:37 | out | TAKORADI ENTRY
+    2026-10-26 15:52:06 | ACC_ON | 
+----------------------------------------
+[127/169] GT 5962 - 24 (865135060485545)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 17:18:36 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:19:16 | out | GBC AWASO
+    2026-10-26 17:18:36 | in | TRIP TIME GBC
+    2026-10-26 17:18:36 | out | FUEL AND WAYBILL
+    2026-10-26 17:18:26 | out | GBC EXITED
+    2026-10-26 17:18:26 | out | HAULAGE TRUCKS EXIT
+----------------------------------------
+[128/169] GN 2949 - 24 (865135060472592)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 11:30:55 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:56:48 | stayAlert | 
+    2026-10-26 17:41:49 | ACC_OFF | 
+    2026-10-26 17:41:48 | out | LOADED AND PARKED
+    2026-10-26 17:39:58 | in | LOADED AND PARKED
+    2026-10-26 17:39:58 | in | WAITING TIME
+----------------------------------------
+[129/169] GN 4997 - 22 (865135060484225)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 10:41:51 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:15:56 | stayTimeIn | 
+    2026-10-26 17:11:46 | stayTimeIn | 
+    2026-10-26 16:54:26 | stayTimeIn | 
+    2026-10-26 15:55:51 | 41 | 
+    2026-10-26 13:55:18 | ACC_ON | 
+----------------------------------------
+[130/169] GT 6254 - 24 (865135060486303)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-25 08:01:04 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:06:54 | stayTimeIn | 
+    2026-10-26 08:05:36 | stayTimeIn | 
+    2026-10-26 08:05:36 | stayTimeIn | 
+    2026-10-26 08:01:14 | stayTimeOut | 
+    2026-10-26 08:01:14 | stayTimeOut | 
+----------------------------------------
+[131/169] GT 6425 - 24 (865135060485693)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 17:16:37 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:59:47 | ACC_OFF | 
+    2026-10-26 17:57:57 | out | WAYBILL TIME
+    2026-10-26 17:57:57 | in | MAINTENANCE TIME
+    2026-10-26 17:56:24 | ACC_OFF | 
+    2026-10-26 17:56:13 | ACC_ON | 
+----------------------------------------
+[132/169] GT 8577 - 23 (865135060061494)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 10:25:15 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:10:20 | ACC_OFF | 
+    2026-10-26 18:09:57 | ACC_ON | 
+    2026-10-26 18:02:29 | ACC_OFF | 
+    2026-10-26 18:00:08 | in | WAITING TIME
+    2026-10-26 18:00:08 | in | LOADED AND PARKED
+----------------------------------------
+[133/169] GT 5615 - 24 (865135060077821)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 14:35:32 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:20:37 | stayTimeIn | 
+    2026-10-26 15:59:39 | ACC_ON | 
+    2026-10-26 15:59:38 | ACC_OFF | 
+    2026-10-26 15:37:51 | ACC_ON | 
+    2026-10-26 15:37:50 | ACC_OFF | 
+----------------------------------------
+[134/169] GR 7832 - 19 (865135060077730)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 13:01:17 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:36:40 | stayAlert | 
+    2026-10-26 16:21:41 | ACC_OFF | 
+    2026-10-26 16:08:28 | ACC_OFF | 
+    2026-10-26 16:08:16 | ACC_ON | 
+    2026-10-26 15:59:11 | stayTimeOut | 
+----------------------------------------
+[135/169] GN 1679 - 23 (865135060067491)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-21 07:02:46 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-22 07:02:46 | stayTimeIn | 
+    2026-10-21 23:47:39 | offline | 
+    2026-10-21 16:43:29 | stayTimeOut | 
+    2026-10-21 16:43:19 | stayTimeIn | 
+    2026-10-21 16:43:19 | stayTimeIn | 
+----------------------------------------
+[136/169] GT 5210 - 24 (865135060062161)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 12:39:03 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:31:32 | ACC_ON | 
+    2026-10-26 16:31:30 | ACC_OFF | 
+    2026-10-26 14:40:24 | ACC_ON | 
+    2026-10-26 14:39:31 | ACC_OFF | 
+    2026-10-26 12:39:23 | out | GBC TAKORADI
+----------------------------------------
+[137/169] GT 5880 - 24 (865135060092382)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 05:38:21 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:24:03 | stayAlert | 
+    2026-10-26 17:09:03 | ACC_OFF | 
+    2026-10-26 17:08:59 | ACC_ON | 
+    2026-10-26 16:58:38 | stayAlert | 
+    2026-10-26 16:43:38 | ACC_OFF | 
+----------------------------------------
+[138/169] GN 1686 - 23 (865135060067533)
+  -> DERIVED STATE: unknown
+  -> MATCHED EVENT: None found
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-22 09:27:17 | offline | 
+    2026-10-22 08:55:13 | stayAlert | 
+    2026-10-22 08:49:49 | 25 | 
+    2026-10-22 08:40:17 | 2 | 
+    2026-10-22 08:40:13 | ACC_OFF | 
+----------------------------------------
+[139/169] GN 1678 - 23 (865135060066113)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 05:12:54 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:08:32 | ACC_ON | 
+    2026-10-26 18:05:42 | ACC_ON | 
+    2026-10-26 18:05:40 | ACC_OFF | 
+    2026-10-26 18:03:22 | ACC_ON | 
+    2026-10-26 17:58:37 | ACC_ON | 
+----------------------------------------
+[140/169] GT 8586 - 23 (865135060078019)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 13:56:15 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:58:12 | stayTimeOut | 
+    2026-10-26 17:51:52 | stayTimeOut | 
+    2026-10-26 17:31:02 | ACC_ON | 
+    2026-10-26 17:22:20 | stayTimeIn | 
+    2026-10-26 17:16:19 | ACC_OFF | 
+----------------------------------------
+[141/169] GT 5484 - 24 (865135060065099)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 12:01:07 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:47:18 | stayAlert | 
+    2026-10-26 17:32:18 | ACC_OFF | 
+    2026-10-26 16:14:04 | offline | 
+    2026-10-26 15:06:30 | offline | 
+    2026-10-26 14:05:44 | ACC_ON | 
+----------------------------------------
+[142/169] GT 8298-23 (865135060077086)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 13:04:29 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:08:53 | ACC_OFF | 
+    2026-10-26 18:05:25 | out | WAITING TIME
+    2026-10-26 17:37:11 | out | LOADED AND PARKED
+    2026-10-26 17:37:11 | ACC_ON | 
+    2026-10-26 17:35:21 | ACC_OFF | 
+----------------------------------------
+[143/169] GN 4934 - 22 (865135060060314)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 17:18:48 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:41:30 | stayAlert | 
+    2026-10-26 17:26:30 | ACC_OFF | 
+    2026-10-26 17:23:29 | in | MAINTENANCE TIME
+    2026-10-26 17:23:29 | out | LOADED AND PARKED
+    2026-10-26 17:23:29 | out | WAITING TIME
+----------------------------------------
+[144/169] GT 8987 - 23 (865135060063656)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-25 09:11:05 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:56:01 | stayAlert | 
+    2026-10-26 17:39:50 | ACC_ON | 
+    2026-10-26 17:39:42 | ACC_OFF | 
+    2026-10-26 17:34:18 | out | LOADED AND PARKED
+    2026-10-26 17:34:18 | out | WAITING TIME
+----------------------------------------
+[145/169] GN 4965 - 22 (865135060087879)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 16:16:31 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:05:46 | ACC_OFF | 
+    2026-10-26 18:04:13 | ACC_ON | 
+    2026-10-26 16:44:03 | stayAlert | 
+    2026-10-26 16:29:03 | ACC_OFF | 
+    2026-10-26 16:29:03 | out | WAITING TIME
+----------------------------------------
+[146/169] GT 6046 - 24 (865135060072012)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-24 13:26:23 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 14:02:37 | stayAlert | 
+    2026-10-26 13:48:00 | 2 | 
+    2026-10-26 13:47:37 | ACC_OFF | 
+    2026-10-26 13:46:54 | ACC_ON | 
+    2026-10-25 15:05:34 | stayTimeIn | 
+----------------------------------------
+[147/169] GN 1675 - 23 (865135060072038)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 04:43:57 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:12:13 | ACC_ON | 
+    2026-10-26 18:08:34 | ACC_OFF | 
+    2026-10-26 18:02:45 | ACC_OFF | 
+    2026-10-26 18:02:23 | ACC_ON | 
+    2026-10-26 17:37:49 | stayAlert | 
+----------------------------------------
+[148/169] GN 1682 - 23 (865135060066832)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 07:05:46 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:26:54 | stayAlert | 
+    2026-10-26 16:11:54 | ACC_OFF | 
+    2026-10-26 16:09:50 | ACC_ON | 
+    2026-10-26 15:02:56 | stayTimeIn | 
+    2026-10-26 14:29:00 | stayAlert | 
+----------------------------------------
+[149/169] GT 8923-23 (865135060075114)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 14:52:22 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 14:52:22 | in | TRIP TIME GBC
+    2026-10-26 14:52:22 | out | FUEL AND WAYBILL
+    2026-10-26 14:52:12 | out | HAULAGE TRUCKS EXIT
+    2026-10-26 14:52:12 | out | GBC EXITED
+    2026-10-26 14:47:42 | out | WAITING TIME
+----------------------------------------
+[150/169] GT 8588 - 23 (865135060087119)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 17:39:43 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:39:43 | out | FUEL AND WAYBILL
+    2026-10-26 17:39:43 | out | HAULAGE TRUCKS EXIT
+    2026-10-26 17:39:43 | out | GBC EXITED
+    2026-10-26 17:39:43 | in | TRIP TIME GBC
+    2026-10-26 17:34:53 | out | WAITING TIME
+----------------------------------------
+[151/169] GN 1681 - 23 (865135060077201)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 17:47:30 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:51:30 | out | GBC AWASO 2
+    2026-10-26 17:47:30 | out | FUEL AND WAYBILL
+    2026-10-26 17:47:30 | in | TRIP TIME GBC
+    2026-10-26 17:47:20 | out | GBC EXITED
+    2026-10-26 17:47:20 | out | HAULAGE TRUCKS EXIT
+----------------------------------------
+[152/169] GT 8583 - 23 (865135060087366) - NO ALARMS RETURNED
+[153/169] GN 1677 - 23 (865135060077110)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 18:05:48 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:09:38 | out | GBC AWASO 2
+    2026-10-26 18:05:48 | out | FUEL AND WAYBILL
+    2026-10-26 18:05:48 | in | TRIP TIME GBC
+    2026-10-26 18:05:38 | out | GBC EXITED
+    2026-10-26 18:05:38 | out | HAULAGE TRUCKS EXIT
+----------------------------------------
+[154/169] GN 4973-22 (351510093631565)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 11:25:59 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:11:59 | stayTimeIn | 
+    2026-10-26 16:14:28 | stayAlert | 
+    2026-10-26 15:59:28 | ACC_OFF | 
+    2026-10-26 15:54:49 | ACC_ON | 
+    2026-10-26 15:53:38 | ACC_OFF | 
+----------------------------------------
+[155/169] GT 8578 - 23 (351510093652181)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 14:36:13 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:52:36 | stayAlert | 
+    2026-10-26 16:37:37 | ACC_OFF | 
+    2026-10-26 16:37:01 | in | WAITING TIME
+    2026-10-26 16:37:01 | out | WEIGHING TIME
+    2026-10-26 16:33:51 | in | LOADED AND PARKED
+----------------------------------------
+[156/169] GN 4952-22 (351510093646779)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 15:39:43 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 15:41:03 | out | GBC AWASO
+    2026-10-26 15:39:43 | in | TRIP TIME GBC
+    2026-10-26 15:39:33 | out | FUEL AND WAYBILL
+    2026-10-26 15:39:23 | out | GBC EXITED
+    2026-10-26 15:39:23 | out | HAULAGE TRUCKS EXIT
+----------------------------------------
+[157/169] GN 4978-22 (351510093646761) - NO ALARMS RETURNED
+[158/169] GN 4958-22 (351510093642489)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 12:31:14 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:45:12 | offline | 
+    2026-10-26 17:43:11 | overSpeed | platform
+    2026-10-26 16:12:57 | ACC_ON | 
+    2026-10-26 16:01:06 | ACC_OFF | 
+    2026-10-26 15:56:08 | ACC_ON | 
+----------------------------------------
+[159/169]  GT 8579 - 23 (351510093648437) - NO ALARMS RETURNED
+[160/169] GT 8146-25 (351510093647454)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 17:02:06 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:52:54 | overSpeed | platform
+    2026-10-26 17:02:46 | out | GBC AWASO
+    2026-10-26 17:02:06 | out | FUEL AND WAYBILL
+    2026-10-26 17:02:06 | in | TRIP TIME GBC
+    2026-10-26 17:01:56 | out | HAULAGE TRUCKS EXIT
+----------------------------------------
+[161/169] GT 8922 - 23 (351510093658782)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 12:32:04 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:02:32 | ACC_OFF | 
+    2026-10-26 16:42:53 | stayTimeIn | 
+    2026-10-26 16:41:23 | offline | 
+    2026-10-26 13:52:28 | offline | 
+    2026-10-26 12:32:54 | out | GBC AWASO
+----------------------------------------
+[162/169] GT 3224 - 19 (351510093656257) - NO ALARMS RETURNED
+[163/169] GN 4937-22 (351510093642703)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 15:04:22 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:43:15 | ACC_ON | 
+    2026-10-26 16:35:36 | ACC_OFF | 
+    2026-10-26 15:04:22 | in | TRIP TIME GBC
+    2026-10-26 14:59:22 | out | WAITING TIME
+    2026-10-26 14:59:12 | out | LOADED AND PARKED
+----------------------------------------
+[164/169] GN 4943-22 (351510093647272)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 17:16:49 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:01:37 | stayAlert | 
+    2026-10-26 17:46:37 | ACC_OFF | 
+    2026-10-26 17:46:09 | ACC_ON | 
+    2026-10-26 17:40:06 | ACC_OFF | 
+    2026-10-26 17:38:25 | ACC_ON | 
+----------------------------------------
+[165/169] GN 4936-22 (351510093658204)
+  -> DERIVED STATE: heading_to_takoradi
+  -> MATCHED EVENT: 2026-10-26 06:36:37 | out | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:01:32 | ACC_ON | 
+    2026-10-26 17:40:21 | stayAlert | 
+    2026-10-26 17:25:21 | ACC_OFF | 
+    2026-10-26 17:21:51 | ACC_ON | 
+    2026-10-26 17:21:48 | out | WAYBILL TIME
+----------------------------------------
+[166/169]  GT 5124 - 24 (351510093050600)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 03:26:23 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 16:34:17 | ACC_ON | 
+    2026-10-26 15:46:09 | stayAlert | 
+    2026-10-26 15:30:50 | ACC_ON | 
+    2026-10-26 15:29:53 | ACC_OFF | 
+    2026-10-26 15:22:32 | ACC_ON | 
+----------------------------------------
+[167/169] GT 5394 - 24 (351510093046897)
+  -> DERIVED STATE: at_awaso
+  -> MATCHED EVENT: 2026-10-26 11:44:26 | in | TRIP TIME GBC
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 17:42:36 | ACC_OFF | 
+    2026-10-26 17:42:28 | ACC_ON | 
+    2026-10-26 17:25:15 | stayAlert | 
+    2026-10-26 17:10:15 | ACC_OFF | 
+    2026-10-26 16:04:41 | ACC_ON | 
+----------------------------------------
+[168/169] GT 3209 - 19 (351510093055740) - NO ALARMS RETURNED
+[169/169] GT 8626-25 (351510093053547)
+  -> DERIVED STATE: heading_to_awaso
+  -> MATCHED EVENT: 2026-10-26 16:17:09 | out | TAKORADI ENTRY
+  -> NEWEST 5 RAW ALARMS:
+    2026-10-26 18:11:10 | stayAlert | 
+    2026-10-26 17:56:03 | ACC_ON | 
+    2026-10-26 17:56:02 | ACC_OFF | 
+    2026-10-26 17:31:53 | ACC_ON | 
+    2026-10-26 17:13:16 | stayAlert | 
+----------------------------------------

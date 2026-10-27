@@ -466,18 +466,22 @@
 
   {% if session.get('user_id') %}
     <nav class="topbar">
-      <a href="{{ url_for('index') }}"
-         class="{{ 'active' if request.endpoint == 'index' else '' }}">New report</a>
-      <a href="{{ url_for('reports') }}"
-         class="{{ 'active' if request.endpoint == 'reports' else '' }}">Reports</a>
-      {% if session.get('role') == 'admin' %}
-        <a href="{{ url_for('admin.index') }}"
-           class="{{ 'active' if request.endpoint and request.endpoint.startswith('admin.') else '' }}">Admin</a>
-      {% endif %}
-      <span class="spacer"></span>
-      <span class="user">{{ session.get('full_name') or session.get('email') }}</span>
-      <a href="{{ url_for('auth.logout') }}">Sign out</a>
-    </nav>
+  <a href="{{ url_for('index') }}"
+     class="{{ 'active' if request.endpoint == 'index' else '' }}">New report</a>
+  <a href="{{ url_for('reports') }}"
+     class="{{ 'active' if request.endpoint == 'reports' else '' }}">Reports</a>
+  {% if 'live_fleet_view' in (session.get('extra_roles') or []) %}
+    <a href="{{ url_for('live_fleet.index') }}"
+       class="{{ 'active' if request.endpoint and request.endpoint.startswith('live_fleet.') else '' }}">Live</a>
+  {% endif %}
+  {% if session.get('role') == 'admin' %}
+    <a href="{{ url_for('admin.index') }}"
+       class="{{ 'active' if request.endpoint and request.endpoint.startswith('admin.') else '' }}">Admin</a>
+  {% endif %}
+  <span class="spacer"></span>
+  <span class="user">{{ session.get('full_name') or session.get('email') }}</span>
+  <a href="{{ url_for('auth.logout') }}">Sign out</a>
+</nav>
 
     {# Rate-limit banner and modal are only rendered for signed-in users. #}
     <div id="ratelimit-banner" class="ratelimit-banner" hidden>

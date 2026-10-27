@@ -4,10 +4,6 @@ services/sessions.py — server-side session records.
 Cookies carry only a session id. On every request, the id is validated
 against Postgres — but results are cached for 30 seconds, so most requests
 serve from memory without a network call.
-
-Revocation is still immediate-ish: a deleted session is gone within at most
-30 seconds on the affected client. If that's too long, drop
-_SESSION_CACHE_TTL to 5 or 10 seconds.
 """
 from __future__ import annotations
 
@@ -37,16 +33,18 @@ _TOUCH_INTERVAL = 60      # seconds between last_seen_at writes
 # --- writes ---------------------------------------------------------------
 
 def create(*, user_id: str, email: str, role: str,
-           full_name: str | None) -> str:
+           full_name: str | None,
+           extra_roles: list[str] | None = None) -> str:
     now = datetime.now(timezone.utc)
     expires_at = now + DEFAULT_TTL
     client = admin_client()
     resp = client.table("user_sessions").insert({
-        "user_id":    user_id,
-        "email":      email,
-        "role":       role,
-        "full_name":  full_name,
-        "expires_at": expires_at.isoformat(),
+        "user_id":     user_id,
+        "email":       email,
+        "role":        role,
+        "full_name":   full_name,
+        "extra_roles": extra_roles or [],
+        "expires_at":  expires_at.isoformat(),
     }).execute()
 
     rows = resp.data or []
@@ -112,7 +110,6 @@ def load(session_id: str) -> dict | None:
 
     now = time.time()
 
-    # Cache hit?
     with _session_cache_lock:
         entry = _session_cache.get(session_id)
         if entry is not None:
@@ -121,7 +118,6 @@ def load(session_id: str) -> dict | None:
                 return record
             _session_cache.pop(session_id, None)
 
-    # Cache miss — hit Supabase
     client = admin_client()
     try:
         resp = (
@@ -154,17 +150,17 @@ def load(session_id: str) -> dict | None:
         return None
 
     record = {
-        "id":        row["id"],
-        "user_id":   row["user_id"],
-        "email":     row.get("email"),
-        "role":      row.get("role") or "user",
-        "full_name": row.get("full_name"),
+        "id":          row["id"],
+        "user_id":     row["user_id"],
+        "email":       row.get("email"),
+        "role":        row.get("role") or "user",
+        "full_name":   row.get("full_name"),
+        "extra_roles": row.get("extra_roles") or [],
     }
 
     with _session_cache_lock:
         _session_cache[session_id] = (now + _SESSION_CACHE_TTL, record)
 
-    # Throttled last_seen_at update
     if now - _last_touch.get(session_id, 0) >= _TOUCH_INTERVAL:
         _last_touch[session_id] = now
         try:

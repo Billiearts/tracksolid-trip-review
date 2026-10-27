@@ -1,0 +1,281 @@
+{% extends "base.html" %}
+{% block body_class %}wide{% endblock %}
+
+{% block head %}
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <style>
+    #corridor-map { height: 70vh; min-height: 420px; border-radius: 8px; }
+    .live-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.6rem; margin-bottom: 0.75rem; }
+    .live-tile { background: #fafbfc; border: 1px solid #e2e6ea; border-radius: 6px; padding: 0.6rem 0.75rem; cursor: pointer; transition: background 0.15s ease; }
+    .live-tile:hover  { background: #f0f4f9; }
+    .live-tile.active { background: #eaf2fb; border-color: #4a90e2; }
+    .live-tile .label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #666; }
+    .live-tile .count { font-size: 1.5rem; font-weight: 600; color: #1e5f9e; font-variant-numeric: tabular-nums; }
+    .live-legend { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.82rem; color: #555; margin-bottom: 0.5rem; }
+    .live-legend span.dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 0.3rem; vertical-align: middle; }
+    .live-status { font-size: 0.8rem; color: #888; }
+    .live-status.error { color: #a02525; font-weight: 500; }
+    .leaflet-tooltip.truck-tip { font-size: 0.82rem; line-height: 1.4; white-space: nowrap; }
+    .leaflet-tooltip.truck-tip strong { color: #1e5f9e; }
+    .leaflet-control-layers { font-size: 0.82rem; }
+    
+    /* Mobile App Style Truck Markers */
+    .truck-marker-wrap {
+      display: flex; align-items: center; justify-content: center; position: relative;
+    }
+    .truck-marker {
+      width: 14px; height: 26px; border-radius: 4px;
+      border: 1.5px solid #111;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+      position: relative;
+      transition: background 0.3s, transform 0.3s;
+    }
+    .truck-marker::after {
+      content: ''; position: absolute; top: 2px; left: 2px; right: 2px; height: 4px;
+      background: rgba(255,255,255,0.4); border-radius: 2px;
+    }
+    /* Colors from the mobile app */
+    .truck-moving  { background: #2ecc71; } /* Green */
+    .truck-parked  { background: #e74c3c; } /* Red */
+    .truck-idle    { background: #f1c40f; } /* Yellow */
+    .truck-offline { background: #bdc3c7; } /* Grey */
+
+    /* Directional Arrows */
+    .truck-arrow {
+      position: absolute; width: 0; height: 0;
+      border-left: 5px solid transparent; border-right: 5px solid transparent;
+      border-bottom: 8px solid black; top: -10px;
+    }
+    .arrow-awaso { transform: rotate(180deg); top: auto; bottom: -10px; }
+    .arrow-takoradi { transform: rotate(0deg); }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem;">
+      <h2 style="font-size:1.1rem;margin:0;">Live corridor — Awaso ↔ Takoradi</h2>
+      <div style="display:flex;gap:0.5rem;align-items:center;">
+        <span id="live-status" class="live-status">Loading…</span>
+        <button type="button" id="refresh-btn" style="padding:0.35rem 0.85rem;font-size:0.85rem;">Refresh</button>
+      </div>
+    </div>
+
+    <div class="live-legend">
+      <span><span class="dot" style="background:#2ecc71;"></span>Moving</span>
+      <span><span class="dot" style="background:#e74c3c;"></span>Parked</span>
+      <span><span class="dot" style="background:#f1c40f;"></span>Idle</span>
+      <span><span class="dot" style="background:#bdc3c7;"></span>Offline</span>
+    </div>
+
+    <div class="live-summary" id="live-summary"></div>
+    <div id="corridor-map"></div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script>
+    (function () {
+      const LABELS = {
+        heading_to_takoradi: 'Heading to Takoradi',
+        heading_to_awaso:    'Heading to Awaso',
+        at_takoradi:         'At Takoradi',
+        at_awaso:            'At Awaso',
+        unknown:             'Unknown',
+      };
+      const FACILITIES = [
+        { name: 'Awaso',    lat: 6.2298,   lng: -2.284723, radius_km: 2.15 },
+        { name: 'Takoradi', lat: 4.893897, lng: -1.748176, radius_km: 0.400 },
+      ];
+      const CORRIDOR_LINE = [
+        [FACILITIES[0].lat, FACILITIES[0].lng],
+        [FACILITIES[1].lat, FACILITIES[1].lng],
+      ];
+
+      const statusEl   = document.getElementById('live-status');
+      const summaryEl  = document.getElementById('live-summary');
+      const refreshBtn = document.getElementById('refresh-btn');
+
+      const map = L.map('corridor-map', { zoomControl: true });
+      
+      const streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OSM' });
+      const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Imagery &copy; Esri' });
+      
+      streetLayer.addTo(map);
+
+      const baseLayers = {
+        'Street (OSM)': streetLayer,
+        'Satellite (Esri)': satelliteLayer,
+      };
+      L.control.layers(baseLayers, null, { position: 'topright', collapsed: false }).addTo(map);
+
+      L.polyline(CORRIDOR_LINE, { color: '#888', weight: 3, dashArray: '6 6', opacity: 0.6 }).addTo(map);
+
+      FACILITIES.forEach(function (f) {
+        L.circle([f.lat, f.lng], { radius: f.radius_km * 1000, color: '#1e5f9e', weight: 1.5, fillOpacity: 0.05 }).addTo(map);
+        L.marker([f.lat, f.lng], {
+          icon: L.divIcon({
+            className: 'facility-label',
+            html: '<div style="background:#fff;padding:2px 6px;border:1px solid #1e5f9e;border-radius:4px;font-size:0.78rem;font-weight:600;color:#1e5f9e;white-space:nowrap;">' + f.name + '</div>',
+            iconSize: [0, 0], iconAnchor: [-6, 24],
+          }),
+        }).addTo(map);
+      });
+
+      map.fitBounds(L.latLngBounds(CORRIDOR_LINE).pad(0.5));
+
+      const markers = {};
+      let filter = null;
+      let currentStates = [];
+
+      function buildSummary(summary) {
+        const d = summary.direction || {};
+        summaryEl.innerHTML = '';
+        const tiles = [
+          ['heading_to_takoradi', d.heading_to_takoradi || 0],
+          ['heading_to_awaso',    d.heading_to_awaso    || 0],
+          ['at_takoradi',         d.at_takoradi         || 0],
+          ['at_awaso',            d.at_awaso            || 0],
+          ['unknown',             d.unknown             || 0],
+        ];
+        tiles.forEach(function (t) {
+          const key = t[0], count = t[1];
+          const div = document.createElement('div');
+          div.className = 'live-tile' + (filter === key ? ' active' : '');
+          div.innerHTML = '<div class="label">' + LABELS[key] + '</div><div class="count">' + count + '</div>';
+          div.addEventListener('click', function () {
+            filter = (filter === key) ? null : key;
+            render();
+            buildSummary(summary);
+          });
+          summaryEl.appendChild(div);
+        });
+      }
+
+      function escapeHtml(s) {
+        return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      }
+
+      function render() {
+        currentStates.forEach(function (t) {
+          const m = markers[t.imei];
+          if (!m) return;
+          const visible = !filter || t.direction === filter;
+          if (!visible) {
+            if (map.hasLayer(m)) map.removeLayer(m);
+            return;
+          }
+          if (!map.hasLayer(m)) m.addTo(map);
+        });
+      }
+
+      function update(states, summary) {
+        buildSummary(summary);
+        const seen = new Set();
+
+        states.forEach(function (t) {
+          if (t.lat == null || t.lng == null) return;
+          seen.add(t.imei);
+
+          // 1. Determine Color (Motion)
+          let colorClass = 'truck-offline';
+          if (t.motion === 'moving')  colorClass = 'truck-moving';
+          if (t.motion === 'parked')  colorClass = 'truck-parked';
+          if (t.motion === 'idle')    colorClass = 'truck-idle';
+
+          // 2. Determine Direction (Arrow)
+          let arrowClass = '';
+          if (t.direction === 'heading_to_takoradi' || t.direction === 'at_takoradi') {
+            arrowClass = 'arrow-takoradi'; // points down
+          } else if (t.direction === 'heading_to_awaso' || t.direction === 'at_awaso') {
+            arrowClass = 'arrow-awaso'; // points up
+          }
+
+          const tooltipContent =
+            '<strong>' + escapeHtml(t.name) + '</strong><br>' +
+            LABELS[t.direction] + '<br>' + t.speed_kph + ' kph';
+
+          const iconHtml = `
+            <div class="truck-marker-wrap">
+              ${arrowClass ? `<div class="truck-arrow ${arrowClass}"></div>` : ''}
+              <div class="truck-marker ${colorClass}"></div>
+            </div>
+          `;
+
+          const customIcon = L.divIcon({
+            className: '', html: iconHtml, iconSize: [20, 30], iconAnchor: [10, 15]
+          });
+
+          if (!markers[t.imei]) {
+            markers[t.imei] = L.marker([t.lat, t.lng], { icon: customIcon })
+              .bindTooltip(tooltipContent, { className: 'truck-tip', direction: 'top' });
+          } else {
+            markers[t.imei].setLatLng([t.lat, t.lng]);
+            markers[t.imei].setIcon(customIcon);
+            markers[t.imei].setTooltipContent(tooltipContent);
+          }
+        });
+
+        Object.keys(markers).forEach(function (imei) {
+          if (!seen.has(imei)) {
+            if (map.hasLayer(markers[imei])) map.removeLayer(markers[imei]);
+            delete markers[imei];
+          }
+        });
+
+        currentStates = states;
+        render();
+      }
+
+      function setStatus(text, isError) {
+        statusEl.textContent = text;
+        statusEl.classList.toggle('error', !!isError);
+      }
+
+      let loading = false;
+      async function fetchStates(force) {
+        if (loading) return;
+        loading = true;
+        setStatus(force ? 'Refreshing…' : 'Loading…', false);
+        try {
+          const url = '{{ url_for("live_fleet.api_fleet") }}' + (force ? '?refresh=1' : '');
+          const r = await fetch(url, { credentials: 'same-origin' });
+          
+          if (r.status === 429) { setStatus('Throttled — retrying in 60 s', true); return; }
+          if (!r.ok) { setStatus('Server error ' + r.status, true); return; }
+
+          const j = await r.json();
+          if (j.error) { setStatus('Error: ' + j.error, true); return; }
+
+          const trucks = j.trucks || [];
+          update(trucks, j.summary || { direction: {}, motion: {} });
+
+          if (j.scanning) {
+            const known = trucks.filter(t => !t.scan_pending).length;
+            setStatus('Scanning fleet… ' + known + ' / ' + trucks.length, false);
+          } else {
+            setStatus('Updated ' + new Date().toLocaleTimeString(), false);
+          }
+        } catch (e) {
+          setStatus('Refresh failed — retrying shortly', true);
+        } finally {
+          loading = false;
+        }
+      }
+
+      refreshBtn.addEventListener('click', function () { fetchStates(true); });
+      fetchStates(false);
+
+      const warmupTimer = setInterval(function () {
+        if (document.visibilityState !== 'visible') return;
+        if (statusEl.textContent.startsWith('Scanning')) { fetchStates(false); }
+        else { clearInterval(warmupTimer); }
+      }, 3000);
+
+      setInterval(function () {
+        if (document.visibilityState === 'visible') fetchStates(false);
+      }, 10000);
+    })();
+  </script>
+{% endblock %}
