@@ -47,7 +47,9 @@
       });
 
       this.listbox.addEventListener('mousedown', (e) => {
+        // Ignore header and footer — they have their own handlers.
         if (e.target.closest('.combobox-listbox-header')) return;
+        if (e.target.closest('.combobox-listbox-footer')) return;
 
         const li = e.target.closest('.combobox-option');
         if (!li) return;
@@ -339,6 +341,7 @@
       this.status.hidden = true;
       const frag = document.createDocumentFragment();
 
+      // ---- sticky header: select-all / clear-all ----
       const header = document.createElement('li');
       header.className = 'combobox-listbox-header';
       header.setAttribute('aria-hidden', 'true');
@@ -374,6 +377,7 @@
       header.appendChild(clearLink);
       frag.appendChild(header);
 
+      // ---- options ----
       for (let i = 0; i < this.filtered.length; i++) {
         const d = this.filtered[i];
         const checked = this.selected.has(d.imei);
@@ -411,6 +415,32 @@
 
         frag.appendChild(li);
       }
+
+      // ---- sticky footer: live count + Done button ----
+      const footer = document.createElement('li');
+      footer.className = 'combobox-listbox-footer';
+      footer.setAttribute('aria-hidden', 'true');
+
+      const summary = document.createElement('span');
+      summary.className = 'combobox-footer-summary';
+      const n = this.order.length;
+      summary.textContent = n === 0
+        ? 'No trucks selected'
+        : n + ' truck' + (n === 1 ? '' : 's') + ' selected';
+
+      const doneBtn = document.createElement('button');
+      doneBtn.type = 'button';
+      doneBtn.className = 'combobox-done-btn';
+      doneBtn.textContent = 'Done';
+      doneBtn.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.close();
+      });
+
+      footer.appendChild(summary);
+      footer.appendChild(doneBtn);
+      frag.appendChild(footer);
 
       this.listbox.innerHTML = '';
       this.listbox.appendChild(frag);

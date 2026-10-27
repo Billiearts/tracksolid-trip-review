@@ -1,15 +1,15 @@
 """
 services/live_fleet.py — Live Awaso↔Takoradi corridor view.
 
-Logic:
-1. GPS Radius is king. If it's in the Awaso circle, it's at_awaso. If in Takoradi circle, at_takoradi.
-2. If outside circles and moving > 5 kph, we use the GPS `direction` (heading) from location.get.
-   - North (315-45 deg) -> heading_to_awaso
-   - South (135-225 deg) -> heading_to_takoradi
-3. If outside circles and parked/idle, we look at the newest alarm event.
-   - Excludes 'TRIP TIME' fences entirely to prevent the 100km away bug.
-   - 'GBC EXITED' (out) -> heading_to_takoradi
-   - 'TAKORADI ENTRY' (out) -> heading_to_awaso
+Rules (strict priority):
+1. GPS Radius. If inside a facility -> at_<kind>. This is the ONLY way at_* can be produced.
+2. GPS Heading (only if moving > 5 kph and outside circles).
+   - 315-45°  -> heading_to_awaso
+   - 135-225° -> heading_to_takoradi
+3. Alarm events (only if parked outside circles). Can ONLY return heading_to_*, never at_*.
+   - GBC EXITED (out)  -> heading_to_takoradi
+   - TAKORADI ENTRY (out) -> heading_to_awaso
+   - 'TRIP TIME' fences are ignored entirely (they cover the whole corridor).
 """
 from __future__ import annotations
 
@@ -35,13 +35,15 @@ OFFLINE_MIN            = 60
 _LOCATION_BATCH_SIZE   = 10
 _CORRIDOR_STATE_TTL    = timedelta(minutes=15)
 
+# Facilities list refreshes fast so radius edits in Supabase take effect quickly.
+_FACILITIES_TTL_SEC = 30
+
 # ---------------------------------------------------------------------------
 # Facility definitions
 # ---------------------------------------------------------------------------
 
 _facilities_lock = Lock()
 _facilities_cache: dict = {"data": None, "expires_at": 0.0}
-_FACILITIES_TTL = 300
 
 def _load_facilities() -> tuple[list[dict]]:
     now = time.time()
@@ -55,6 +57,10 @@ def _load_facilities() -> tuple[list[dict]]:
         fac_resp = client.table("fence_polygons").select("*").execute()
     except Exception as exc:
         log.error("Failed to load fence_polygons: %s", exc)
+        # Keep old cache if DB is down but we already have data.
+        with _facilities_lock:
+            if _facilities_cache["data"] is not None:
+                return _facilities_cache["data"]
         return ([],)
 
     facilities = [
@@ -72,7 +78,10 @@ def _load_facilities() -> tuple[list[dict]]:
     payload = (facilities,)
     with _facilities_lock:
         _facilities_cache["data"] = payload
-        _facilities_cache["expires_at"] = now + _FACILITIES_TTL
+        _facilities_cache["expires_at"] = now + _FACILITIES_TTL_SEC
+
+    log.info("live_fleet: facilities refreshed — %s",
+             ", ".join(f"{f['name']} ({f['radius_km']} km)" for f in facilities))
     return payload
 
 # ---------------------------------------------------------------------------
@@ -94,7 +103,7 @@ def _inside_facility(lat: float, lng: float, facilities: list[dict]) -> dict | N
     return None
 
 # ---------------------------------------------------------------------------
-# Alarm Processing
+# Alarm Processing — only produces heading_to_* states
 # ---------------------------------------------------------------------------
 
 _FENCE_SUFFIX_RE = re.compile(r"\(([^()]*)\)\s*$")
@@ -107,7 +116,7 @@ def _fence_name(alarm: dict) -> str:
 def _derive_event_state(imei: str, lookback_days: int = CORRIDOR_LOOKBACK_DAYS) -> str | None:
     end = datetime.now(timezone.utc)
     begin = end - timedelta(days=lookback_days)
-    
+
     try:
         r = api_call("jimi.device.alarm.list", {
             "imeis": imei,
@@ -130,19 +139,18 @@ def _derive_event_state(imei: str, lookback_days: int = CORRIDOR_LOOKBACK_DAYS) 
     for a in result:
         name = _fence_name(a)
         event = (a.get("alertTypeId") or "").lower()
-        
-        # Ignore TRIP TIME entirely, as it covers the whole corridor
+
         if "TRIP TIME" in name:
             continue
 
-        # --- DEPARTING AWASO (Heading to Takoradi) ---
+        # Departing Awaso -> heading to Takoradi
         if name in ("GBC EXITED", "GBC EXIT", "HAULAGE TRUCKS EXIT"):
-            if event == "out": 
+            if event == "out":
                 return "heading_to_takoradi"
-                
-        # --- DEPARTING TAKORADI (Heading to Awaso) ---
+
+        # Departing Takoradi -> heading to Awaso
         if name in ("TAKORADI ENTRY", "GBC TAKORADI", "GBC TAKORADI 2"):
-            if event == "out": 
+            if event == "out":
                 return "heading_to_awaso"
 
     return None
@@ -174,7 +182,7 @@ def _fetch_locations_batched(imeis: list[str]) -> dict[str, dict]:
     return out
 
 # ---------------------------------------------------------------------------
-# Background Cache
+# Background cache
 # ---------------------------------------------------------------------------
 
 _corridor_cache: dict[str, dict] = {}
@@ -217,10 +225,11 @@ def _schedule_rescan(imei: str, lat: float, lng: float):
     with _pending_rescans_lock:
         if imei in _pending_rescans: return
         _pending_rescans.add(imei)
-    threading.Thread(target=_scan_one_truck_deduped, args=(imei, lat, lng), daemon=True).start()
+    threading.Thread(target=_scan_one_truck_deduped,
+                     args=(imei, lat, lng), daemon=True).start()
 
 # ---------------------------------------------------------------------------
-# Main Entry
+# Fleet state
 # ---------------------------------------------------------------------------
 
 _fleet_cache_lock = Lock()
@@ -233,8 +242,10 @@ def get_fleet_state(force_refresh: bool = False) -> tuple[list[dict], bool]:
                 and now < _fleet_cache["expires_at"]):
             return _fleet_cache["data"], _scan_in_progress.is_set()
 
-    devices = [d for d in get_devices() if classify_device(d.get("deviceName") or "") == "regular"]
-    if not devices: return [], False
+    devices = [d for d in get_devices()
+               if classify_device(d.get("deviceName") or "") == "regular"]
+    if not devices:
+        return [], False
 
     facilities = _load_facilities()[0]
     imeis = [d["imei"] for d in devices]
@@ -245,62 +256,81 @@ def get_fleet_state(force_refresh: bool = False) -> tuple[list[dict], bool]:
         if len(_corridor_cache) == 0 and not _scan_in_progress.is_set():
             with _scan_lock:
                 if not _scan_in_progress.is_set():
-                    threading.Thread(target=_background_scan_all, args=(imeis,), daemon=True).start()
+                    threading.Thread(target=_background_scan_all,
+                                     args=(imeis,), daemon=True).start()
 
     out = []
     for dev in devices:
         imei = dev["imei"]
         name = dev.get("deviceName") or imei
         loc = loc_by_imei.get(imei) or {}
-        
+
         lat, lng, speed, gps_time, heading = None, None, 0.0, None, None
         try:
             if loc.get("lat"): lat = float(loc["lat"])
             if loc.get("lng"): lng = float(loc["lng"])
             if loc.get("speed"): speed = float(loc["speed"])
             if loc.get("direction"): heading = float(loc["direction"])
-            if loc.get("gpsTime"): gps_time = datetime.fromisoformat(loc["gpsTime"].replace("Z", "+00:00")).replace(tzinfo=timezone.utc)
-        except (TypeError, ValueError): pass
+            if loc.get("gpsTime"):
+                gps_time = datetime.fromisoformat(
+                    loc["gpsTime"].replace("Z", "+00:00")
+                ).replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            pass
 
         with _corridor_cache_lock:
             cache_entry = _corridor_cache.get(imei)
-            
+
         last_event_state = None
         scan_pending = True
-        
+
         if cache_entry:
             last_event_state = cache_entry.get("last_event_state")
             scan_pending = False
-            
-            # Rescan if moved > 500m and cache is > 15 mins old
+
             age = now_dt - cache_entry["scanned_at"]
             moved = 0
-            if lat and lng and cache_entry.get("scanned_lat") and cache_entry.get("scanned_lng"):
-                moved = _haversine_km(cache_entry["scanned_lat"], cache_entry["scanned_lng"], lat, lng)
-                
-            if age > _CORRIDOR_STATE_TTL and (moved > 0.5 or moved == 0): 
+            if (lat is not None and lng is not None
+                    and cache_entry.get("scanned_lat") is not None
+                    and cache_entry.get("scanned_lng") is not None):
+                moved = _haversine_km(cache_entry["scanned_lat"],
+                                      cache_entry["scanned_lng"], lat, lng)
+
+            if age > _CORRIDOR_STATE_TTL and (moved > 0.5 or moved == 0):
                 _schedule_rescan(imei, lat, lng)
 
-        # Determine State
-        direction = "unknown"
-        inside = _inside_facility(lat, lng, facilities) if lat and lng else None
-        
-        if inside:
-            # 1. GPS Radius is King
+        # ---- STATE DECISION ----
+        inside = (_inside_facility(lat, lng, facilities)
+                  if lat is not None and lng is not None else None)
+
+        if inside is not None:
+            # Rule 1: GPS inside the circle is authoritative.
             direction = f"at_{inside['kind']}"
-            
         elif speed > MOVING_KPH and heading is not None:
-            # 2. If moving outside the circles, use the GPS compass heading
+            # Rule 2: GPS heading (only when actually moving).
             if 315 <= heading or heading <= 45:
                 direction = "heading_to_awaso"
             elif 135 <= heading <= 225:
                 direction = "heading_to_takoradi"
+            elif last_event_state:
+                direction = last_event_state
             else:
-                direction = last_event_state or "unknown"
-                
+                direction = "unknown"
         else:
-            # 3. If parked outside the circles, use the last known fence event
+            # Rule 3: parked outside circles — trust the last fence event.
+            # NOTE: last_event_state can only ever be heading_to_awaso /
+            # heading_to_takoradi / None (never at_*).
             direction = last_event_state or "unknown"
+
+        # Sanity check: log when a truck is far from any facility but still
+        # showing at_* from some other source. Should never fire now, but it
+        # will catch regressions.
+        if direction.startswith("at_") and inside is None:
+            log.warning(
+                "live_fleet: %s classified %s but GPS shows outside all "
+                "facilities (lat=%s lng=%s) — this should be impossible",
+                name, direction, lat, lng,
+            )
 
         motion = _motion_state(speed, gps_time, now_dt)
 
@@ -321,8 +351,10 @@ def get_fleet_state(force_refresh: bool = False) -> tuple[list[dict], bool]:
 
     return out, _scan_in_progress.is_set()
 
+
 def summarise(states: list[dict]) -> dict:
-    counts = {"heading_to_takoradi": 0, "heading_to_awaso": 0, "at_takoradi": 0, "at_awaso": 0, "unknown": 0}
+    counts = {"heading_to_takoradi": 0, "heading_to_awaso": 0,
+              "at_takoradi": 0, "at_awaso": 0, "unknown": 0}
     motion = {"moving": 0, "idle": 0, "parked": 0, "offline": 0}
     for s in states:
         counts[s["direction"]] = counts.get(s["direction"], 0) + 1

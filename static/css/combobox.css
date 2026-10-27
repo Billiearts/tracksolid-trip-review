@@ -117,7 +117,7 @@
   border-bottom: 1px solid #e2e6ea;
   font-size: 0.82rem;
   color: #555;
-  z-index: 1;
+  z-index: 2;
 }
 .combobox-listbox-header label {
   display: inline-flex;
@@ -139,6 +139,39 @@
   text-decoration: underline;
 }
 .combobox-selectall-link:hover { color: #a02525; }
+
+/* ---------- sticky footer inside the listbox: count + Done ---------- */
+.combobox-listbox-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #f7f8fa;
+  border-top: 1px solid #e2e6ea;
+  font-size: 0.82rem;
+  color: #555;
+  z-index: 2;
+}
+.combobox-footer-summary {
+  font-variant-numeric: tabular-nums;
+  color: #666;
+}
+.combobox-done-btn {
+  background: #4a90e2;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 0.35rem 0.9rem;
+  font-size: 0.85rem;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.combobox-done-btn:hover { background: #357ab8; }
+.combobox-done-btn:focus { outline: none; box-shadow: 0 0 0 2px #a8c8ee; }
 
 /* ---------- option row ---------- */
 .combobox-option {
