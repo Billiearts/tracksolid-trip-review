@@ -1,25 +1,291 @@
 {% extends "base.html" %}
-{% block body_class %}wide{% endblock %}
+{% block body_class %}wide live-mode{% endblock %}
+
+{% block heading %}{% endblock %}
 
 {% block head %}
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
   <style>
-    #corridor-map { height: 70vh; min-height: 420px; border-radius: 8px; }
-    .live-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.6rem; margin-bottom: 0.75rem; }
-    .live-tile { background: #fafbfc; border: 1px solid #e2e6ea; border-radius: 6px; padding: 0.6rem 0.75rem; cursor: pointer; transition: background 0.15s ease; }
+    /* ------------------------------------------------------------------
+       Full-viewport live layout
+       ------------------------------------------------------------------ */
+    body.live-mode { padding: 0; background: #e9edf1; }
+    body.live-mode .container {
+      display: flex; flex-direction: column;
+      max-width: 100%; height: calc(100vh - 48px);
+      margin: 0; padding: 0;
+    }
+    body.live-mode .container > h1 { display: none; }
+    body.live-mode .container > .flash { margin: 0.5rem 1rem; }
+    body.live-mode .card {
+      flex: 1 1 auto; display: flex; flex-direction: column;
+      margin: 0; padding: 0;
+      border-radius: 0; box-shadow: none; background: transparent;
+      min-height: 0;
+    }
+    body.live-mode .topbar { margin: 0; padding: 0.55rem 1rem; }
+
+    .map-shell {
+      position: relative; flex: 1 1 auto;
+      width: 100%; height: 100%; min-height: 0; overflow: hidden;
+    }
+    #corridor-map {
+      width: 100%; height: 100%; min-height: 0; background: #dfe6ec;
+    }
+
+    .map-fallback {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 0.75rem;
+      background: #f5f6f8; color: #a02525;
+      font-size: 0.95rem; text-align: center; padding: 1.5rem;
+    }
+    .map-fallback strong { font-size: 1.05rem; }
+
+    /* ------------------------------------------------------------------
+       Top-left floating header
+       ------------------------------------------------------------------ */
+    .live-header {
+      position: absolute; top: 1rem; left: 1rem; z-index: 600;
+      display: flex; gap: 0.5rem; align-items: center;
+      background: rgba(255,255,255,0.94);
+      border: 1px solid #d7dbe0; border-radius: 8px;
+      padding: 0.5rem 0.75rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      max-width: calc(100% - 11rem);
+    }
+    .live-header h2 {
+      font-size: 0.95rem; margin: 0 0.5rem 0 0;
+      color: #1e5f9e; white-space: nowrap;
+    }
+    .live-status {
+      font-size: 0.8rem; color: #888; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    .live-status.error { color: #a02525; font-weight: 500; }
+    .live-header button {
+      padding: 0.35rem 0.85rem; font-size: 0.82rem; white-space: nowrap;
+    }
+
+    /* ------------------------------------------------------------------
+       Top-right control cluster
+       ------------------------------------------------------------------ */
+    .map-ctrls {
+      position: absolute; top: 1rem; right: 1rem; z-index: 600;
+      display: flex; gap: 0.5rem;
+    }
+    .map-ctrl-btn {
+      width: 40px; height: 40px;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: #fff; border: 1px solid #d7dbe0; border-radius: 8px;
+      color: #333; cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.12); padding: 0;
+    }
+    .map-ctrl-btn:hover { background: #f2f5f8; color: #1e5f9e; }
+    .map-ctrl-btn.active { background: #eaf2fb; border-color: #4a90e2; color: #1e5f9e; }
+    .map-ctrl-btn.danger  { background: #fde7e7; border-color: #e2b3b3; color: #a02525; }
+    .map-ctrl-btn svg { width: 20px; height: 20px; display: block; }
+
+    .map-type-popover {
+      position: absolute; top: 3.5rem; right: 1rem; z-index: 650;
+      background: #fff; border: 1px solid #d7dbe0; border-radius: 8px;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.16);
+      padding: 0.35rem; min-width: 210px;
+    }
+    .map-type-popover[hidden] { display: none; }
+    .map-type-popover h4 {
+      margin: 0.25rem 0.5rem 0.4rem;
+      font-size: 0.72rem; text-transform: uppercase;
+      letter-spacing: 0.05em; color: #888; font-weight: 500;
+    }
+    .map-type-option {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.45rem 0.6rem; border-radius: 5px;
+      cursor: pointer; font-size: 0.88rem; color: #222;
+    }
+    .map-type-option:hover { background: #f4f7fb; }
+    .map-type-option input[type="radio"] { accent-color: #4a90e2; margin: 0; }
+    .map-type-option .swatch {
+      width: 14px; height: 14px; border-radius: 3px;
+      border: 1px solid #c7ddf3; background: #eef2f6; flex-shrink: 0;
+    }
+
+    /* ------------------------------------------------------------------
+       Fence-editor side panel
+       ------------------------------------------------------------------ */
+    .fence-editor {
+      position: absolute; top: 3.75rem; right: 1rem; z-index: 700;
+      width: 340px; max-height: calc(100% - 5rem);
+      display: flex; flex-direction: column;
+      background: #fff; border: 1px solid #d7dbe0; border-radius: 8px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.20);
+      font-size: 0.85rem;
+    }
+    .fence-editor[hidden] { display: none; }
+    .fence-editor-head {
+      padding: 0.6rem 0.75rem; border-bottom: 1px solid #e2e6ea;
+      display: flex; align-items: center; justify-content: space-between;
+      background: #f7f8fa; border-radius: 8px 8px 0 0;
+    }
+    .fence-editor-head h3 {
+      margin: 0; font-size: 0.9rem; color: #1e5f9e;
+    }
+    .fence-editor-body {
+      padding: 0.6rem 0.75rem; overflow-y: auto; flex: 1 1 auto;
+    }
+    .fence-editor-foot {
+      padding: 0.6rem 0.75rem; border-top: 1px solid #e2e6ea;
+      display: flex; gap: 0.5rem; justify-content: flex-end;
+      background: #f7f8fa; border-radius: 0 0 8px 8px;
+    }
+    .fence-editor-foot button {
+      padding: 0.4rem 0.75rem; font-size: 0.8rem;
+    }
+    .fence-editor-foot button.secondary {
+      background: #f0f2f5; color: #333; border: 1px solid #d7dbe0;
+    }
+    .fence-editor-foot button.secondary:hover { background: #e2e6eb; }
+
+    .fence-list {
+      list-style: none; margin: 0 0 0.75rem; padding: 0;
+      border: 1px solid #e2e6ea; border-radius: 6px; overflow: hidden;
+    }
+    .fence-list li {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.4rem 0.55rem; border-bottom: 1px solid #f0f0f0;
+      cursor: pointer; font-size: 0.82rem;
+    }
+    .fence-list li:last-child { border-bottom: none; }
+    .fence-list li:hover { background: #f4f7fb; }
+    .fence-list li.selected { background: #eaf2fb; }
+    .fence-list li .dot {
+      width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+      border: 1px solid rgba(0,0,0,0.2);
+    }
+    .fence-list li .fence-name {
+      flex: 1 1 auto; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .fence-list li .fence-meta {
+      font-size: 0.72rem; color: #888; white-space: nowrap;
+    }
+
+    .fence-toolbar {
+      display: flex; gap: 0.4rem; margin-bottom: 0.6rem; flex-wrap: wrap;
+    }
+    .fence-toolbar button {
+      padding: 0.35rem 0.6rem; font-size: 0.78rem;
+    }
+    .fence-toolbar button.secondary {
+      background: #f0f2f5; color: #333; border: 1px solid #d7dbe0;
+    }
+
+    .fence-edit-block {
+      border: 1px solid #e2e6ea; border-radius: 6px;
+      padding: 0.55rem 0.65rem; background: #fafbfc;
+      margin-top: 0.6rem;
+    }
+    .fence-edit-block h4 {
+      margin: 0 0 0.45rem; font-size: 0.75rem;
+      text-transform: uppercase; letter-spacing: 0.05em; color: #888;
+    }
+    .fence-edit-block .field {
+      display: flex; align-items: center; gap: 0.4rem;
+      margin-bottom: 0.4rem; font-size: 0.8rem;
+    }
+    .fence-edit-block .field label {
+      min-width: 78px; margin: 0; font-size: 0.78rem; color: #555;
+    }
+    .fence-edit-block .field input {
+      flex: 1 1 auto; padding: 0.25rem 0.4rem; font-size: 0.8rem;
+    }
+    .fence-edit-block .hint {
+      font-size: 0.74rem; color: #888; margin: 0.35rem 0 0;
+    }
+
+    .fence-dirty-badge {
+      display: inline-block; font-size: 0.7rem; padding: 1px 6px;
+      border-radius: 8px; background: #fff7e6; color: #8a5a00;
+      border: 1px solid #f0d9a8; margin-left: 0.35rem;
+    }
+    .fence-editor-tip {
+      font-size: 0.78rem; color: #666; margin: 0 0 0.5rem;
+      padding: 0.4rem 0.55rem; border-radius: 4px;
+      background: #fffbe6; border: 1px solid #f0d9a8; color: #8a5a00;
+    }
+
+    /* Draw-on-map cursors */
+    body.fence-drawing #corridor-map { cursor: crosshair; }
+
+    /* Vertex handle icons */
+    .fence-vertex-icon {
+      background: #fff; border: 2px solid #4a90e2; border-radius: 50%;
+    }
+    .fence-vertex-icon.mid {
+      width: 8px; height: 8px; opacity: 0.7;
+    }
+
+    /* ------------------------------------------------------------------
+       Summary tiles
+       ------------------------------------------------------------------ */
+    .live-summary-wrap {
+      position: absolute; top: 4.25rem; left: 1rem; z-index: 550;
+      max-width: calc(100% - 2rem);
+      display: flex; flex-direction: column; gap: 0.5rem;
+    }
+    .live-summary { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .live-tile {
+      background: rgba(255,255,255,0.94);
+      border: 1px solid #e2e6ea; border-radius: 6px;
+      padding: 0.45rem 0.65rem; cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06); min-width: 96px;
+    }
     .live-tile:hover  { background: #f0f4f9; }
     .live-tile.active { background: #eaf2fb; border-color: #4a90e2; }
-    .live-tile .label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #666; }
-    .live-tile .count { font-size: 1.5rem; font-weight: 600; color: #1e5f9e; font-variant-numeric: tabular-nums; }
-    .live-legend { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.82rem; color: #555; margin-bottom: 0.5rem; }
-    .live-legend span.dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 0.3rem; vertical-align: middle; }
-    .live-status { font-size: 0.8rem; color: #888; }
-    .live-status.error { color: #a02525; font-weight: 500; }
-    .leaflet-tooltip.truck-tip { font-size: 0.82rem; line-height: 1.4; white-space: nowrap; }
+    .live-tile .label {
+      font-size: 0.66rem; text-transform: uppercase;
+      letter-spacing: 0.05em; color: #666;
+    }
+    .live-tile .count {
+      font-size: 1.25rem; font-weight: 600; color: #1e5f9e;
+      font-variant-numeric: tabular-nums;
+    }
+    .live-fences { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .live-fence-tile {
+      background: rgba(255,248,236,0.96);
+      border: 1px solid #f0d9a8; border-radius: 6px;
+      padding: 0.45rem 0.65rem; cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06); min-width: 110px;
+    }
+    .live-fence-tile:hover  { background: #fdefd2; }
+    .live-fence-tile.active { background: #fbe3b8; border-color: #d99a2b; }
+    .live-fence-tile .label {
+      font-size: 0.66rem; text-transform: uppercase;
+      letter-spacing: 0.05em; color: #8a5a00;
+      display: flex; align-items: center; gap: 0.35rem;
+    }
+    .live-fence-tile .dot {
+      display: inline-block; width: 8px; height: 8px;
+      border-radius: 50%; flex-shrink: 0;
+    }
+    .live-fence-tile .count {
+      font-size: 1.25rem; font-weight: 600; color: #8a5a00;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Leaflet tweaks */
+    .leaflet-tooltip.truck-tip {
+      font-size: 0.82rem; line-height: 1.4; white-space: nowrap;
+    }
     .leaflet-tooltip.truck-tip strong { color: #1e5f9e; }
-    .leaflet-control-layers { font-size: 0.82rem; }
-    
-    /* Mobile App Style Truck Markers */
+    .leaflet-tooltip.truck-tip .fence-line { color: #8a5a00; }
+    .leaflet-control-layers { display: none !important; }
+    .leaflet-control-attribution { font-size: 0.68rem; }
+
+    /* Markers */
     .truck-marker-wrap {
       display: flex; align-items: center; justify-content: center; position: relative;
     }
@@ -27,20 +293,17 @@
       width: 14px; height: 26px; border-radius: 4px;
       border: 1.5px solid #111;
       box-shadow: 0 1px 4px rgba(0,0,0,0.5);
-      position: relative;
-      transition: background 0.3s, transform 0.3s;
+      position: relative; transition: background 0.3s, transform 0.3s;
     }
     .truck-marker::after {
       content: ''; position: absolute; top: 2px; left: 2px; right: 2px; height: 4px;
       background: rgba(255,255,255,0.4); border-radius: 2px;
     }
-    /* Colors from the mobile app */
-    .truck-moving  { background: #2ecc71; } /* Green */
-    .truck-parked  { background: #e74c3c; } /* Red */
-    .truck-idle    { background: #f1c40f; } /* Yellow */
-    .truck-offline { background: #bdc3c7; } /* Grey */
+    .truck-moving  { background: #2ecc71; }
+    .truck-parked  { background: #e74c3c; }
+    .truck-idle    { background: #f1c40f; }
+    .truck-offline { background: #bdc3c7; }
 
-    /* Directional Arrows */
     .truck-arrow {
       position: absolute; width: 0; height: 0;
       border-left: 5px solid transparent; border-right: 5px solid transparent;
@@ -48,35 +311,263 @@
     }
     .arrow-awaso { transform: rotate(180deg); top: auto; bottom: -10px; }
     .arrow-takoradi { transform: rotate(0deg); }
+
+    .truck-marker.fence-waiting { box-shadow: 0 0 0 3px #f2c14e, 0 1px 4px rgba(0,0,0,0.5); }
+    .truck-marker.fence-fueling { box-shadow: 0 0 0 3px #e08a2e, 0 1px 4px rgba(0,0,0,0.5); }
+    .truck-marker.fence-loading { box-shadow: 0 0 0 3px #3fae6c, 0 1px 4px rgba(0,0,0,0.5); }
+
+    .yard-fence-label {
+      background: #fff8ec; border: 1px solid #d99a2b; border-radius: 4px;
+      padding: 1px 5px; font-size: 0.72rem; font-weight: 600; color: #8a5a00;
+      white-space: nowrap;
+    }
+    .corridor-fence-label {
+      background: #fff; border: 1px solid #1e5f9e; border-radius: 4px;
+      padding: 1px 5px; font-size: 0.72rem; font-weight: 600; color: #1e5f9e;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 768px) {
+      body.live-mode .container { height: calc(100vh - 44px); }
+      .live-header {
+        top: 0.5rem; left: 0.5rem; padding: 0.4rem 0.55rem;
+        max-width: calc(100% - 10rem);
+      }
+      .live-header h2 { font-size: 0.82rem; margin-right: 0.25rem; }
+      .live-header .live-status { font-size: 0.72rem; }
+      .live-header button { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
+      .map-ctrls { top: 0.5rem; right: 0.5rem; gap: 0.35rem; }
+      .map-ctrl-btn { width: 36px; height: 36px; }
+      .map-type-popover { top: 3rem; right: 0.5rem; }
+      .live-summary-wrap { top: 3.5rem; left: 0.5rem; }
+      .live-tile, .live-fence-tile { padding: 0.35rem 0.5rem; min-width: 82px; }
+      .live-tile .count, .live-fence-tile .count { font-size: 1.05rem; }
+
+      .fence-editor {
+        top: 3.25rem; right: 0.5rem; width: calc(100% - 1rem);
+        max-height: calc(100% - 4rem);
+      }
+    }
   </style>
 {% endblock %}
 
 {% block content %}
-  <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem;">
-      <h2 style="font-size:1.1rem;margin:0;">Live corridor — Awaso ↔ Takoradi</h2>
-      <div style="display:flex;gap:0.5rem;align-items:center;">
-        <span id="live-status" class="live-status">Loading…</span>
-        <button type="button" id="refresh-btn" style="padding:0.35rem 0.85rem;font-size:0.85rem;">Refresh</button>
+  <div class="map-shell" id="map-shell">
+    <div id="corridor-map"></div>
+
+    <div class="live-header">
+      <h2>Live Corridor</h2>
+      <span id="live-status" class="live-status">Loading…</span>
+      <button type="button" id="refresh-btn">Refresh</button>
+    </div>
+
+    <div class="map-ctrls">
+      <!-- Fence-drawing toggle -->
+      <button type="button" class="map-ctrl-btn active" id="fences-toggle-btn"
+              aria-label="Show or hide fence drawings"
+              aria-pressed="true"
+              title="Show / hide fence drawings">
+        <svg id="fences-icon-on" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 21V6"></path>
+          <path d="M20 21V6"></path>
+          <path d="M12 21V6"></path>
+          <path d="M3 9h18"></path>
+          <path d="M3 15h18"></path>
+        </svg>
+        <svg id="fences-icon-off" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" style="display:none;">
+          <path d="M4 21V6"></path>
+          <path d="M20 21V6"></path>
+          <path d="M12 21V6"></path>
+          <path d="M3 9h18"></path>
+          <path d="M3 15h18"></path>
+          <line x1="3" y1="3" x2="21" y2="21" stroke="#a02525"></line>
+        </svg>
+      </button>
+
+      <!-- Edit fences (admin only) -->
+      {% if is_admin %}
+      <button type="button" class="map-ctrl-btn" id="fence-edit-btn"
+              aria-label="Edit fences" title="Edit fences"
+              aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true">
+          <path d="M12 20h9"></path>
+          <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4z"></path>
+        </svg>
+      </button>
+      {% endif %}
+
+      <!-- Map type -->
+      <button type="button" class="map-ctrl-btn" id="maptype-btn"
+              aria-label="Change map type" title="Change map type">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+          <polyline points="2 17 12 22 22 17"></polyline>
+          <polyline points="2 12 12 17 22 12"></polyline>
+        </svg>
+      </button>
+
+      <!-- Fullscreen -->
+      <button type="button" class="map-ctrl-btn" id="fullscreen-btn"
+              aria-label="Toggle fullscreen" title="Toggle fullscreen">
+        <svg id="fs-icon-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8 3H5a2 2 0 0 0-2 2v3"></path>
+          <path d="M21 8V5a2 2 0 0 0-2-2h-3"></path>
+          <path d="M3 16v3a2 2 0 0 0 2 2h3"></path>
+          <path d="M16 21h3a2 2 0 0 0 2-2v-3"></path>
+        </svg>
+        <svg id="fs-icon-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" style="display:none;">
+          <path d="M8 3v3a2 2 0 0 1-2 2H3"></path>
+          <path d="M21 8h-3a2 2 0 0 1-2-2V3"></path>
+          <path d="M3 16h3a2 2 0 0 1 2 2v3"></path>
+          <path d="M16 21v-3a2 2 0 0 1 2-2h3"></path>
+        </svg>
+      </button>
+    </div>
+
+    <div class="map-type-popover" id="maptype-popover" hidden>
+      <h4>Map type</h4>
+      <label class="map-type-option">
+        <input type="radio" name="maptype" value="street" checked>
+        <span class="swatch" style="background:#eef2f6;"></span> Street (OSM)
+      </label>
+      <label class="map-type-option">
+        <input type="radio" name="maptype" value="esri">
+        <span class="swatch" style="background:linear-gradient(135deg,#a3c293,#c2d6a4);"></span> Satellite (Esri)
+      </label>
+      <label class="map-type-option">
+        <input type="radio" name="maptype" value="google-sat">
+        <span class="swatch" style="background:linear-gradient(135deg,#547a4a,#7fa86a);"></span> Google Satellite
+      </label>
+      <label class="map-type-option">
+        <input type="radio" name="maptype" value="google-road">
+        <span class="swatch" style="background:linear-gradient(135deg,#ffffff,#e8e8e8);"></span> Google Streets
+      </label>
+      <label class="map-type-option">
+        <input type="radio" name="maptype" value="google-terrain">
+        <span class="swatch" style="background:linear-gradient(135deg,#e8d9a8,#c7b280);"></span> Google Terrain
+      </label>
+    </div>
+
+    <!-- --------------------------------------------------------------
+         Fence editor panel (admin only)
+         -------------------------------------------------------------- -->
+    {% if is_admin %}
+    <div class="fence-editor" id="fence-editor" hidden>
+      <div class="fence-editor-head">
+        <h3>Edit fences <span id="fence-dirty-count" class="fence-dirty-badge" hidden></span></h3>
+        <button type="button" class="map-ctrl-btn" id="fence-editor-close"
+                title="Close editor" style="width:28px;height:28px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <div class="fence-editor-body">
+        <p class="fence-editor-tip">
+          Select a fence below (or click it on the map) to edit. Use
+          <strong>+ New</strong> to draw a fresh shape.
+        </p>
+        <div class="fence-toolbar">
+          <button type="button" class="secondary" id="fence-new-polygon">+ New polygon</button>
+          <button type="button" class="secondary" id="fence-new-circle">+ New circle</button>
+          <button type="button" class="secondary" id="fence-clear-drafts">Clear drafts</button>
+        </div>
+        <ul class="fence-list" id="fence-list"></ul>
+
+        <div class="fence-edit-block" id="fence-edit-block" hidden>
+          <h4>Selected fence</h4>
+          <div class="field">
+            <label>Name</label>
+            <input type="text" id="fence-edit-name" maxlength="80">
+          </div>
+          <div class="field">
+            <label>Shape</label>
+            <select id="fence-edit-shape" style="flex:1 1 auto;padding:0.25rem 0.4rem;font-size:0.8rem;">
+              <option value="polygon">Polygon</option>
+              <option value="circle">Circle</option>
+            </select>
+          </div>
+          <div id="fence-edit-circle-fields" hidden>
+            <div class="field">
+              <label>Lat</label>
+              <input type="number" id="fence-edit-lat" step="0.000001">
+            </div>
+            <div class="field">
+              <label>Lng</label>
+              <input type="number" id="fence-edit-lng" step="0.000001">
+            </div>
+            <div class="field">
+              <label>Radius&nbsp;km</label>
+              <input type="number" id="fence-edit-radius" step="0.01" min="0.01">
+            </div>
+          </div>
+          <div id="fence-edit-polygon-fields" hidden>
+            <p class="hint">
+              Drag vertices on the map to reshape. Add a vertex by clicking
+              a faint midpoint; delete one with a right-click.
+            </p>
+          </div>
+          <p class="hint" id="fence-edit-status"></p>
+        </div>
+      </div>
+      <div class="fence-editor-foot">
+        <button type="button" class="secondary" id="fence-editor-cancel">Cancel</button>
+        <button type="button" id="fence-editor-save">Save all</button>
       </div>
     </div>
+    {% endif %}
 
-    <div class="live-legend">
-      <span><span class="dot" style="background:#2ecc71;"></span>Moving</span>
-      <span><span class="dot" style="background:#e74c3c;"></span>Parked</span>
-      <span><span class="dot" style="background:#f1c40f;"></span>Idle</span>
-      <span><span class="dot" style="background:#bdc3c7;"></span>Offline</span>
+    <div class="live-summary-wrap">
+      <div class="live-summary" id="live-summary"></div>
+      <div class="live-fences" id="live-fences"></div>
     </div>
-
-    <div class="live-summary" id="live-summary"></div>
-    <div id="corridor-map"></div>
   </div>
 {% endblock %}
 
 {% block scripts %}
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+          crossorigin=""></script>
+  <script>
+    window.__IS_ADMIN__ = {{ 'true' if is_admin else 'false' }};
+  </script>
   <script>
     (function () {
+      'use strict';
+
+      if (typeof window.L === 'undefined') {
+        const shell = document.getElementById('map-shell');
+        const mapEl = document.getElementById('corridor-map');
+        if (mapEl) mapEl.remove();
+        const fb = document.createElement('div');
+        fb.className = 'map-fallback';
+        fb.innerHTML =
+          '<strong>Map library failed to load</strong>' +
+          '<div>The Leaflet CDN could not be reached. ' +
+          'Check your network connection or any Content-Security-Policy ' +
+          'that may block unpkg.com, then reload this page.</div>';
+        shell.appendChild(fb);
+        const status = document.getElementById('live-status');
+        if (status) { status.textContent = 'Map unavailable'; status.classList.add('error'); }
+        return;
+      }
+
+      // ------------------------------------------------------------------
+      // Constants
+      // ------------------------------------------------------------------
       const LABELS = {
         heading_to_takoradi: 'Heading to Takoradi',
         heading_to_awaso:    'Heading to Awaso',
@@ -84,84 +575,362 @@
         at_awaso:            'At Awaso',
         unknown:             'Unknown',
       };
-      const FACILITIES = [
-        { name: 'Awaso',    lat: 6.2298,   lng: -2.284723, radius_km: 2.15 },
-        { name: 'Takoradi', lat: 4.893897, lng: -1.748176, radius_km: 0.400 },
+      // Yard catalog (matches the backend _YARD_FENCES). Used for tile
+      // labels + colors. The actual geometry comes from the API.
+      const YARD_CATALOG = [
+        { key: 'waiting', label: 'Dispatch',      color: '#f2c14e' },
+        { key: 'fueling', label: 'Workshop',      color: '#e08a2e' },
+        { key: 'loading', label: 'Washing Plant', color: '#3fae6c' },
       ];
-      const CORRIDOR_LINE = [
-        [FACILITIES[0].lat, FACILITIES[0].lng],
-        [FACILITIES[1].lat, FACILITIES[1].lng],
-      ];
+      const CORRIDOR_COLOR = { awaso: '#1e5f9e', takoradi: '#1e5f9e' };
 
-      const statusEl   = document.getElementById('live-status');
-      const summaryEl  = document.getElementById('live-summary');
-      const refreshBtn = document.getElementById('refresh-btn');
+      // ------------------------------------------------------------------
+      // DOM references
+      // ------------------------------------------------------------------
+      const statusEl    = document.getElementById('live-status');
+      const summaryEl   = document.getElementById('live-summary');
+      const fencesEl    = document.getElementById('live-fences');
+      const refreshBtn  = document.getElementById('refresh-btn');
+      const maptypeBtn  = document.getElementById('maptype-btn');
+      const maptypePop  = document.getElementById('maptype-popover');
+      const fsBtn       = document.getElementById('fullscreen-btn');
+      const fsExpand    = document.getElementById('fs-icon-expand');
+      const fsCollapse  = document.getElementById('fs-icon-collapse');
+      const fenceBtn    = document.getElementById('fences-toggle-btn');
+      const fenceOn     = document.getElementById('fences-icon-on');
+      const fenceOff    = document.getElementById('fences-icon-off');
+      const mapShell    = document.getElementById('map-shell');
 
-      const map = L.map('corridor-map', { zoomControl: true });
-      
-      const streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OSM' });
-      const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Imagery &copy; Esri' });
-      
-      streetLayer.addTo(map);
+      const editBtn     = document.getElementById('fence-edit-btn');
+      const editor      = document.getElementById('fence-editor');
+      const editorClose = document.getElementById('fence-editor-close');
+      const editorCancel= document.getElementById('fence-editor-cancel');
+      const editorSave  = document.getElementById('fence-editor-save');
+      const fenceListEl = document.getElementById('fence-list');
+      const newPolyBtn  = document.getElementById('fence-new-polygon');
+      const newCircleBtn= document.getElementById('fence-new-circle');
+      const clearDrafts = document.getElementById('fence-clear-drafts');
+      const editBlock   = document.getElementById('fence-edit-block');
+      const editName    = document.getElementById('fence-edit-name');
+      const editShape   = document.getElementById('fence-edit-shape');
+      const editCircle  = document.getElementById('fence-edit-circle-fields');
+      const editPolyFld = document.getElementById('fence-edit-polygon-fields');
+      const editLat     = document.getElementById('fence-edit-lat');
+      const editLng     = document.getElementById('fence-edit-lng');
+      const editRad     = document.getElementById('fence-edit-radius');
+      const editStatus  = document.getElementById('fence-edit-status');
+      const dirtyBadge  = document.getElementById('fence-dirty-count');
+
+      // ------------------------------------------------------------------
+      // State
+      // ------------------------------------------------------------------
+      const markers     = {};      // imei -> L.Marker
+      let currentStates = [];
+      let filter        = null;
+      let fenceFilter   = null;
+
+      let fencesVisible = true;
+      const corridorLayer = L.layerGroup();
+      const yardLayer     = L.layerGroup();
+
+      let lastCorridor  = [];      // last corridor array from API
+      let lastYards     = [];      // last yards array from API
+
+      // Editing state
+      let editorOpen    = false;
+      // Each entry: {uid, id (db id or null), kind, family, name, shape,
+      //             lat, lng, radius_km, polygon, _dirty, _layer}
+      let editFences    = [];
+      let selectedUid   = null;
+      let draftMode     = null;    // 'polygon' | 'circle' | null
+      let draftPoints   = [];      // [[lat,lng], ...] while drafting polygon
+      let draftCircle   = null;    // {lat,lng,radius_km} while drafting circle
+      let draftPreview  = null;    // L.layerGroup
+      let draftCenter   = null;    // first click position for circle
+      let _uidSeq       = 0;
+
+      // ------------------------------------------------------------------
+      // Base layers
+      // ------------------------------------------------------------------
+      function googleLayer(lyrs) {
+        return L.tileLayer(
+          'https://{s}.google.com/vt/lyrs=' + lyrs + '&x={x}&y={y}&z={z}&hl=en',
+          {
+            maxZoom: 20,
+            subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
+            attribution: '&copy; Google',
+          }
+        );
+      }
 
       const baseLayers = {
-        'Street (OSM)': streetLayer,
-        'Satellite (Esri)': satelliteLayer,
+        'street':         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                      { maxZoom: 19, attribution: '&copy; OSM' }),
+        'esri':           L.tileLayer(
+                            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                            { maxZoom: 19, attribution: '&copy; Esri' }),
+        'google-sat':     googleLayer('s,h'),
+        'google-road':    googleLayer('m'),
+        'google-terrain': googleLayer('p'),
       };
-      L.control.layers(baseLayers, null, { position: 'topright', collapsed: false }).addTo(map);
 
-      L.polyline(CORRIDOR_LINE, { color: '#888', weight: 3, dashArray: '6 6', opacity: 0.6 }).addTo(map);
+      let activeKey = 'street';
 
-      FACILITIES.forEach(function (f) {
-        L.circle([f.lat, f.lng], { radius: f.radius_km * 1000, color: '#1e5f9e', weight: 1.5, fillOpacity: 0.05 }).addTo(map);
-        L.marker([f.lat, f.lng], {
-          icon: L.divIcon({
-            className: 'facility-label',
-            html: '<div style="background:#fff;padding:2px 6px;border:1px solid #1e5f9e;border-radius:4px;font-size:0.78rem;font-weight:600;color:#1e5f9e;white-space:nowrap;">' + f.name + '</div>',
-            iconSize: [0, 0], iconAnchor: [-6, 24],
-          }),
-        }).addTo(map);
+      const map = L.map('corridor-map', { zoomControl: false });
+      L.control.zoom({ position: 'bottomright' }).addTo(map);
+      baseLayers[activeKey].addTo(map);
+
+      corridorLayer.addTo(map);
+      yardLayer.addTo(map);
+
+      function setBaseLayer(key) {
+        if (!baseLayers[key] || key === activeKey) return;
+        if (map.hasLayer(baseLayers[activeKey])) map.removeLayer(baseLayers[activeKey]);
+        baseLayers[key].addTo(map);
+        baseLayers[key].bringToBack();
+        activeKey = key;
+        document.querySelectorAll('input[name="maptype"]').forEach(function (r) {
+          r.checked = (r.value === key);
+        });
+      }
+
+      // ------------------------------------------------------------------
+      // Map-type popover
+      // ------------------------------------------------------------------
+      function togglePopover(force) {
+        const open = (force === undefined) ? maptypePop.hidden : force;
+        maptypePop.hidden = !open;
+        maptypeBtn.classList.toggle('active', open);
+      }
+      maptypeBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        togglePopover();
+      });
+      document.querySelectorAll('input[name="maptype"]').forEach(function (r) {
+        r.addEventListener('change', function () {
+          if (r.checked) { setBaseLayer(r.value); togglePopover(false); }
+        });
+      });
+      document.addEventListener('click', function (e) {
+        if (!maptypePop.contains(e.target) && !maptypeBtn.contains(e.target)) {
+          togglePopover(false);
+        }
       });
 
+      // ------------------------------------------------------------------
+      // Fullscreen
+      // ------------------------------------------------------------------
+      function updateFsIcons() {
+        const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+        fsExpand.style.display   = isFs ? 'none' : '';
+        fsCollapse.style.display = isFs ? '' : 'none';
+        fsBtn.classList.toggle('active', isFs);
+        setTimeout(function () { map.invalidateSize(); }, 120);
+      }
+      fsBtn.addEventListener('click', function () {
+        if (document.fullscreenElement || document.webkitFullscreenElement) {
+          (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+        } else {
+          const req = mapShell.requestFullscreen || mapShell.webkitRequestFullscreen;
+          if (req) req.call(mapShell);
+        }
+      });
+      document.addEventListener('fullscreenchange', updateFsIcons);
+      document.addEventListener('webkitfullscreenchange', updateFsIcons);
+
+      // ------------------------------------------------------------------
+      // Corridor geometry — an initial guess until the API responds.
+      // ------------------------------------------------------------------
+      const CORRIDOR_LINE = [
+        [6.2298,   -2.284723],
+        [4.893897, -1.748176],
+      ];
+      L.polyline(CORRIDOR_LINE, {
+        color: '#888', weight: 3, dashArray: '6 6', opacity: 0.6,
+      }).addTo(map);
       map.fitBounds(L.latLngBounds(CORRIDOR_LINE).pad(0.5));
 
-      const markers = {};
-      let filter = null;
-      let currentStates = [];
+      // ------------------------------------------------------------------
+      // Utility
+      // ------------------------------------------------------------------
+      function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+          return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+        });
+      }
+      function fmtKm(km) {
+        if (km == null) return '';
+        return km.toFixed(2) + ' km';
+      }
 
+      function fenceColor(f) {
+        if (f.family === 'corridor') return CORRIDOR_COLOR[f.kind] || '#1e5f9e';
+        const spec = YARD_CATALOG.find(function (c) { return c.key === f.key; });
+        if (spec) return spec.color;
+        if (f.key) {
+          const s2 = YARD_CATALOG.find(function (c) { return c.key === f.key; });
+          if (s2) return s2.color;
+        }
+        return '#d99a2b';
+      }
+
+      // ------------------------------------------------------------------
+      // Fences toggle (fixes the bug where corridor facilities did not
+      // obey the toggle). We now toggle BOTH the corridor and yard layers.
+      // ------------------------------------------------------------------
+      function setFencesVisible(visible) {
+        fencesVisible = !!visible;
+        if (fencesVisible) {
+          if (!map.hasLayer(corridorLayer)) corridorLayer.addTo(map);
+          if (!map.hasLayer(yardLayer))     yardLayer.addTo(map);
+        } else {
+          if (map.hasLayer(corridorLayer)) map.removeLayer(corridorLayer);
+          if (map.hasLayer(yardLayer))     map.removeLayer(yardLayer);
+        }
+        fenceOn.style.display  = fencesVisible ? '' : 'none';
+        fenceOff.style.display = fencesVisible ? 'none' : '';
+        fenceBtn.classList.toggle('active', fencesVisible);
+        fenceBtn.setAttribute('aria-pressed', String(fencesVisible));
+      }
+      fenceBtn.addEventListener('click', function () {
+        setFencesVisible(!fencesVisible);
+      });
+
+      // ------------------------------------------------------------------
+      // Draw corridor + yard fences from the API payload
+      // ------------------------------------------------------------------
+      function shapeToLatLngs(f) {
+        if (f.shape === 'polygon' && Array.isArray(f.polygon) && f.polygon.length >= 3) {
+          return f.polygon.map(function (pt) { return [pt[0], pt[1]]; });
+        }
+        if (f.shape === 'circle' && f.lat != null && f.lng != null && f.radius_km != null) {
+          const pts = [];
+          const R = 6371;
+          const lat = f.lat * Math.PI / 180;
+          const lng = f.lng * Math.PI / 180;
+          const d = f.radius_km / R;
+          const STEPS = 48;
+          for (let i = 0; i < STEPS; i++) {
+            const brng = (2 * Math.PI * i) / STEPS;
+            const lat2 = Math.asin(
+              Math.sin(lat) * Math.cos(d) +
+              Math.cos(lat) * Math.sin(d) * Math.cos(brng)
+            );
+            const lng2 = lng + Math.atan2(
+              Math.sin(brng) * Math.sin(d) * Math.cos(lat),
+              Math.cos(d) - Math.sin(lat) * Math.sin(lat2)
+            );
+            pts.push([lat2 * 180 / Math.PI, lng2 * 180 / Math.PI]);
+          }
+          return pts;
+        }
+        return null;
+      }
+
+      function drawFence(f, layer) {
+        const latlngs = shapeToLatLngs(f);
+        if (!latlngs) return null;
+        const color = fenceColor(f);
+        const poly = L.polygon(latlngs, {
+          color: color,
+          weight: 1.5,
+          dashArray: f.family === 'corridor' ? '8 4' : '4 3',
+          fillColor: color,
+          fillOpacity: f.family === 'corridor' ? 0.03 : 0.10,
+        }).addTo(layer);
+        poly._fenceRef = f;
+        const centroid = poly.getBounds().getCenter();
+        const cls = f.family === 'corridor' ? 'corridor-fence-label' : 'yard-fence-label';
+        L.marker(centroid, {
+          icon: L.divIcon({
+            className: '',
+            html: '<div class="' + cls + '">' + escapeHtml(f.label || f.name) + '</div>',
+            iconSize: [0, 0], iconAnchor: [-6, 22],
+          }),
+          interactive: false,
+        }).addTo(layer);
+        return poly;
+      }
+
+      function drawFences(corridor, yards) {
+        lastCorridor = corridor || [];
+        lastYards = yards || [];
+        corridorLayer.clearLayers();
+        yardLayer.clearLayers();
+        lastCorridor.forEach(function (f) { drawFence(f, corridorLayer); });
+        lastYards.forEach(function (f)    { drawFence(f, yardLayer); });
+        if (fencesVisible && !map.hasLayer(corridorLayer)) corridorLayer.addTo(map);
+        if (fencesVisible && !map.hasLayer(yardLayer))     yardLayer.addTo(map);
+      }
+
+      // ------------------------------------------------------------------
+      // Summary tiles (direction counts)
+      // ------------------------------------------------------------------
       function buildSummary(summary) {
-        const d = summary.direction || {};
+        const dirCounts = (summary && summary.direction) || {};
         summaryEl.innerHTML = '';
-        const tiles = [
-          ['heading_to_takoradi', d.heading_to_takoradi || 0],
-          ['heading_to_awaso',    d.heading_to_awaso    || 0],
-          ['at_takoradi',         d.at_takoradi         || 0],
-          ['at_awaso',            d.at_awaso            || 0],
-          ['unknown',             d.unknown             || 0],
+
+        const TILES = [
+          { key: 'heading_to_takoradi', label: 'To Takoradi' },
+          { key: 'heading_to_awaso',    label: 'To Awaso' },
+          { key: 'at_takoradi',         label: 'At Takoradi' },
+          { key: 'at_awaso',            label: 'At Awaso' },
+          { key: 'unknown',             label: 'Unknown' },
         ];
-        tiles.forEach(function (t) {
-          const key = t[0], count = t[1];
+
+        TILES.forEach(function (tile) {
+          const count = dirCounts[tile.key] || 0;
+          if (!count && tile.key === 'unknown') return;
           const div = document.createElement('div');
-          div.className = 'live-tile' + (filter === key ? ' active' : '');
-          div.innerHTML = '<div class="label">' + LABELS[key] + '</div><div class="count">' + count + '</div>';
+          div.className = 'live-tile' + (filter === tile.key ? ' active' : '');
+          div.innerHTML =
+            '<div class="label">' + escapeHtml(tile.label) + '</div>' +
+            '<div class="count">' + count + '</div>';
           div.addEventListener('click', function () {
-            filter = (filter === key) ? null : key;
-            render();
+            filter = (filter === tile.key) ? null : tile.key;
             buildSummary(summary);
+            render();
           });
           summaryEl.appendChild(div);
         });
       }
 
-      function escapeHtml(s) {
-        return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      // ------------------------------------------------------------------
+      // Fence tiles
+      // ------------------------------------------------------------------
+      function buildFences(summary) {
+        const f = (summary && summary.fences) || {};
+        fencesEl.innerHTML = '';
+        YARD_CATALOG.forEach(function (cat) {
+          const count = f[cat.key] || 0;
+          const div = document.createElement('div');
+          div.className = 'live-fence-tile' + (fenceFilter === cat.key ? ' active' : '');
+          div.innerHTML =
+            '<div class="label"><span class="dot" style="background:' +
+              cat.color + ';"></span>' + escapeHtml(cat.label) +
+            '</div>' +
+            '<div class="count">' + count + '</div>';
+          div.addEventListener('click', function () {
+            fenceFilter = (fenceFilter === cat.key) ? null : cat.key;
+            render();
+            buildFences(summary);
+          });
+          fencesEl.appendChild(div);
+        });
       }
 
+      // ------------------------------------------------------------------
+      // Marker visibility (applies current filters)
+      // ------------------------------------------------------------------
       function render() {
         currentStates.forEach(function (t) {
           const m = markers[t.imei];
           if (!m) return;
-          const visible = !filter || t.direction === filter;
+          let visible = true;
+          if (filter && t.direction !== filter) visible = false;
+          if (fenceFilter) {
+            if (!t.fence || t.fence.key !== fenceFilter) visible = false;
+          }
           if (!visible) {
             if (map.hasLayer(m)) map.removeLayer(m);
             return;
@@ -170,41 +939,51 @@
         });
       }
 
-      function update(states, summary) {
+      // ------------------------------------------------------------------
+      // Update map from API response
+      // ------------------------------------------------------------------
+      function update(states, summary, corridor, yards) {
+        drawFences(corridor, yards);
         buildSummary(summary);
+        buildFences(summary);
         const seen = new Set();
 
         states.forEach(function (t) {
           if (t.lat == null || t.lng == null) return;
           seen.add(t.imei);
 
-          // 1. Determine Color (Motion)
           let colorClass = 'truck-offline';
           if (t.motion === 'moving')  colorClass = 'truck-moving';
           if (t.motion === 'parked')  colorClass = 'truck-parked';
           if (t.motion === 'idle')    colorClass = 'truck-idle';
 
-          // 2. Determine Direction (Arrow)
           let arrowClass = '';
           if (t.direction === 'heading_to_takoradi' || t.direction === 'at_takoradi') {
-            arrowClass = 'arrow-takoradi'; // points down
+            arrowClass = 'arrow-takoradi';
           } else if (t.direction === 'heading_to_awaso' || t.direction === 'at_awaso') {
-            arrowClass = 'arrow-awaso'; // points up
+            arrowClass = 'arrow-awaso';
           }
 
-          const tooltipContent =
-            '<strong>' + escapeHtml(t.name) + '</strong><br>' +
-            LABELS[t.direction] + '<br>' + t.speed_kph + ' kph';
+          let fenceClass = '';
+          if (t.fence && t.fence.key) fenceClass = ' fence-' + t.fence.key;
 
-          const iconHtml = `
-            <div class="truck-marker-wrap">
-              ${arrowClass ? `<div class="truck-arrow ${arrowClass}"></div>` : ''}
-              <div class="truck-marker ${colorClass}"></div>
-            </div>
-          `;
+          let tooltip = '<strong>' + escapeHtml(t.name) + '</strong><br>' +
+                        (LABELS[t.direction] || LABELS.unknown) + '<br>' + t.speed_kph + ' kph';
+          if (t.fence) {
+            tooltip += '<br><span class="fence-line">&#9679; ' +
+                       escapeHtml(t.fence.label) + '</span>';
+          }
+          const tooltipContent = tooltip;
+
+          const iconHtml =
+            '<div class="truck-marker-wrap">' +
+              (arrowClass ? '<div class="truck-arrow ' + arrowClass + '"></div>' : '') +
+              '<div class="truck-marker ' + colorClass + fenceClass + '"></div>' +
+            '</div>';
 
           const customIcon = L.divIcon({
-            className: '', html: iconHtml, iconSize: [20, 30], iconAnchor: [10, 15]
+            className: '', html: iconHtml,
+            iconSize: [20, 30], iconAnchor: [10, 15],
           });
 
           if (!markers[t.imei]) {
@@ -233,6 +1012,9 @@
         statusEl.classList.toggle('error', !!isError);
       }
 
+      // ------------------------------------------------------------------
+      // Fetch
+      // ------------------------------------------------------------------
       let loading = false;
       async function fetchStates(force) {
         if (loading) return;
@@ -241,7 +1023,7 @@
         try {
           const url = '{{ url_for("live_fleet.api_fleet") }}' + (force ? '?refresh=1' : '');
           const r = await fetch(url, { credentials: 'same-origin' });
-          
+
           if (r.status === 429) { setStatus('Throttled — retrying in 60 s', true); return; }
           if (!r.ok) { setStatus('Server error ' + r.status, true); return; }
 
@@ -249,10 +1031,13 @@
           if (j.error) { setStatus('Error: ' + j.error, true); return; }
 
           const trucks = j.trucks || [];
-          update(trucks, j.summary || { direction: {}, motion: {} });
+          update(trucks,
+                 j.summary || { direction: {}, motion: {}, fences: {} },
+                 j.corridor || [],
+                 j.yards || []);
 
           if (j.scanning) {
-            const known = trucks.filter(t => !t.scan_pending).length;
+            const known = trucks.filter(function (t) { return !t.scan_pending; }).length;
             setStatus('Scanning fleet… ' + known + ' / ' + trucks.length, false);
           } else {
             setStatus('Updated ' + new Date().toLocaleTimeString(), false);
@@ -269,13 +1054,631 @@
 
       const warmupTimer = setInterval(function () {
         if (document.visibilityState !== 'visible') return;
-        if (statusEl.textContent.startsWith('Scanning')) { fetchStates(false); }
+        if (statusEl.textContent.indexOf('Scanning') === 0) { fetchStates(false); }
         else { clearInterval(warmupTimer); }
       }, 3000);
 
       setInterval(function () {
-        if (document.visibilityState === 'visible') fetchStates(false);
+        if (document.visibilityState === 'visible' && !editorOpen) fetchStates(false);
       }, 10000);
+
+      setTimeout(function () { map.invalidateSize(); }, 100);
+
+      // ==================================================================
+      // EDITOR
+      // ==================================================================
+      if (!window.__IS_ADMIN__) return;
+
+      // ---- editor state helpers --------------------------------------
+      function nextUid() { _uidSeq += 1; return 'u' + _uidSeq; }
+
+      function cloneFence(f) {
+        return {
+          uid:        nextUid(),
+          id:         f.id || null,
+          kind:       f.kind,
+          family:     f.family || (f.key && YARD_CATALOG.some(function (c) { return c.key === f.key; })
+                                     ? 'yard' : (f.kind || 'custom')),
+          name:       f.name || f.label || '',
+          label:      f.label || f.name || '',
+          shape:      f.shape === 'polygon' && Array.isArray(f.polygon) && f.polygon.length >= 3
+                        ? 'polygon' : 'circle',
+          lat:        f.lat != null ? Number(f.lat) : null,
+          lng:        f.lng != null ? Number(f.lng) : null,
+          radius_km:  f.radius_km != null ? Number(f.radius_km) : 0.5,
+          polygon:    f.shape === 'polygon' && Array.isArray(f.polygon)
+                        ? f.polygon.map(function (p) { return [Number(p[0]), Number(p[1])]; })
+                        : [],
+          _dirty:     false,
+          _isNew:     !f.id,
+          _layer:     null,
+        };
+      }
+
+      function loadFencesIntoEditor(corridor, yards) {
+        editFences = [];
+        (corridor || []).forEach(function (f) {
+          if (f.shape === 'none') return;          // placeholder, skip
+          editFences.push(cloneFence(f));
+        });
+        (yards || []).forEach(function (f) {
+          if (f.shape === 'none') return;
+          editFences.push(cloneFence(f));
+        });
+      }
+
+      function fencePayload(f) {
+        const out = {
+          shape: f.shape,
+          name:  f.name,
+          kind:  f.kind,
+        };
+        if (f.id) out.id = f.id;
+        if (f.key) out.key = f.key;
+        if (f.shape === 'polygon') {
+          out.polygon = f.polygon.map(function (p) { return [p[0], p[1]]; });
+        } else {
+          out.lat = f.lat;
+          out.lng = f.lng;
+          out.radius_km = f.radius_km;
+        }
+        return out;
+      }
+
+      function markDirty(f) {
+        if (!f) return;
+        f._dirty = true;
+        renderDirtyBadge();
+        renderFenceList();
+      }
+
+      function renderDirtyBadge() {
+        const n = editFences.filter(function (f) { return f._dirty || f._isNew; }).length;
+        if (n > 0) {
+          dirtyBadge.hidden = false;
+          dirtyBadge.textContent = n + ' unsaved';
+        } else {
+          dirtyBadge.hidden = true;
+        }
+      }
+
+      // ---- draw / clear editor overlays ------------------------------
+      const editorLayer = L.layerGroup().addTo(map);
+      const vertexLayer = L.layerGroup().addTo(map);
+      draftPreview     = L.layerGroup().addTo(map);
+
+      function clearEditorLayers() {
+        editorLayer.clearLayers();
+        vertexLayer.clearLayers();
+        draftPreview.clearLayers();
+      }
+
+      function redrawEditorFences() {
+        editorLayer.clearLayers();
+        editFences.forEach(function (f) {
+          const latlngs = shapeToLatLngs(f);
+          if (!latlngs) return;
+          const color = fenceColor(f);
+          const isSelected = f.uid === selectedUid;
+          const poly = L.polygon(latlngs, {
+            color: isSelected ? '#a02525' : color,
+            weight: isSelected ? 3 : 2,
+            dashArray: f._dirty || f._isNew ? '6 4' : null,
+            fillColor: color,
+            fillOpacity: isSelected ? 0.20 : 0.10,
+          }).addTo(editorLayer);
+          poly._fenceUid = f.uid;
+          poly.on('click', function (e) {
+            L.DomEvent.stopPropagation(e);
+            selectFence(f.uid);
+          });
+          if (isSelected) drawVertexHandles(f);
+        });
+      }
+
+      function drawVertexHandles(f) {
+        vertexLayer.clearLayers();
+        if (f.shape === 'polygon' && Array.isArray(f.polygon) && f.polygon.length >= 1) {
+          f.polygon.forEach(function (pt, idx) {
+            const marker = L.marker(pt, {
+              icon: L.divIcon({
+                className: '',
+                html: '<div style="width:12px;height:12px;border-radius:50%;' +
+                      'background:#fff;border:2px solid #4a90e2;' +
+                      'box-shadow:0 0 3px rgba(0,0,0,0.4);"></div>',
+                iconSize: [12, 12],
+                iconAnchor: [6, 6],
+              }),
+              draggable: true,
+            }).addTo(vertexLayer);
+            marker.on('drag', function () {
+              const ll = marker.getLatLng();
+              f.polygon[idx] = [ll.lat, ll.lng];
+              redrawEditorFences();
+            });
+            marker.on('dragend', function () {
+              f._dirty = true;
+              renderDirtyBadge();
+              renderFenceList();
+            });
+            marker.on('contextmenu', function (e) {
+              L.DomEvent.stopPropagation(e);
+              if (f.polygon.length <= 3) {
+                editStatus.textContent = 'A polygon needs at least 3 vertices.';
+                return;
+              }
+              f.polygon.splice(idx, 1);
+              f._dirty = true;
+              redrawEditorFences();
+              renderDirtyBadge();
+              renderFenceList();
+            });
+          });
+
+          // midpoints to insert new vertices
+          for (let i = 0; i < f.polygon.length; i++) {
+            const a = f.polygon[i];
+            const b = f.polygon[(i + 1) % f.polygon.length];
+            const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+            const midM = L.marker(mid, {
+              icon: L.divIcon({
+                className: 'fence-vertex-icon mid',
+                html: '<div style="width:8px;height:8px;border-radius:50%;' +
+                      'background:#4a90e2;opacity:0.6;"></div>',
+                iconSize: [8, 8],
+                iconAnchor: [4, 4],
+              }),
+            }).addTo(vertexLayer);
+            midM.on('click', function (e) {
+              L.DomEvent.stopPropagation(e);
+              f.polygon.splice(i + 1, 0, [mid[0], mid[1]]);
+              f._dirty = true;
+              redrawEditorFences();
+              renderDirtyBadge();
+              renderFenceList();
+            });
+          }
+        } else if (f.shape === 'circle' && f.lat != null && f.lng != null) {
+          // centre draggable
+          const centre = L.marker([f.lat, f.lng], {
+            icon: L.divIcon({
+              className: '',
+              html: '<div style="width:12px;height:12px;border-radius:50%;' +
+                    'background:#a02525;border:2px solid #fff;' +
+                    'box-shadow:0 0 3px rgba(0,0,0,0.4);"></div>',
+              iconSize: [12, 12],
+              iconAnchor: [6, 6],
+            }),
+            draggable: true,
+          }).addTo(vertexLayer);
+          centre.on('drag', function () {
+            const ll = centre.getLatLng();
+            f.lat = ll.lat;
+            f.lng = ll.lng;
+            editLat.value = ll.lat.toFixed(6);
+            editLng.value = ll.lng.toFixed(6);
+            redrawEditorFences();
+          });
+          centre.on('dragend', function () {
+            f._dirty = true;
+            renderDirtyBadge();
+            renderFenceList();
+          });
+          // edge handle for radius
+          const edge = pointAtDistance(f.lat, f.lng, f.radius_km, 90);
+          const edgeM = L.marker(edge, {
+            icon: L.divIcon({
+              className: '',
+              html: '<div style="width:12px;height:12px;border-radius:50%;' +
+                    'background:#4a90e2;border:2px solid #fff;' +
+                    'box-shadow:0 0 3px rgba(0,0,0,0.4);"></div>',
+              iconSize: [12, 12],
+              iconAnchor: [6, 6],
+            }),
+            draggable: true,
+          }).addTo(vertexLayer);
+          edgeM.on('drag', function () {
+            const ll = edgeM.getLatLng();
+            const d = haversineKm(f.lat, f.lng, ll.lat, ll.lng);
+            f.radius_km = Math.max(0.05, d);
+            editRad.value = f.radius_km.toFixed(3);
+            redrawEditorFences();
+          });
+          edgeM.on('dragend', function () {
+            f._dirty = true;
+            renderDirtyBadge();
+            renderFenceList();
+          });
+        }
+      }
+
+      function pointAtDistance(lat, lng, km, bearingDeg) {
+        const R = 6371;
+        const brng = bearingDeg * Math.PI / 180;
+        const lat1 = lat * Math.PI / 180;
+        const lng1 = lng * Math.PI / 180;
+        const d = km / R;
+        const lat2 = Math.asin(
+          Math.sin(lat1) * Math.cos(d) +
+          Math.cos(lat1) * Math.sin(d) * Math.cos(brng)
+        );
+        const lng2 = lng1 + Math.atan2(
+          Math.sin(brng) * Math.sin(d) * Math.cos(lat1),
+          Math.cos(d) - Math.sin(lat1) * Math.sin(lat2)
+        );
+        return [lat2 * 180 / Math.PI, lng2 * 180 / Math.PI];
+      }
+      function haversineKm(lat1, lng1, lat2, lng2) {
+        const R = 6371.0088;
+        const p1 = lat1 * Math.PI / 180;
+        const p2 = lat2 * Math.PI / 180;
+        const dp = (lat2 - lat1) * Math.PI / 180;
+        const dl = (lng2 - lng1) * Math.PI / 180;
+        const a = Math.sin(dp/2)**2 + Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;
+        return 2 * R * Math.asin(Math.sqrt(a));
+      }
+
+      // ---- panel rendering -------------------------------------------
+      function renderFenceList() {
+        fenceListEl.innerHTML = '';
+        if (!editFences.length) {
+          const li = document.createElement('li');
+          li.style.cursor = 'default';
+          li.textContent = 'No fences in the DB yet — use + New.';
+          fenceListEl.appendChild(li);
+          return;
+        }
+        editFences.forEach(function (f) {
+          const li = document.createElement('li');
+          if (f.uid === selectedUid) li.classList.add('selected');
+          const dot = document.createElement('span');
+          dot.className = 'dot';
+          dot.style.background = fenceColor(f);
+          const name = document.createElement('span');
+          name.className = 'fence-name';
+          name.textContent = f.name || f.label || '(unnamed)';
+          if (f._dirty || f._isNew) {
+            const b = document.createElement('span');
+            b.className = 'fence-dirty-badge';
+            b.textContent = f._isNew ? 'new' : 'edited';
+            name.appendChild(b);
+          }
+          const meta = document.createElement('span');
+          meta.className = 'fence-meta';
+          meta.textContent = f.shape === 'circle'
+            ? 'circle · ' + fmtKm(f.radius_km)
+            : 'polygon · ' + f.polygon.length + ' pts';
+          li.appendChild(dot);
+          li.appendChild(name);
+          li.appendChild(meta);
+          li.addEventListener('click', function () {
+            selectFence(f.uid);
+          });
+          fenceListEl.appendChild(li);
+        });
+        renderDirtyBadge();
+      }
+
+      function selectFence(uid) {
+        selectedUid = uid;
+        const f = editFences.find(function (x) { return x.uid === uid; });
+        if (!f) {
+          editBlock.hidden = true;
+          redrawEditorFences();
+          renderFenceList();
+          return;
+        }
+        editBlock.hidden = false;
+        editName.value = f.name || '';
+        editShape.value = f.shape;
+        const isPoly = f.shape === 'polygon';
+        editCircle.hidden = isPoly;
+        editPolyFld.hidden = !isPoly;
+        if (!isPoly) {
+          editLat.value = f.lat != null ? f.lat.toFixed(6) : '';
+          editLng.value = f.lng != null ? f.lng.toFixed(6) : '';
+          editRad.value = f.radius_km != null ? f.radius_km.toFixed(3) : '';
+        }
+        editStatus.textContent = f.id ? ('DB id: ' + f.id) : 'New (not yet saved)';
+        redrawEditorFences();
+        renderFenceList();
+      }
+
+      // ---- editor open/close -----------------------------------------
+      function openEditor() {
+        if (editorOpen) return;
+        editorOpen = true;
+        editor.hidden = false;
+        editBtn.classList.add('active');
+        editBtn.setAttribute('aria-pressed', 'true');
+        loadFencesIntoEditor(lastCorridor, lastYards);
+        selectedUid = null;
+        editBlock.hidden = true;
+        renderFenceList();
+        redrawEditorFences();
+        // pause polling so we don't clobber the user's work
+      }
+      function closeEditor() {
+        editorOpen = false;
+        editor.hidden = true;
+        editBtn.classList.remove('active');
+        editBtn.setAttribute('aria-pressed', 'false');
+        clearEditorLayers();
+        selectedUid = null;
+        draftMode = null;
+        draftPoints = [];
+        draftCircle = null;
+        draftCenter = null;
+        document.body.classList.remove('fence-drawing');
+        fetchStates(false);
+      }
+
+      editBtn.addEventListener('click', function () {
+        if (editorOpen) closeEditor(); else openEditor();
+      });
+      editorClose.addEventListener('click', closeEditor);
+      editorCancel.addEventListener('click', function () {
+        if (editFences.some(function (f) { return f._dirty || f._isNew; })) {
+          if (!confirm('Discard unsaved fence changes?')) return;
+        }
+        closeEditor();
+      });
+
+      // ---- save ------------------------------------------------------
+      editorSave.addEventListener('click', async function () {
+        const dirty = editFences.filter(function (f) { return f._dirty || f._isNew; });
+        if (!dirty.length) {
+          setStatus('No fence changes to save.', false);
+          return;
+        }
+        // basic client-side validation
+        for (const f of dirty) {
+          if (f.shape === 'polygon' && (!Array.isArray(f.polygon) || f.polygon.length < 3)) {
+            alert('Polygon "' + (f.name || f.label) + '" needs at least 3 vertices.');
+            selectFence(f.uid);
+            return;
+          }
+          if (f.shape === 'circle') {
+            if (f.lat == null || f.lng == null || !(f.radius_km > 0)) {
+              alert('Circle "' + (f.name || f.label) + '" needs a valid centre and radius.');
+              selectFence(f.uid);
+              return;
+            }
+          }
+        }
+        editorSave.disabled = true;
+        editorSave.textContent = 'Saving…';
+        try {
+          const payload = dirty.map(fencePayload);
+          const r = await fetch('{{ url_for("live_fleet.api_save_fences") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+          });
+          const j = await r.json();
+          if (!r.ok) {
+            alert('Save failed: ' + (j.error || r.status));
+            return;
+          }
+          setStatus('Saved ' + j.saved + ' fence(s).', false);
+          // Reload the fence data from the save response
+          loadFencesIntoEditor(j.corridor || [], j.yards || []);
+          lastCorridor = j.corridor || [];
+          lastYards = j.yards || [];
+          drawFences(lastCorridor, lastYards);
+          redrawEditorFences();
+          renderFenceList();
+          editBlock.hidden = true;
+          selectedUid = null;
+        } catch (e) {
+          alert('Save failed: ' + e);
+        } finally {
+          editorSave.disabled = false;
+          editorSave.textContent = 'Save all';
+        }
+      });
+
+      // ---- field bindings --------------------------------------------
+      editName.addEventListener('input', function () {
+        const f = editFences.find(function (x) { return x.uid === selectedUid; });
+        if (!f) return;
+        f.name = editName.value;
+        f._dirty = true;
+        redrawEditorFences();
+        renderFenceList();
+      });
+      editShape.addEventListener('change', function () {
+        const f = editFences.find(function (x) { return x.uid === selectedUid; });
+        if (!f) return;
+        f.shape = editShape.value;
+        if (f.shape === 'circle') {
+          // convert: keep centre as centroid if polygon
+          if (f.polygon.length >= 3) {
+            let la = 0, lo = 0;
+            f.polygon.forEach(function (p) { la += p[0]; lo += p[1]; });
+            f.lat = la / f.polygon.length;
+            f.lng = lo / f.polygon.length;
+            f.radius_km = Math.max(0.1, 0.01);
+          } else if (f.lat == null) {
+            f.lat = map.getCenter().lat;
+            f.lng = map.getCenter().lng;
+            f.radius_km = 0.5;
+          }
+        } else {
+          // convert circle -> polygon (48-gon approximation)
+          if (f.lat != null && f.lng != null && f.radius_km) {
+            const pts = [];
+            for (let i = 0; i < 48; i++) {
+              pts.push(pointAtDistance(f.lat, f.lng, f.radius_km, i * 360 / 48));
+            }
+            f.polygon = pts;
+          }
+        }
+        f._dirty = true;
+        selectFence(f.uid);
+      });
+      [editLat, editLng, editRad].forEach(function (input) {
+        input.addEventListener('change', function () {
+          const f = editFences.find(function (x) { return x.uid === selectedUid; });
+          if (!f || f.shape !== 'circle') return;
+          const lat = parseFloat(editLat.value);
+          const lng = parseFloat(editLng.value);
+          const rad = parseFloat(editRad.value);
+          if (!isFinite(lat) || !isFinite(lng) || !isFinite(rad)) return;
+          f.lat = lat; f.lng = lng; f.radius_km = Math.max(0.01, rad);
+          f._dirty = true;
+          redrawEditorFences();
+          renderFenceList();
+        });
+      });
+
+      // ---- new polygon / circle --------------------------------------
+      function enterDraft(mode) {
+        draftMode = mode;
+        draftPoints = [];
+        draftCircle = null;
+        draftCenter = null;
+        document.body.classList.add('fence-drawing');
+        editStatus.textContent = mode === 'polygon'
+          ? 'Click map to add vertices; double-click (or Finish) to close.'
+          : 'Click map to set the centre, then click again to set the radius.';
+        selectedUid = null;
+        editBlock.hidden = true;
+        redrawEditorFences();
+        renderFenceList();
+        draftPreview.clearLayers();
+      }
+
+      newPolyBtn.addEventListener('click', function () { enterDraft('polygon'); });
+      newCircleBtn.addEventListener('click', function () { enterDraft('circle'); });
+      clearDrafts.addEventListener('click', function () {
+        draftMode = null;
+        draftPoints = [];
+        draftCircle = null;
+        draftCenter = null;
+        draftPreview.clearLayers();
+        document.body.classList.remove('fence-drawing');
+      });
+
+      function finishPolygonDraft() {
+        if (draftPoints.length < 3) {
+          alert('Add at least 3 vertices first.');
+          return;
+        }
+        const f = {
+          uid: nextUid(),
+          id: null,
+          kind: 'custom',
+          family: 'custom',
+          name: 'Custom ' + (editFences.filter(function (x) { return x._isNew; }).length + 1),
+          label: '',
+          shape: 'polygon',
+          lat: null, lng: null, radius_km: 0.001,
+          polygon: draftPoints.slice(),
+          _dirty: true,
+          _isNew: true,
+        };
+        f.label = f.name;
+        editFences.push(f);
+        draftMode = null;
+        draftPoints = [];
+        draftPreview.clearLayers();
+        document.body.classList.remove('fence-drawing');
+        selectFence(f.uid);
+        redrawEditorFences();
+      }
+
+      // ---- map click handling ----------------------------------------
+      map.on('click', function (e) {
+        if (!editorOpen) return;
+        if (draftMode === 'polygon') {
+          draftPoints.push([e.latlng.lat, e.latlng.lng]);
+          draftPreview.clearLayers();
+          if (draftPoints.length >= 2) {
+            L.polyline(draftPoints, { color: '#4a90e2', weight: 2, dashArray: '5 4' }).addTo(draftPreview);
+          }
+          draftPoints.forEach(function (pt) {
+            L.circleMarker(pt, {
+              radius: 5, color: '#4a90e2', fillColor: '#fff', fillOpacity: 1,
+            }).addTo(draftPreview);
+          });
+        } else if (draftMode === 'circle') {
+          if (!draftCenter) {
+            draftCenter = [e.latlng.lat, e.latlng.lng];
+            draftPreview.clearLayers();
+            L.circleMarker(draftCenter, {
+              radius: 5, color: '#a02525', fillColor: '#fff', fillOpacity: 1,
+            }).addTo(draftPreview);
+            editStatus.textContent = 'Move mouse and click to set radius.';
+          } else {
+            const radius = haversineKm(draftCenter[0], draftCenter[1], e.latlng.lat, e.latlng.lng);
+            if (radius < 0.05) { editStatus.textContent = 'Radius too small — click further away.'; return; }
+            const f = {
+              uid: nextUid(),
+              id: null,
+              kind: 'custom',
+              family: 'custom',
+              name: 'Custom ' + (editFences.filter(function (x) { return x._isNew; }).length + 1),
+              label: '',
+              shape: 'circle',
+              lat: draftCenter[0],
+              lng: draftCenter[1],
+              radius_km: radius,
+              polygon: [],
+              _dirty: true,
+              _isNew: true,
+            };
+            f.label = f.name;
+            editFences.push(f);
+            draftMode = null;
+            draftCenter = null;
+            draftPreview.clearLayers();
+            document.body.classList.remove('fence-drawing');
+            selectFence(f.uid);
+            redrawEditorFences();
+          }
+        }
+      });
+
+      map.on('mousemove', function (e) {
+        if (!editorOpen || draftMode !== 'circle' || !draftCenter) return;
+        const radius = haversineKm(draftCenter[0], draftCenter[1], e.latlng.lat, e.latlng.lng);
+        draftPreview.clearLayers();
+        L.circleMarker(draftCenter, {
+          radius: 5, color: '#a02525', fillColor: '#fff', fillOpacity: 1,
+        }).addTo(draftPreview);
+        L.circle(draftCenter, {
+          radius: radius * 1000, color: '#4a90e2', weight: 2, dashArray: '5 4',
+          fillColor: '#4a90e2', fillOpacity: 0.10,
+        }).addTo(draftPreview);
+      });
+
+      map.on('dblclick', function () {
+        if (editorOpen && draftMode === 'polygon' && draftPoints.length >= 3) {
+          finishPolygonDraft();
+        }
+      });
+
+      // keyboard: Escape leaves draft, Enter closes polygon
+      document.addEventListener('keydown', function (e) {
+        if (!editorOpen) return;
+        if (e.key === 'Escape') {
+          if (draftMode === 'polygon') {
+            draftMode = null;
+            draftPoints = [];
+            draftPreview.clearLayers();
+            document.body.classList.remove('fence-drawing');
+          } else if (draftMode === 'circle') {
+            draftMode = null;
+            draftCenter = null;
+            draftPreview.clearLayers();
+            document.body.classList.remove('fence-drawing');
+          }
+        } else if (e.key === 'Enter' && draftMode === 'polygon') {
+          finishPolygonDraft();
+        }
+      });
     })();
   </script>
 {% endblock %}
