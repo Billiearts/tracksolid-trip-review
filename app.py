@@ -53,10 +53,12 @@ MAX_TRIPS_PER_TRUCK = 5
 from blueprints.auth       import bp as auth_bp
 from blueprints.admin      import bp as admin_bp
 from blueprints.live_fleet import bp as live_fleet_bp
+from blueprints.webhook    import bp as webhook_bp
 
 app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
 app.register_blueprint(live_fleet_bp)
+app.register_blueprint(webhook_bp)
 
 
 # --- startup maintenance --------------------------------------------------
@@ -206,8 +208,6 @@ def _merge_manual(old: dict | None, new: dict) -> dict:
 
 
 def _normalise_submitted_manual(raw: dict) -> dict:
-    """Convert raw preview-form fields (meta_*) into the manual dict shape
-    that fill_sheet / write_bulk_excel expect."""
     if not isinstance(raw, dict):
         return {}
 
@@ -273,11 +273,6 @@ def _run_export(job_id, computed, out_path, manual):
         jobs.mark_failed(job_id, error=f"{type(exc).__name__}: {exc}")
         return
 
-    # --- FIX: attempt the storage mirror BEFORE marking done, and log loudly
-    #          if it fails. A report that is not in Storage is lost the next
-    #          time the container restarts (Render free tier has an
-    #          ephemeral disk), so a silent upload failure is the root cause
-    #          of "old reports 404 on download".
     remote = None
     try:
         remote = storage.upload(out_path)
@@ -314,7 +309,6 @@ def _run_bulk_export(job_id, reports, out_path, per_trip_manual):
         jobs.mark_failed(job_id, error=f"{type(exc).__name__}: {exc}")
         return
 
-    # --- FIX: same as _run_export — mirror first, log loudly on failure.
     remote = None
     try:
         remote = storage.upload(out_path)
@@ -895,8 +889,6 @@ def report_edit_meta(report_id):
             reports_repo.update_manual(report_id, merged_manual,
                                        filesize_bytes=size)
 
-        # --- FIX: mirror to Storage after regenerating, and log loudly on
-        #          failure so we don't silently lose the file on next restart.
         try:
             remote = storage.upload(out_path)
             if remote:
@@ -962,8 +954,6 @@ def download(filename):
 
     local_path = OUTPUT_DIR / filename
 
-    # --- FIX: log the full download flow so a 404 is diagnosable from
-    #          Render's log stream instead of being a silent dead end.
     if local_path.exists():
         log.info("download: serving %s from local disk", filename)
         return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)

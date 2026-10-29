@@ -13,9 +13,16 @@ Corridor facilities (Awaso / Takoradi):
 Scanning control (GLOBAL, admin-only):
   A single process-wide `_paused` flag. When False (default), any visitor
   — admin or not — triggers a live scan on demand (subject to the usual
-  10-second cache). When True, get_fleet_state() returns the cached
-  snapshot without calling Tracksolid, and *everyone* sees the same
-  frozen frame. Only admins can flip the flag via /live/api/scan.
+  cache TTL). When True, get_fleet_state() returns the cached snapshot
+  without calling Tracksolid, and *everyone* sees the same frozen frame.
+  Only admins can flip the flag via /live/api/scan.
+
+Real-time webhooks:
+  Tracksolid pushes jimi.push.device.alarm events to /webhook/jimi.
+  Each push is ingested via ingest_alarm_push(), which updates the
+  corridor + yard caches immediately. Polling still runs as a slow
+  fallback (poll interval in live.html) so brief webhook outages
+  self-heal.
 
 Diagnostics:
   get_fleet_state also returns a `diagnostics` dict that the API passes
@@ -70,16 +77,18 @@ _CORRIDOR_DEFAULTS = {
     "takoradi": {"lat": 4.893897, "lng": -1.748176, "radius_km": 0.40},
 }
 
+# Direction bearing thresholds (degrees, 0 = north, clockwise).
+_DIR_EAST_MIN  = 45.0
+_DIR_EAST_MAX  = 135.0
+_DIR_SOUTH_MIN = 135.0
+_DIR_SOUTH_MAX = 225.0
+_DIR_WEST_MIN  = 225.0
+_DIR_WEST_MAX  = 315.0
+
 
 # ---------------------------------------------------------------------------
 # Scan pause (GLOBAL, admin-only)
 # ---------------------------------------------------------------------------
-# A single process-wide flag. False = live scanning allowed for everyone.
-# True = no Tracksolid calls at all; every caller (admin or not) is served
-# the last cached snapshot. Only /live/api/scan (admin) toggles it.
-#
-# The session_id argument is kept for API compatibility with older callers
-# but is ignored — pausing is no longer per-session.
 
 _paused: bool = False
 _paused_since: datetime | None = None
@@ -87,23 +96,13 @@ _paused_lock = Lock()
 
 
 def is_scanning(session_id: str | None = None, default: bool = True) -> bool:
-    """Return True if live scanning is allowed right now (i.e. not paused).
-
-    `session_id` and `default` are ignored. Kept so existing callers
-    (blueprint, anything else importing this) keep working unchanged.
-    """
+    """Return True if live scanning is allowed right now (i.e. not paused)."""
     with _paused_lock:
         return not _paused
 
 
 def set_scanning(session_id: str | None, enabled: bool) -> None:
-    """Set the GLOBAL pause flag.
-
-    `enabled=True`  -> resume live scanning.
-    `enabled=False` -> pause; everyone sees the last cached snapshot.
-
-    `session_id` is ignored (kept for API compatibility).
-    """
+    """Set the GLOBAL pause flag."""
     global _paused, _paused_since
     with _paused_lock:
         _paused = not bool(enabled)
@@ -115,13 +114,11 @@ def set_scanning(session_id: str | None, enabled: bool) -> None:
 
 
 def paused_since() -> datetime | None:
-    """When the current pause began, or None if not paused."""
     with _paused_lock:
         return _paused_since
 
 
 def forget_session(session_id: str | None) -> None:
-    """No-op retained for compatibility (pause is no longer per-session)."""
     return
 
 
@@ -733,6 +730,184 @@ def _schedule_rescan(imei: str, lat, lng):
 
 
 # ---------------------------------------------------------------------------
+# Webhook ingest — the real-time path
+# ---------------------------------------------------------------------------
+
+# Alarm type IDs from jimi.push.device.alarm. Keep the mapping small and
+# focused on what the Live view actually consumes.
+_ALARM_OVERSPEED       = {"6"}
+_ALARM_IGNITION        = {"1001", "1002"}
+_ALARM_IDLE            = {"1004", "1005"}
+_ALARM_FENCE_IN        = {"1006", "4"}
+_ALARM_FENCE_OUT       = {"1007", "5"}
+
+# Fence names that identify the corridor endpoints. Matches the same names
+# used by _derive_event_state so the push path and the poll path agree.
+_CORRIDOR_FENCE_HEADING_TO_TAKORADI = {"GBC EXITED", "GBC EXIT", "HAULAGE TRUCKS EXIT"}
+_CORRIDOR_FENCE_HEADING_TO_AWASO    = {"TAKORADI ENTRY", "GBC TAKORADI", "GBC TAKORADI 2"}
+
+
+def _push_alarm_time(data: dict) -> datetime | None:
+    """Webhook payloads use `alarmTime` (epoch ms) or `gpsTime`; accept both."""
+    for key in ("alarmTime", "gpsTime"):
+        raw = data.get(key)
+        if raw is None:
+            continue
+        try:
+            if isinstance(raw, (int, float)) or (isinstance(raw, str) and raw.isdigit()):
+                ms = int(raw)
+                # Tracksolid sends ms; guard against accidental seconds.
+                if ms < 10**12:
+                    ms *= 1000
+                return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+        except (TypeError, ValueError, OSError):
+            continue
+    ts = data.get("alertTime")  # fallback: same format as API list
+    if ts:
+        try:
+            return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return None
+
+
+def _push_fence_name(data: dict) -> str:
+    """Extract the fence name from the push payload's alarmTypeName."""
+    raw = (data.get("alarmTypeName") or "").strip()
+    m = _FENCE_SUFFIX_RE.search(raw)
+    return (m.group(1).strip() if m else raw).upper()
+
+
+def _push_alarm_type(data: dict) -> str:
+    for key in ("alarmType", "alertTypeId"):
+        v = data.get(key)
+        if v is not None:
+            return str(v).strip()
+    return ""
+
+
+def _update_corridor_cache_from_push(imei: str, data: dict) -> bool:
+    """Update _corridor_cache from a single webhook alarm event.
+
+    Returns True if the cache was touched.
+    """
+    fence = _push_fence_name(data)
+    alarm_type = _push_alarm_type(data)
+    if not fence and not alarm_type:
+        return False
+
+    # Geofence in/out on the corridor endpoints.
+    new_state: str | None = None
+    if fence in _CORRIDOR_FENCE_HEADING_TO_TAKORADI and alarm_type in _ALARM_FENCE_OUT:
+        new_state = "heading_to_takoradi"
+    elif fence in _CORRIDOR_FENCE_HEADING_TO_AWASO and alarm_type in _ALARM_FENCE_OUT:
+        new_state = "heading_to_awaso"
+
+    lat = data.get("lat")
+    lng = data.get("lng")
+    try:
+        lat = float(lat) if lat is not None else None
+        lng = float(lng) if lng is not None else None
+    except (TypeError, ValueError):
+        lat = lng = None
+
+    if new_state is None:
+        # Nothing we know how to translate — don't touch the cache.
+        return False
+
+    now = datetime.now(timezone.utc)
+    with _corridor_cache_lock:
+        entry = _corridor_cache.get(imei) or {}
+        entry["last_event_state"] = new_state
+        entry["scanned_at"] = now
+        if lat is not None and lng is not None:
+            entry["scanned_lat"] = lat
+            entry["scanned_lng"] = lng
+        _corridor_cache[imei] = entry
+    log.info("webhook: corridor state for %s → %s", imei, new_state)
+    return True
+
+
+def _update_yard_cache_from_push(imei: str, data: dict) -> bool:
+    """Update _yard_state_cache from a single webhook alarm event.
+
+    Returns True if the cache was touched.
+    """
+    fence = _push_fence_name(data).upper()
+    key = _YARD_KEY_BY_NAME.get(fence)
+    if key is None:
+        return False
+
+    alarm_type = _push_alarm_type(data)
+    if alarm_type in _ALARM_FENCE_IN:
+        event = "in"
+    elif alarm_type in _ALARM_FENCE_OUT:
+        event = "out"
+    else:
+        return False
+
+    now = datetime.now(timezone.utc)
+    if event == "in":
+        t = _push_alarm_time(data) or now
+        spec = next(s for s in _YARD_FENCES if s["key"] == key)
+        payload = {
+            "key":       key,
+            "label":     spec["label"],
+            "name":      spec["fence_name"],
+            "radius_km": None,
+            "source":    "webhook",
+            "since":     t.isoformat(),
+        }
+    else:
+        # Truck left the yard: clear the yard state.
+        payload = None
+
+    with _yard_state_lock:
+        _yard_state_cache[imei] = {
+            "state": payload,
+            "expires_at": time.time() + _YARD_STATE_TTL_SEC,
+        }
+    log.info("webhook: yard state for %s (%s) → %s",
+             imei, key, "in" if event == "in" else "out")
+    return True
+
+
+def ingest_alarm_push(payload: dict) -> bool:
+    """Entry point for /webhook/jimi.
+
+    Accepts the full push envelope. Returns True if the payload touched
+    at least one cache, False otherwise (so the route can answer the
+    portal accordingly). Payload shapes vary slightly across Tracksolid
+    deployments, so we accept both {'data': {...}} and a bare dict.
+    """
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = payload if isinstance(payload, dict) else {}
+
+    imei = (data.get("imei") or "").strip()
+    if not imei:
+        log.debug("webhook: no imei in payload; ignoring")
+        return False
+
+    touched = False
+    try:
+        if _update_corridor_cache_from_push(imei, data):
+            touched = True
+    except Exception:
+        log.exception("webhook: corridor cache update failed for %s", imei)
+
+    try:
+        if _update_yard_cache_from_push(imei, data):
+            touched = True
+    except Exception:
+        log.exception("webhook: yard cache update failed for %s", imei)
+
+    if not touched:
+        log.debug("webhook: payload for %s not actionable", imei)
+    return touched
+
+
+# ---------------------------------------------------------------------------
 # Fleet state
 # ---------------------------------------------------------------------------
 
@@ -765,16 +940,7 @@ def get_fleet_state(
     session_id: str | None = None,
     scanning_allowed: bool = True,
 ) -> tuple[list[dict], bool, bool, dict]:
-    """Return (states, scanning_in_progress, paused, diagnostics).
-
-    `scanning_allowed` should be False when the *global* pause is on.
-    When False, this function NEVER calls Tracksolid; it serves the last
-    cached snapshot (or an empty list if there isn't one yet). The blueprint
-    derives `scanning_allowed` from `is_scanning()` so admin and non-admin
-    always agree.
-
-    `session_id` is kept for API compatibility and otherwise unused.
-    """
+    """Return (states, scanning_in_progress, paused, diagnostics)."""
     now = time.time()
 
     diagnostics: dict = {
@@ -800,7 +966,6 @@ def get_fleet_state(
         diagnostics["reason"] = "paused (no snapshot yet)"
         return [], False, True, diagnostics
 
-    # --- Facilities ---
     corridor_facilities, yard_facilities, fences_error = _load_facilities_diagnostic()
     diagnostics["fences_error"] = fences_error
 
@@ -811,7 +976,6 @@ def get_fleet_state(
             diagnostics["reason"] = "cache hit"
             return _fleet_cache["data"], _scan_in_progress.is_set(), False, diagnostics
 
-    # --- Devices ---
     try:
         all_devices = get_devices()
     except Exception as exc:
@@ -918,9 +1082,9 @@ def get_fleet_state(
         if inside is not None:
             direction = f"at_{inside['kind']}"
         elif speed > MOVING_KPH and heading is not None:
-            if 315 <= heading or heading <= 45:
+            if heading >= _DIR_WEST_MIN or heading <= _DIR_EAST_MIN:
                 direction = "heading_to_awaso"
-            elif 135 <= heading <= 225:
+            elif _DIR_SOUTH_MIN <= heading <= _DIR_SOUTH_MAX:
                 direction = "heading_to_takoradi"
             elif last_event_state:
                 direction = last_event_state
