@@ -2,16 +2,24 @@
 services/live_fleet.py — Live Awaso↔Takoradi corridor view.
 
 Yard fences (WAITING TIME, FUELING TIME, LOADING TIME):
-  Alarm events from Tracksolid are authoritative.
-  The GPS fallback supports BOTH shapes:
-    shape='circle'  -> haversine inside lat/lng/radius_km
-    shape='polygon' -> point-in-polygon on the JSONB `polygon` column
+  Alarm events from Tracksolid are authoritative *for dwell history*.
+  For the live "is this truck inside right now" count we combine alarms
+  with GPS (see _resolve_yard_membership).
 
 Corridor facilities (Awaso / Takoradi):
   Loaded from fence_polygons where kind IN ('awaso','takoradi').
-  Both shapes are supported (polygon-first, circle fallback). The API
-  returns them so the front end can draw from the DB instead of the
-  hardcoded constants, which makes admin edits reflect on the map.
+  Both shapes are supported (polygon-first, circle fallback).
+
+Scanning control (GLOBAL, admin-only):
+  A single process-wide `_paused` flag. When False (default), any visitor
+  — admin or not — triggers a live scan on demand (subject to the usual
+  10-second cache). When True, get_fleet_state() returns the cached
+  snapshot without calling Tracksolid, and *everyone* sees the same
+  frozen frame. Only admins can flip the flag via /live/api/scan.
+
+Diagnostics:
+  get_fleet_state also returns a `diagnostics` dict that the API passes
+  through to the front end.
 """
 from __future__ import annotations
 
@@ -43,6 +51,8 @@ _FACILITIES_TTL_SEC    = 30
 _YARD_ALARM_LOOKBACK_HOURS = 24
 _YARD_ALARM_PAGE_SIZE      = 500
 _YARD_STATE_TTL_SEC        = 60
+_YARD_STATE_MAX_AGE        = timedelta(hours=6)
+_YARD_GPS_TRUST_AGE        = timedelta(minutes=15)
 
 _YARD_FENCES = (
     {"key": "waiting", "fence_name": "WAITING TIME", "label": "Dispatch"},
@@ -52,9 +62,67 @@ _YARD_FENCES = (
 
 _YARD_KEY_BY_NAME = {f["fence_name"].upper(): f["key"] for f in _YARD_FENCES}
 
-# Canonical corridor facility metadata, keyed by `kind`.
 _CORRIDOR_KEYS = ("awaso", "takoradi")
 _CORRIDOR_LABELS = {"awaso": "Awaso", "takoradi": "Takoradi"}
+
+_CORRIDOR_DEFAULTS = {
+    "awaso":    {"lat": 6.2298,   "lng": -2.284723, "radius_km": 2.15},
+    "takoradi": {"lat": 4.893897, "lng": -1.748176, "radius_km": 0.40},
+}
+
+
+# ---------------------------------------------------------------------------
+# Scan pause (GLOBAL, admin-only)
+# ---------------------------------------------------------------------------
+# A single process-wide flag. False = live scanning allowed for everyone.
+# True = no Tracksolid calls at all; every caller (admin or not) is served
+# the last cached snapshot. Only /live/api/scan (admin) toggles it.
+#
+# The session_id argument is kept for API compatibility with older callers
+# but is ignored — pausing is no longer per-session.
+
+_paused: bool = False
+_paused_since: datetime | None = None
+_paused_lock = Lock()
+
+
+def is_scanning(session_id: str | None = None, default: bool = True) -> bool:
+    """Return True if live scanning is allowed right now (i.e. not paused).
+
+    `session_id` and `default` are ignored. Kept so existing callers
+    (blueprint, anything else importing this) keep working unchanged.
+    """
+    with _paused_lock:
+        return not _paused
+
+
+def set_scanning(session_id: str | None, enabled: bool) -> None:
+    """Set the GLOBAL pause flag.
+
+    `enabled=True`  -> resume live scanning.
+    `enabled=False` -> pause; everyone sees the last cached snapshot.
+
+    `session_id` is ignored (kept for API compatibility).
+    """
+    global _paused, _paused_since
+    with _paused_lock:
+        _paused = not bool(enabled)
+        if _paused:
+            if _paused_since is None:
+                _paused_since = datetime.now(timezone.utc)
+        else:
+            _paused_since = None
+
+
+def paused_since() -> datetime | None:
+    """When the current pause began, or None if not paused."""
+    with _paused_lock:
+        return _paused_since
+
+
+def forget_session(session_id: str | None) -> None:
+    """No-op retained for compatibility (pause is no longer per-session)."""
+    return
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +235,7 @@ def _validate_polygon(points) -> list[list[float]] | None:
 
 
 # ---------------------------------------------------------------------------
-# Facility loading (corridor points + yard fences, circle OR polygon)
+# Facility loading
 # ---------------------------------------------------------------------------
 
 _facilities_lock = Lock()
@@ -175,11 +243,6 @@ _facilities_cache: dict = {"data": None, "expires_at": 0.0}
 
 
 def _row_to_facility(row: dict) -> dict | None:
-    """Convert one fence_polygons row into the payload the API returns.
-
-    Handles both yard rows (kind='yard'/'custom') and corridor rows
-    (kind='awaso'/'takoradi'). Returns None if malformed.
-    """
     name = (row.get("name") or "").strip()
     kind = (row.get("kind") or "").strip().lower()
     if not name and not kind:
@@ -187,12 +250,10 @@ def _row_to_facility(row: dict) -> dict | None:
 
     shape = (row.get("shape") or "circle").lower()
 
-    # --- try to read a polygon first ---
     polygon = None
     if shape == "polygon" and isinstance(row.get("polygon"), list):
         polygon = _validate_polygon(row["polygon"])
 
-    # --- fall back to lat/lng/radius (NOT NULL in the schema) ---
     try:
         lat = float(row["lat"])
         lng = float(row["lng"])
@@ -209,7 +270,6 @@ def _row_to_facility(row: dict) -> dict | None:
         shape = "circle"
         polygon = None
 
-    # --- decide the family / key / label ---
     if kind in _CORRIDOR_KEYS:
         family = "corridor"
         key = kind
@@ -246,35 +306,38 @@ def _row_to_facility(row: dict) -> dict | None:
     }
 
 
-# Back-compat alias — callers that imported _row_to_yard keep working.
 _row_to_yard = _row_to_facility
 
 
-def _load_facilities() -> tuple[list[dict], list[dict]]:
-    """Return (corridor_facilities, yard_facilities)."""
+def _load_facilities_diagnostic() -> tuple[list[dict], list[dict], str | None]:
     now = time.time()
     with _facilities_lock:
         if (_facilities_cache["data"] is not None
                 and now < _facilities_cache["expires_at"]):
-            return _facilities_cache["data"]
+            corridor, yards = _facilities_cache["data"]
+            return corridor, yards, _facilities_cache.get("error")
 
     corridor: list[dict] = []
     yards: list[dict] = []
+    error: str | None = None
 
     try:
         resp = admin_client().table("fence_polygons").select("*").execute()
-        for r in (resp.data or []):
+        rows = resp.data or []
+        log.info("live_fleet: fence_polygons returned %d row(s)", len(rows))
+        for r in rows:
             fac = _row_to_facility(r)
             if fac is None:
+                log.warning("live_fleet: skipping malformed fence row: %r", r)
                 continue
             if fac["family"] == "corridor":
                 corridor.append(fac)
             else:
                 yards.append(fac)
     except Exception as exc:
-        log.warning("live_fleet: fence_polygons load failed: %s", exc)
+        error = f"{type(exc).__name__}: {exc}"
+        log.warning("live_fleet: fence_polygons load failed: %s", error)
 
-    # Ensure the three built-in yard keys exist even if the DB has no rows.
     seen_keys = {y["key"] for y in yards if y.get("key")}
     for spec in _YARD_FENCES:
         if spec["key"] not in seen_keys:
@@ -294,8 +357,6 @@ def _load_facilities() -> tuple[list[dict], list[dict]]:
                 "polygon":    None,
             })
 
-    # Ensure each corridor kind has at least a placeholder so the UI can
-    # present "Awaso" / "Takoradi" for editing even on a fresh DB.
     seen_corridor = {c["kind"] for c in corridor}
     for kind in _CORRIDOR_KEYS:
         if kind not in seen_corridor:
@@ -318,26 +379,79 @@ def _load_facilities() -> tuple[list[dict], list[dict]]:
     payload = (corridor, yards)
     with _facilities_lock:
         _facilities_cache["data"] = payload
+        _facilities_cache["error"] = error
         _facilities_cache["expires_at"] = now + _FACILITIES_TTL_SEC
 
     log.info(
-        "live_fleet: facilities — corridor: %s | yards: %s",
-        ", ".join(f"{f.get('label')} [{f.get('shape')}]" for f in corridor)
-        or "(none)",
-        ", ".join(
-            (f"{y.get('label')} [{y.get('shape')}]"
-             + (f" r={y['radius_km']:.2f}km"
-                if y.get("radius_km") is not None else ""))
-            for y in yards
-        ),
+        "live_fleet: facilities loaded — corridor: %d | yards: %d | error=%r",
+        len(corridor), len(yards), error,
     )
-    return payload
+    return corridor, yards, error
+
+
+def _load_facilities() -> tuple[list[dict], list[dict]]:
+    corridor, yards, _err = _load_facilities_diagnostic()
+    return corridor, yards
 
 
 def invalidate_facilities_cache() -> None:
-    """Call after a fence save so the next /api/fleet poll sees the new shape."""
     with _facilities_lock:
         _facilities_cache["expires_at"] = 0.0
+
+
+def seed_default_fences() -> dict:
+    client = admin_client()
+    existing = client.table("fence_polygons").select("kind,name").execute()
+    rows = existing.data or []
+    have_kinds = {(r.get("kind") or "").lower() for r in rows}
+    have_yard_names = {
+        (r.get("name") or "").upper()
+        for r in rows
+        if (r.get("kind") or "").lower() in ("yard", "custom")
+    }
+
+    inserted = 0
+    skipped = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    def _insert(record: dict) -> None:
+        nonlocal inserted
+        record.setdefault("created_at", now_iso)
+        record["updated_at"] = now_iso
+        client.table("fence_polygons").insert(record).execute()
+        inserted += 1
+
+    for kind in _CORRIDOR_KEYS:
+        if kind in have_kinds:
+            skipped += 1
+            continue
+        defaults = _CORRIDOR_DEFAULTS[kind]
+        _insert({
+            "name":       _CORRIDOR_LABELS[kind],
+            "kind":       kind,
+            "shape":      "circle",
+            "lat":        defaults["lat"],
+            "lng":        defaults["lng"],
+            "radius_km":  defaults["radius_km"],
+            "polygon":    None,
+        })
+
+    for spec in _YARD_FENCES:
+        if spec["fence_name"].upper() in have_yard_names:
+            skipped += 1
+            continue
+        _insert({
+            "name":       spec["fence_name"],
+            "kind":       "yard",
+            "shape":      "circle",
+            "lat":        _CORRIDOR_DEFAULTS["awaso"]["lat"],
+            "lng":        _CORRIDOR_DEFAULTS["awaso"]["lng"],
+            "radius_km":  0.2,
+            "polygon":    None,
+        })
+
+    invalidate_facilities_cache()
+    return {"inserted": inserted, "skipped": skipped}
 
 
 # ---------------------------------------------------------------------------
@@ -345,11 +459,6 @@ def invalidate_facilities_cache() -> None:
 # ---------------------------------------------------------------------------
 
 def _inside_facility(lat, lng, facilities):
-    """Return the corridor facility a point is inside, or None.
-
-    Polygons take precedence over circles. Smallest area wins if multiple
-    match (so a truck inside a tighter polygon is attributed correctly).
-    """
     best = None
     best_area = float("inf")
     for f in facilities:
@@ -477,6 +586,8 @@ def _derive_yard_state_from_alarms(alarms: list[dict]) -> dict | None:
         return None
     alarms = sorted(alarms, key=lambda a: a.get("alertTime") or "", reverse=True)
     decided: dict[str, str] = {}
+    now = datetime.now(timezone.utc)
+
     for a in alarms:
         if len(decided) == len(_YARD_FENCES):
             break
@@ -489,6 +600,13 @@ def _derive_yard_state_from_alarms(alarms: list[dict]) -> dict | None:
             continue
         decided[key] = ev
         if ev == "in":
+            t = _alarm_time(a)
+            if t is not None and (now - t) > _YARD_STATE_MAX_AGE:
+                log.debug(
+                    "yard-state: ignoring stale 'in' for %s (%s) at %s",
+                    key, name, t,
+                )
+                continue
             spec = next(s for s in _YARD_FENCES if s["key"] == key)
             return {
                 "key":       key,
@@ -496,6 +614,7 @@ def _derive_yard_state_from_alarms(alarms: list[dict]) -> dict | None:
                 "name":      spec["fence_name"],
                 "radius_km": None,
                 "source":    "alarm",
+                "since":     t.isoformat() if t else None,
             }
     return None
 
@@ -621,26 +740,120 @@ _fleet_cache_lock = Lock()
 _fleet_cache: dict = {"data": None, "expires_at": 0.0}
 
 
-def get_fleet_state(force_refresh: bool = False) -> tuple[list[dict], bool]:
+def _resolve_yard_membership(
+    *,
+    alarm_state: dict | None,
+    gps_yard: dict | None,
+    gps_fresh: bool,
+) -> dict | None:
+    if gps_fresh:
+        if gps_yard is not None:
+            return {
+                "key":       gps_yard["key"],
+                "label":     gps_yard["label"],
+                "name":      gps_yard["fence_name"],
+                "radius_km": gps_yard.get("radius_km"),
+                "source":    "gps",
+            }
+        return None
+    return alarm_state
+
+
+def get_fleet_state(
+    force_refresh: bool = False,
+    *,
+    session_id: str | None = None,
+    scanning_allowed: bool = True,
+) -> tuple[list[dict], bool, bool, dict]:
+    """Return (states, scanning_in_progress, paused, diagnostics).
+
+    `scanning_allowed` should be False when the *global* pause is on.
+    When False, this function NEVER calls Tracksolid; it serves the last
+    cached snapshot (or an empty list if there isn't one yet). The blueprint
+    derives `scanning_allowed` from `is_scanning()` so admin and non-admin
+    always agree.
+
+    `session_id` is kept for API compatibility and otherwise unused.
+    """
     now = time.time()
+
+    diagnostics: dict = {
+        "devices_total":        None,
+        "devices_regular":      None,
+        "locations_fetched":    None,
+        "yard_states_resolved": None,
+        "fences_error":         None,
+        "reason":               None,
+    }
+
+    if not scanning_allowed:
+        with _fleet_cache_lock:
+            cached = _fleet_cache["data"]
+            expires = _fleet_cache["expires_at"]
+        if cached is not None:
+            diagnostics["reason"] = "paused (cached snapshot)"
+            diagnostics["snapshot_age_sec"] = (
+                max(0.0, now - (expires - CACHE_TTL_SEC))
+                if expires else None
+            )
+            return cached, False, True, diagnostics
+        diagnostics["reason"] = "paused (no snapshot yet)"
+        return [], False, True, diagnostics
+
+    # --- Facilities ---
+    corridor_facilities, yard_facilities, fences_error = _load_facilities_diagnostic()
+    diagnostics["fences_error"] = fences_error
+
     with _fleet_cache_lock:
         if (not force_refresh
                 and _fleet_cache["data"] is not None
                 and now < _fleet_cache["expires_at"]):
-            return _fleet_cache["data"], _scan_in_progress.is_set()
+            diagnostics["reason"] = "cache hit"
+            return _fleet_cache["data"], _scan_in_progress.is_set(), False, diagnostics
 
+    # --- Devices ---
+    try:
+        all_devices = get_devices()
+    except Exception as exc:
+        log.exception("live_fleet: get_devices() failed")
+        diagnostics["reason"] = f"get_devices failed: {type(exc).__name__}: {exc}"
+        with _fleet_cache_lock:
+            cached = _fleet_cache["data"]
+        if cached is not None:
+            return cached, False, False, diagnostics
+        return [], False, False, diagnostics
+
+    diagnostics["devices_total"] = len(all_devices)
     devices = [
-        d for d in get_devices()
+        d for d in all_devices
         if classify_device(d.get("deviceName") or "") == "regular"
     ]
-    if not devices:
-        return [], False
+    diagnostics["devices_regular"] = len(devices)
 
-    corridor_facilities, yard_facilities = _load_facilities()
+    if not devices:
+        diagnostics["reason"] = (
+            f"no 'regular' devices among {len(all_devices)} total"
+        )
+        return [], False, False, diagnostics
+
     imeis = [d["imei"] for d in devices]
 
-    loc_by_imei = _fetch_locations_batched(imeis)
-    yard_state = _refresh_yard_state(imeis, yard_facilities)
+    try:
+        loc_by_imei = _fetch_locations_batched(imeis)
+    except Exception as exc:
+        log.exception("live_fleet: _fetch_locations_batched failed")
+        diagnostics["reason"] = f"location fetch failed: {type(exc).__name__}: {exc}"
+        loc_by_imei = {}
+    diagnostics["locations_fetched"] = len(loc_by_imei)
+
+    try:
+        yard_state = _refresh_yard_state(imeis, yard_facilities)
+    except Exception as exc:
+        log.exception("live_fleet: _refresh_yard_state failed")
+        yard_state = {}
+    diagnostics["yard_states_resolved"] = sum(
+        1 for v in yard_state.values() if v is not None
+    )
 
     now_dt = datetime.now(timezone.utc)
 
@@ -675,6 +888,9 @@ def get_fleet_state(force_refresh: bool = False) -> tuple[list[dict], bool]:
                 ).replace(tzinfo=timezone.utc)
         except (TypeError, ValueError):
             pass
+
+        gps_fresh = (gps_time is not None
+                     and (now_dt - gps_time) <= _YARD_GPS_TRUST_AGE)
 
         with _corridor_cache_lock:
             cache_entry = _corridor_cache.get(imei)
@@ -715,17 +931,13 @@ def get_fleet_state(force_refresh: bool = False) -> tuple[list[dict], bool]:
 
         motion = _motion_state(speed, gps_time, now_dt)
 
-        fence_payload = yard_state.get(imei)
-        if fence_payload is None and lat is not None and lng is not None:
-            gps_yard = _inside_yard(lat, lng, yard_facilities)
-            if gps_yard is not None:
-                fence_payload = {
-                    "key":       gps_yard["key"],
-                    "label":     gps_yard["label"],
-                    "name":      gps_yard["fence_name"],
-                    "radius_km": gps_yard.get("radius_km"),
-                    "source":    "gps",
-                }
+        gps_yard = (_inside_yard(lat, lng, yard_facilities)
+                    if lat is not None and lng is not None else None)
+        fence_payload = _resolve_yard_membership(
+            alarm_state=yard_state.get(imei),
+            gps_yard=gps_yard,
+            gps_fresh=gps_fresh,
+        )
 
         out.append({
             "imei":         imei,
@@ -737,13 +949,15 @@ def get_fleet_state(force_refresh: bool = False) -> tuple[list[dict], bool]:
             "motion":       motion,
             "fence":        fence_payload,
             "scan_pending": scan_pending,
+            "gps_fresh":    gps_fresh,
         })
 
     with _fleet_cache_lock:
         _fleet_cache["data"] = out
         _fleet_cache["expires_at"] = now + CACHE_TTL_SEC
 
-    return out, _scan_in_progress.is_set()
+    diagnostics["reason"] = "fetched"
+    return out, _scan_in_progress.is_set(), False, diagnostics
 
 
 def summarise(states: list[dict]) -> dict:
@@ -795,17 +1009,6 @@ def _derive_name_and_kind(item: dict) -> tuple[str, str]:
 
 
 def save_fences(payload: list[dict]) -> dict:
-    """Persist edited fence polygons and circles.
-
-    Accepts a list of:
-      {id?, key?, name?, kind?, shape, lat?, lng?, radius_km?, polygon?}
-
-    Semantics:
-      - id present   -> UPDATE that row.
-      - id null      -> INSERT (kind derived from name/key, defaults custom).
-
-    Returns {"saved": N, "yards": [...], "corridor": [...]}.
-    """
     if not isinstance(payload, list) or not payload:
         raise ValueError("fences must be a non-empty list")
 
@@ -883,8 +1086,6 @@ def save_fences(payload: list[dict]) -> dict:
 
 
 def delete_fence(row_id: str) -> bool:
-    """Delete a fence row by id. Built-in yard/corridor fences without a
-    row id cannot be deleted this way — callers should filter them out."""
     if not row_id:
         raise ValueError("fence id is required")
     client = admin_client()

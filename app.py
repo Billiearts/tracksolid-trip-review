@@ -268,26 +268,39 @@ def _run_export(job_id, computed, out_path, manual):
     try:
         write_excel(computed, TEMPLATE_PATH, out_path, manual=manual)
         size = out_path.stat().st_size if out_path.exists() else None
-        jobs.mark_done(job_id, filesize_bytes=size)
     except Exception as exc:
         log.exception("export failed")
         jobs.mark_failed(job_id, error=f"{type(exc).__name__}: {exc}")
         return
+
+    # --- FIX: attempt the storage mirror BEFORE marking done, and log loudly
+    #          if it fails. A report that is not in Storage is lost the next
+    #          time the container restarts (Render free tier has an
+    #          ephemeral disk), so a silent upload failure is the root cause
+    #          of "old reports 404 on download".
+    remote = None
+    try:
+        remote = storage.upload(out_path)
+    except Exception:
+        log.exception("storage upload raised for %s", out_path.name)
+
+    if remote:
+        log.info("report mirrored to storage: %s", remote)
+    else:
+        log.error(
+            "report %s NOT mirrored to storage — it will be undownloadable "
+            "after the next container restart. Check the Supabase 'reports' "
+            "bucket exists and accepts uploads.",
+            out_path.name,
+        )
+
+    jobs.mark_done(job_id, filesize_bytes=size)
 
     try:
         reports_repo.save_computed(job_id, _to_jsonable(computed))
         reports_repo.update_manual(job_id, manual)
     except Exception:
         log.exception("could not save computed/manual for %s", job_id)
-
-    try:
-        remote = storage.upload(out_path)
-        if remote:
-            log.info("report mirrored to storage: %s", remote)
-        else:
-            log.warning("report not mirrored: %s", out_path.name)
-    except Exception:
-        log.exception("storage mirror failed for %s", out_path.name)
 
 
 def _run_bulk_export(job_id, reports, out_path, per_trip_manual):
@@ -296,26 +309,35 @@ def _run_bulk_export(job_id, reports, out_path, per_trip_manual):
         write_bulk_excel(reports, TEMPLATE_PATH, out_path,
                          per_trip_manual=per_trip_manual)
         size = out_path.stat().st_size if out_path.exists() else None
-        jobs.mark_done(job_id, filesize_bytes=size)
     except Exception as exc:
         log.exception("bulk export failed")
         jobs.mark_failed(job_id, error=f"{type(exc).__name__}: {exc}")
         return
+
+    # --- FIX: same as _run_export — mirror first, log loudly on failure.
+    remote = None
+    try:
+        remote = storage.upload(out_path)
+    except Exception:
+        log.exception("bulk storage upload raised for %s", out_path.name)
+
+    if remote:
+        log.info("bulk report mirrored to storage: %s", remote)
+    else:
+        log.error(
+            "bulk report %s NOT mirrored to storage — it will be "
+            "undownloadable after the next container restart. Check the "
+            "Supabase 'reports' bucket exists and accepts uploads.",
+            out_path.name,
+        )
+
+    jobs.mark_done(job_id, filesize_bytes=size)
 
     try:
         reports_repo.save_computed(job_id, _to_jsonable(list(reports)))
         reports_repo.update_manual(job_id, per_trip_manual or {})
     except Exception:
         log.exception("could not save computed/manual for bulk %s", job_id)
-
-    try:
-        remote = storage.upload(out_path)
-        if remote:
-            log.info("bulk report mirrored to storage: %s", remote)
-        else:
-            log.warning("bulk report not mirrored: %s", out_path.name)
-    except Exception:
-        log.exception("storage mirror failed for %s", out_path.name)
 
 
 # --- routes ---------------------------------------------------------------
@@ -873,8 +895,18 @@ def report_edit_meta(report_id):
             reports_repo.update_manual(report_id, merged_manual,
                                        filesize_bytes=size)
 
+        # --- FIX: mirror to Storage after regenerating, and log loudly on
+        #          failure so we don't silently lose the file on next restart.
         try:
-            storage.upload(out_path)
+            remote = storage.upload(out_path)
+            if remote:
+                log.info("regenerated report mirrored to storage: %s", remote)
+            else:
+                log.error(
+                    "regenerated report %s NOT mirrored to storage — it will "
+                    "be undownloadable after the next container restart.",
+                    out_path.name,
+                )
         except Exception:
             log.exception("storage mirror failed for %s", out_path.name)
 
@@ -930,12 +962,30 @@ def download(filename):
 
     local_path = OUTPUT_DIR / filename
 
+    # --- FIX: log the full download flow so a 404 is diagnosable from
+    #          Render's log stream instead of being a silent dead end.
     if local_path.exists():
+        log.info("download: serving %s from local disk", filename)
         return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
-    if storage.download_to(local_path, filename):
+    log.info("download: %s missing on disk; trying Supabase Storage", filename)
+
+    try:
+        ok = storage.download_to(local_path, filename)
+    except Exception:
+        log.exception("download: storage.download_to raised for %s", filename)
+        ok = False
+
+    if ok:
+        log.info("download: serving %s from storage fallback", filename)
         return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
+    log.warning(
+        "download: 404 for %s — not on disk and not retrievable from the "
+        "Supabase 'reports' bucket. Verify the bucket exists and that the "
+        "original upload succeeded (search the logs for 'NOT mirrored').",
+        filename,
+    )
     abort(404)
 
 
