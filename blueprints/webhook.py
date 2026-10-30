@@ -54,7 +54,5 @@ def jimi():
 
         return jsonify({"code": 0, "message": "success"}), 200
 
-    # Unknown msgType (including verification probes with a non-alarm type)
-    # Return the generic success format so the portal accepts the URL.
     log.info("webhook: unknown msgType=%r acknowledged as success", msg_type)
     return jsonify({"code": 0, "message": "success"}), 200

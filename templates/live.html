@@ -7,6 +7,11 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
   <style>
+    /* Prevent browser text/image selection from interrupting the map drag */
+.leaflet-marker-icon {
+    -webkit-user-drag: none;
+    user-select: none;
+}
     body.live-mode { padding: 0; background: #e9edf1; }
     body.live-mode .container {
       display: flex; flex-direction: column;
@@ -921,7 +926,7 @@
         });
       }
 
-      function update(states, summary, corridor, yards) {
+            function update(states, summary, corridor, yards) {
         drawFences(corridor, yards);
         buildSummary(summary);
         buildFences(summary);
@@ -946,8 +951,15 @@
           let fenceClass = '';
           if (t.fence && t.fence.key) fenceClass = ' fence-' + t.fence.key;
 
+          // --- NEW LOGIC: Distinguish offline trucks ---
+          let tooltipExtra = '';
+          if (t.direction === 'unknown' && t.motion === 'offline') {
+              tooltipExtra = ' <span style="color:#a02525;">(Offline &gt; 24h)</span>';
+          }
+
           let tooltip = '<strong>' + escapeHtml(t.name) + '</strong><br>' +
-                        (LABELS[t.direction] || LABELS.unknown) + '<br>' + t.speed_kph + ' kph';
+                        (LABELS[t.direction] || LABELS.unknown) + tooltipExtra + '<br>' + t.speed_kph + ' kph';
+                        
           if (t.fence) {
             tooltip += '<br><span class="fence-line">&#9679; ' +
                        escapeHtml(t.fence.label) + '</span>';
@@ -1333,44 +1345,70 @@
       }
 
       function drawVertexHandles(f) {
-        vertexLayer.clearLayers();
-        if (f.shape === 'polygon' && Array.isArray(f.polygon) && f.polygon.length >= 1) {
-          f.polygon.forEach(function (pt, idx) {
-            const marker = L.marker(pt, {
-              icon: L.divIcon({
-                className: '',
-                html: '<div style="width:12px;height:12px;border-radius:50%;' +
-                      'background:#fff;border:2px solid #4a90e2;' +
-                      'box-shadow:0 0 3px rgba(0,0,0,0.4);"></div>',
-                iconSize: [12, 12],
-                iconAnchor: [6, 6],
-              }),
-              draggable: true,
-            }).addTo(vertexLayer);
-            marker.on('drag', function () {
-              const ll = marker.getLatLng();
-              f.polygon[idx] = [ll.lat, ll.lng];
-              redrawEditorFences();
-            });
-            marker.on('dragend', function () {
-              f._dirty = true;
-              renderDirtyBadge();
-              renderFenceList();
-            });
-            marker.on('contextmenu', function (e) {
-              L.DomEvent.stopPropagation(e);
-              if (f.polygon.length <= 3) {
-                editStatus.textContent = 'A polygon needs at least 3 vertices.';
-                return;
-              }
-              f.polygon.splice(idx, 1);
-              f._dirty = true;
-              redrawEditorFences();
-              renderDirtyBadge();
-              renderFenceList();
-            });
-          });
+  vertexLayer.clearLayers();
+  
+  if (f.shape === 'polygon' && Array.isArray(f.polygon) && f.polygon.length >= 1) {
+    f.polygon.forEach(function (pt, idx) {
+      
+      // Create the marker with a larger transparent hitbox
+      const marker = L.marker(pt, {
+        icon: L.divIcon({
+          className: 'vertex-handle', // add this class for CSS targeting if needed
+          html: '<div style="' +
+                  'width: 24px; height: 24px; ' +      // Outer hitbox (larger)
+                  'display: flex; align-items: center; justify-content: center; ' +
+                  'cursor: grab; touch-action: none;' + // Prevent touch scrolling
+                '">' +
+                '<div style="' +
+                  'width: 14px; height: 14px; border-radius: 50%; ' + // Visual circle
+                  'background: #fff; border: 3px solid #4a90e2; ' +
+                  'box-shadow: 0 0 3px rgba(0,0,0,0.5);' +
+                '"></div>' +
+              '</div>',
+          iconSize: [24, 24],
+          iconAnchor: [12, 12], // Center the hitbox on the actual coordinate
+        }),
+        draggable: true,
+        // Important: Prevent the map from panning while dragging the marker
+        bubblingMouseEvents: false, 
+      }).addTo(vertexLayer);
 
+      // Stop propagation so the map doesn't try to drag
+      marker.on('mousedown', function(e) {
+          L.DomEvent.stopPropagation(e);
+      });
+      marker.on('touchstart', function(e) {
+          L.DomEvent.stopPropagation(e);
+      });
+
+      // Update coordinates while dragging
+      marker.on('drag', function () {
+        const ll = marker.getLatLng();
+        f.polygon[idx] = [ll.lat, ll.lng];
+        redrawEditorFences(); 
+      });
+
+      // Mark as dirty when the user lets go
+      marker.on('dragend', function () {
+        f._dirty = true;
+        renderDirtyBadge();
+        renderFenceList();
+      });
+
+      // Right-click to delete (keep your existing logic)
+      marker.on('contextmenu', function (e) {
+        L.DomEvent.stopPropagation(e);
+        if (f.polygon.length <= 3) {
+          editStatus.textContent = 'A polygon needs at least 3 vertices.';
+          return;
+        }
+        f.polygon.splice(idx, 1);
+        f._dirty = true;
+        redrawEditorFences();
+        renderDirtyBadge();
+        renderFenceList();
+      });
+    });
           for (let i = 0; i < f.polygon.length; i++) {
             const a = f.polygon[i];
             const b = f.polygon[(i + 1) % f.polygon.length];
@@ -1379,7 +1417,7 @@
               icon: L.divIcon({
                 className: 'fence-vertex-icon mid',
                 html: '<div style="width:8px;height:8px;border-radius:50%;' +
-                      'background:#4a90e2;opacity:0.6;"></div>',
+                      'background:#4a90e2;opacity:0.6;box-shadow:0 0 4px rgba(0,0,0,0.5);"></div>',
                 iconSize: [8, 8],
                 iconAnchor: [4, 4],
               }),
@@ -1399,7 +1437,7 @@
               className: '',
               html: '<div style="width:12px;height:12px;border-radius:50%;' +
                     'background:#a02525;border:2px solid #fff;' +
-                    'box-shadow:0 0 3px rgba(0,0,0,0.4);"></div>',
+                    'box-shadow:0 0 4px rgba(0,0,0,0.5);"></div>',
               iconSize: [12, 12],
               iconAnchor: [6, 6],
             }),
@@ -1424,7 +1462,7 @@
               className: '',
               html: '<div style="width:12px;height:12px;border-radius:50%;' +
                     'background:#4a90e2;border:2px solid #fff;' +
-                    'box-shadow:0 0 3px rgba(0,0,0,0.4);"></div>',
+                    'box-shadow:0 0 4px rgba(0,0,0,0.5);"></div>',
               iconSize: [12, 12],
               iconAnchor: [6, 6],
             }),
@@ -1560,7 +1598,7 @@
         draftCircle = null;
         draftCenter = null;
         document.body.classList.remove('fence-drawing');
-        fetchStates(false);
+        fetchStates(true);
       }
 
       editBtn.addEventListener('click', function () {
@@ -1579,6 +1617,9 @@
           alert('Server is missing the fence-save endpoint (restart Flask).');
           return;
         }
+            const selected = editFences.find(function (x) { return x.uid === selectedUid; });
+        if (selected) selected._dirty = true;
+        
         const dirty = editFences.filter(function (f) { return f._dirty || f._isNew; });
         if (!dirty.length) {
           setStatus('No fence changes to save.', null);

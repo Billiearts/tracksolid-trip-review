@@ -53,12 +53,10 @@ MAX_TRIPS_PER_TRUCK = 5
 from blueprints.auth       import bp as auth_bp
 from blueprints.admin      import bp as admin_bp
 from blueprints.live_fleet import bp as live_fleet_bp
-from blueprints.webhook    import bp as webhook_bp
 
 app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
-app.register_blueprint(live_fleet_bp)
-app.register_blueprint(webhook_bp)
+app.register_blueprint(live_fleet_bp) 
 
 
 # --- startup maintenance --------------------------------------------------

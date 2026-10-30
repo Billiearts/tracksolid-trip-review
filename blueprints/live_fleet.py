@@ -52,12 +52,7 @@ def _is_admin() -> bool:
 
 
 def _scan_allowed_for_this_session() -> bool:
-    """Live scanning is allowed for everyone unless the global pause is on.
-
-    Only admins can flip the pause, but the read side is role-agnostic so a
-    normal user visiting a page where no admin has scanned yet still gets
-    a real scan instead of an empty map.
-    """
+    """Live scanning is allowed for everyone unless the global pause is on."""
     return is_scanning()
 
 
@@ -106,8 +101,6 @@ def api_fleet():
     if fences_error:
         diagnostics["fences_error"] = fences_error
 
-    # `scanning` here means "not globally paused" so the client can render
-    # the same "Updated …" state for both roles.
     return jsonify({
         "trucks":           states,
         "summary":          summarise(states),

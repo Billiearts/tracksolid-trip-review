@@ -17,16 +17,20 @@ Scanning control (GLOBAL, admin-only):
   without calling Tracksolid, and *everyone* sees the same frozen frame.
   Only admins can flip the flag via /live/api/scan.
 
-Real-time webhooks:
-  Tracksolid pushes jimi.push.device.alarm events to /webhook/jimi.
-  Each push is ingested via ingest_alarm_push(), which updates the
-  corridor + yard caches immediately. Polling still runs as a slow
-  fallback (poll interval in live.html) so brief webhook outages
-  self-heal.
+Yard-alarm polling:
+  get_fleet_state() calls _refresh_yard_state() which re-reads the last
+  24h of alarms for any truck whose yard cache is stale (60s TTL).
+  The corridor cache (last GBC fence out event) is warmed in the
+  background the first time it's empty.
 
-Diagnostics:
-  get_fleet_state also returns a `diagnostics` dict that the API passes
-  through to the front end.
+Yard membership has TWO freshness windows:
+  * _YARD_GPS_TRUST_AGE (15 min) — how old a fix may be for the
+    *corridor direction* logic to trust it for "which way is it going".
+  * _YARD_GPS_MEMBERSHIP_AGE (4 h) — how old a fix may be for the
+    *yard membership* test, PROVIDED the truck is parked. A parked
+    truck's last fix still tells us which polygon it's inside, even
+    if it's hours old. This lets us resolve membership by geometry
+    when Tracksolid's own geofence is smaller than our app's polygon.
 """
 from __future__ import annotations
 
@@ -58,8 +62,11 @@ _FACILITIES_TTL_SEC    = 30
 _YARD_ALARM_LOOKBACK_HOURS = 24
 _YARD_ALARM_PAGE_SIZE      = 500
 _YARD_STATE_TTL_SEC        = 60
-_YARD_STATE_MAX_AGE        = timedelta(hours=6)
+_YARD_STATE_MAX_AGE        = timedelta(hours=24)
+
+# Two separate freshness windows — see module docstring.
 _YARD_GPS_TRUST_AGE        = timedelta(minutes=15)
+_YARD_GPS_MEMBERSHIP_AGE   = timedelta(hours=4)
 
 _YARD_FENCES = (
     {"key": "waiting", "fence_name": "WAITING TIME", "label": "Dispatch"},
@@ -229,8 +236,6 @@ def _validate_polygon(points) -> list[list[float]] | None:
     if _polygon_area_km2(out) <= 0.0:
         return None
     return out
-
-
 # ---------------------------------------------------------------------------
 # Facility loading
 # ---------------------------------------------------------------------------
@@ -504,8 +509,6 @@ def _inside_yard(lat, lng, yards):
 
 
 _inside_yard_gps = _inside_yard
-
-
 # ---------------------------------------------------------------------------
 # Corridor event state
 # ---------------------------------------------------------------------------
@@ -579,41 +582,64 @@ def _fetch_recent_yard_alarms(imeis: list[str]) -> dict[str, list[dict]]:
 
 
 def _derive_yard_state_from_alarms(alarms: list[dict]) -> dict | None:
+    """Decide whether a truck is *currently* inside a yard fence.
+
+    Correctness rule: for each fence, the truck is inside iff the most
+    recent alarm *for that fence* is an 'in' (newer than the fence's last
+    'out'), and it is no older than _YARD_STATE_MAX_AGE. The returned
+    fence is the one whose 'in' is newest among those that qualify.
+    """
     if not alarms:
         return None
+
     alarms = sorted(alarms, key=lambda a: a.get("alertTime") or "", reverse=True)
-    decided: dict[str, str] = {}
     now = datetime.now(timezone.utc)
 
+    last_event: dict[str, str] = {}
+    last_in_time: dict[str, datetime | None] = {}
+
     for a in alarms:
-        if len(decided) == len(_YARD_FENCES):
-            break
         name = _alarm_fence_name(a).upper()
         key = _YARD_KEY_BY_NAME.get(name)
-        if key is None or key in decided:
+        if key is None:
             continue
         ev = _alarm_event(a)
         if ev is None:
             continue
-        decided[key] = ev
-        if ev == "in":
-            t = _alarm_time(a)
-            if t is not None and (now - t) > _YARD_STATE_MAX_AGE:
-                log.debug(
-                    "yard-state: ignoring stale 'in' for %s (%s) at %s",
-                    key, name, t,
-                )
-                continue
-            spec = next(s for s in _YARD_FENCES if s["key"] == key)
-            return {
-                "key":       key,
-                "label":     spec["label"],
-                "name":      spec["fence_name"],
-                "radius_km": None,
-                "source":    "alarm",
-                "since":     t.isoformat() if t else None,
-            }
-    return None
+        if key in last_event:
+            # We already saw the newest event for this fence; ignore older ones.
+            continue
+        last_event[key] = ev
+        last_in_time[key] = _alarm_time(a) if ev == "in" else None
+
+    inside: list[tuple[datetime, str]] = []
+    for key, ev in last_event.items():
+        if ev != "in":
+            continue
+        t = last_in_time.get(key)
+        if t is not None and (now - t) > _YARD_STATE_MAX_AGE:
+            log.debug(
+                "yard-state: ignoring stale 'in' for %s at %s",
+                key, t,
+            )
+            continue
+        inside.append((t or datetime.min.replace(tzinfo=timezone.utc), key))
+
+    if not inside:
+        return None
+
+    inside.sort(key=lambda x: x[0], reverse=True)
+    _, chosen_key = inside[0]
+    spec = next(s for s in _YARD_FENCES if s["key"] == chosen_key)
+    t = last_in_time.get(chosen_key)
+    return {
+        "key":       chosen_key,
+        "label":     spec["label"],
+        "name":      spec["fence_name"],
+        "radius_km": None,
+        "source":    "alarm",
+        "since":     t.isoformat() if t else None,
+    }
 
 
 def _refresh_yard_state(imeis: list[str], yard_facilities: list[dict]) -> dict[str, dict | None]:
@@ -727,187 +753,7 @@ def _schedule_rescan(imei: str, lat, lng):
         target=_scan_one_truck_deduped,
         args=(imei, lat, lng), daemon=True,
     ).start()
-
-
-# ---------------------------------------------------------------------------
-# Webhook ingest — the real-time path
-# ---------------------------------------------------------------------------
-
-# Alarm type IDs from jimi.push.device.alarm. Keep the mapping small and
-# focused on what the Live view actually consumes.
-_ALARM_OVERSPEED       = {"6"}
-_ALARM_IGNITION        = {"1001", "1002"}
-_ALARM_IDLE            = {"1004", "1005"}
-_ALARM_FENCE_IN        = {"1006", "4"}
-_ALARM_FENCE_OUT       = {"1007", "5"}
-
-# Fence names that identify the corridor endpoints. Matches the same names
-# used by _derive_event_state so the push path and the poll path agree.
-_CORRIDOR_FENCE_HEADING_TO_TAKORADI = {"GBC EXITED", "GBC EXIT", "HAULAGE TRUCKS EXIT"}
-_CORRIDOR_FENCE_HEADING_TO_AWASO    = {"TAKORADI ENTRY", "GBC TAKORADI", "GBC TAKORADI 2"}
-
-
-def _push_alarm_time(data: dict) -> datetime | None:
-    """Webhook payloads use `alarmTime` (epoch ms) or `gpsTime`; accept both."""
-    for key in ("alarmTime", "gpsTime"):
-        raw = data.get(key)
-        if raw is None:
-            continue
-        try:
-            if isinstance(raw, (int, float)) or (isinstance(raw, str) and raw.isdigit()):
-                ms = int(raw)
-                # Tracksolid sends ms; guard against accidental seconds.
-                if ms < 10**12:
-                    ms *= 1000
-                return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
-        except (TypeError, ValueError, OSError):
-            continue
-    ts = data.get("alertTime")  # fallback: same format as API list
-    if ts:
-        try:
-            return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-        except ValueError:
-            pass
-    return None
-
-
-def _push_fence_name(data: dict) -> str:
-    """Extract the fence name from the push payload's alarmTypeName."""
-    raw = (data.get("alarmTypeName") or "").strip()
-    m = _FENCE_SUFFIX_RE.search(raw)
-    return (m.group(1).strip() if m else raw).upper()
-
-
-def _push_alarm_type(data: dict) -> str:
-    for key in ("alarmType", "alertTypeId"):
-        v = data.get(key)
-        if v is not None:
-            return str(v).strip()
-    return ""
-
-
-def _update_corridor_cache_from_push(imei: str, data: dict) -> bool:
-    """Update _corridor_cache from a single webhook alarm event.
-
-    Returns True if the cache was touched.
-    """
-    fence = _push_fence_name(data)
-    alarm_type = _push_alarm_type(data)
-    if not fence and not alarm_type:
-        return False
-
-    # Geofence in/out on the corridor endpoints.
-    new_state: str | None = None
-    if fence in _CORRIDOR_FENCE_HEADING_TO_TAKORADI and alarm_type in _ALARM_FENCE_OUT:
-        new_state = "heading_to_takoradi"
-    elif fence in _CORRIDOR_FENCE_HEADING_TO_AWASO and alarm_type in _ALARM_FENCE_OUT:
-        new_state = "heading_to_awaso"
-
-    lat = data.get("lat")
-    lng = data.get("lng")
-    try:
-        lat = float(lat) if lat is not None else None
-        lng = float(lng) if lng is not None else None
-    except (TypeError, ValueError):
-        lat = lng = None
-
-    if new_state is None:
-        # Nothing we know how to translate — don't touch the cache.
-        return False
-
-    now = datetime.now(timezone.utc)
-    with _corridor_cache_lock:
-        entry = _corridor_cache.get(imei) or {}
-        entry["last_event_state"] = new_state
-        entry["scanned_at"] = now
-        if lat is not None and lng is not None:
-            entry["scanned_lat"] = lat
-            entry["scanned_lng"] = lng
-        _corridor_cache[imei] = entry
-    log.info("webhook: corridor state for %s → %s", imei, new_state)
-    return True
-
-
-def _update_yard_cache_from_push(imei: str, data: dict) -> bool:
-    """Update _yard_state_cache from a single webhook alarm event.
-
-    Returns True if the cache was touched.
-    """
-    fence = _push_fence_name(data).upper()
-    key = _YARD_KEY_BY_NAME.get(fence)
-    if key is None:
-        return False
-
-    alarm_type = _push_alarm_type(data)
-    if alarm_type in _ALARM_FENCE_IN:
-        event = "in"
-    elif alarm_type in _ALARM_FENCE_OUT:
-        event = "out"
-    else:
-        return False
-
-    now = datetime.now(timezone.utc)
-    if event == "in":
-        t = _push_alarm_time(data) or now
-        spec = next(s for s in _YARD_FENCES if s["key"] == key)
-        payload = {
-            "key":       key,
-            "label":     spec["label"],
-            "name":      spec["fence_name"],
-            "radius_km": None,
-            "source":    "webhook",
-            "since":     t.isoformat(),
-        }
-    else:
-        # Truck left the yard: clear the yard state.
-        payload = None
-
-    with _yard_state_lock:
-        _yard_state_cache[imei] = {
-            "state": payload,
-            "expires_at": time.time() + _YARD_STATE_TTL_SEC,
-        }
-    log.info("webhook: yard state for %s (%s) → %s",
-             imei, key, "in" if event == "in" else "out")
-    return True
-
-
-def ingest_alarm_push(payload: dict) -> bool:
-    """Entry point for /webhook/jimi.
-
-    Accepts the full push envelope. Returns True if the payload touched
-    at least one cache, False otherwise (so the route can answer the
-    portal accordingly). Payload shapes vary slightly across Tracksolid
-    deployments, so we accept both {'data': {...}} and a bare dict.
-    """
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        data = payload if isinstance(payload, dict) else {}
-
-    imei = (data.get("imei") or "").strip()
-    if not imei:
-        log.debug("webhook: no imei in payload; ignoring")
-        return False
-
-    touched = False
-    try:
-        if _update_corridor_cache_from_push(imei, data):
-            touched = True
-    except Exception:
-        log.exception("webhook: corridor cache update failed for %s", imei)
-
-    try:
-        if _update_yard_cache_from_push(imei, data):
-            touched = True
-    except Exception:
-        log.exception("webhook: yard cache update failed for %s", imei)
-
-    if not touched:
-        log.debug("webhook: payload for %s not actionable", imei)
-    return touched
-
-
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
 # Fleet state
 # ---------------------------------------------------------------------------
 
@@ -919,19 +765,49 @@ def _resolve_yard_membership(
     *,
     alarm_state: dict | None,
     gps_yard: dict | None,
-    gps_fresh: bool,
+    gps_membership_ok: bool,
+    gps_time: datetime | None = None,
 ) -> dict | None:
-    if gps_fresh:
-        if gps_yard is not None:
-            return {
-                "key":       gps_yard["key"],
-                "label":     gps_yard["label"],
-                "name":      gps_yard["fence_name"],
-                "radius_km": gps_yard.get("radius_km"),
-                "source":    "gps",
-            }
-        return None
-    return alarm_state
+    """Decide whether a truck is inside a yard fence right now.
+
+    The GPS branch is the authoritative one when `gps_membership_ok` is
+    True (fresh fix, or a parked truck with an older fix). This handles
+    the case where our app's fence polygon is *larger* than Tracksolid's
+    own geofence: the truck is physically parked inside our polygon but
+    Tracksolid never fired an 'in' alarm, so the alarm state is null.
+    GPS rescues it.
+
+    The alarm branch still wins when the alarm's `since` is NEWER than
+    the GPS fix — e.g. the truck just crossed into the fence after the
+    last GPS report, and Tracksolid fired a fresh `in` before the next
+    GPS sample arrived.
+    """
+    alarm_time = None
+    if alarm_state and alarm_state.get("since"):
+        try:
+            alarm_time = datetime.fromisoformat(alarm_state["since"])
+        except (ValueError, TypeError):
+            alarm_time = None
+
+    alarm_wins = (
+        alarm_state is not None
+        and (alarm_time is not None)
+        and (gps_time is None or alarm_time > gps_time)
+    )
+
+    if alarm_wins:
+        return alarm_state
+    if gps_membership_ok and gps_yard is not None:
+        return {
+            "key":       gps_yard["key"],
+            "label":     gps_yard["label"],
+            "name":      gps_yard["fence_name"],
+            "radius_km": gps_yard.get("radius_km"),
+            "source":    "gps",
+        }
+    if alarm_state is not None:
+        return alarm_state
+    return None
 
 
 def get_fleet_state(
@@ -1056,6 +932,19 @@ def get_fleet_state(
         gps_fresh = (gps_time is not None
                      and (now_dt - gps_time) <= _YARD_GPS_TRUST_AGE)
 
+        # Yard membership uses a *wider* freshness window for parked
+        # trucks. A moving truck must have a fresh fix; a parked truck's
+        # older fix is still authoritative for "which polygon is it
+        # inside?". See the module docstring for why.
+        gps_membership_ok = (
+            gps_time is not None
+            and (
+                (now_dt - gps_time) <= _YARD_GPS_TRUST_AGE
+                or (speed < MOVING_KPH
+                    and (now_dt - gps_time) <= _YARD_GPS_MEMBERSHIP_AGE)
+            )
+        )
+
         with _corridor_cache_lock:
             cache_entry = _corridor_cache.get(imei)
 
@@ -1079,9 +968,20 @@ def get_fleet_state(
         inside = (_inside_facility(lat, lng, corridor_facilities)
                   if lat is not None and lng is not None else None)
 
+        # A heading is only meaningful when we KNOW the truck is moving
+        # *now* — i.e. the GPS fix is fresh AND speed is above the
+        # threshold. A 20-min-old fix from a truck that has since parked
+        # must not be trusted for direction; it will point at wherever
+        # the truck happened to be facing when it last reported.
+        moving_now = (
+            speed > MOVING_KPH
+            and heading is not None
+            and gps_fresh
+        )
+
         if inside is not None:
             direction = f"at_{inside['kind']}"
-        elif speed > MOVING_KPH and heading is not None:
+        elif moving_now:
             if heading >= _DIR_WEST_MIN or heading <= _DIR_EAST_MIN:
                 direction = "heading_to_awaso"
             elif _DIR_SOUTH_MIN <= heading <= _DIR_SOUTH_MAX:
@@ -1091,6 +991,9 @@ def get_fleet_state(
             else:
                 direction = "unknown"
         else:
+            # Not inside a facility and not demonstrably moving → do not
+            # invent a heading. Prefer the last corridor alarm state, else
+            # "unknown".
             direction = last_event_state or "unknown"
 
         motion = _motion_state(speed, gps_time, now_dt)
@@ -1100,7 +1003,8 @@ def get_fleet_state(
         fence_payload = _resolve_yard_membership(
             alarm_state=yard_state.get(imei),
             gps_yard=gps_yard,
-            gps_fresh=gps_fresh,
+            gps_membership_ok=gps_membership_ok,
+            gps_time=gps_time,
         )
 
         out.append({
@@ -1122,8 +1026,6 @@ def get_fleet_state(
 
     diagnostics["reason"] = "fetched"
     return out, _scan_in_progress.is_set(), False, diagnostics
-
-
 def summarise(states: list[dict]) -> dict:
     counts = {
         "heading_to_takoradi": 0, "heading_to_awaso": 0,
@@ -1261,4 +1163,4 @@ def delete_fence(row_id: str) -> bool:
     )
     deleted = len(resp.data or []) > 0
     invalidate_facilities_cache()
-    return deleted
+    return deletedy
