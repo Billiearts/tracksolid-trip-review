@@ -320,3 +320,58 @@ def delete_user(user_id: str, soft: bool = False) -> None:
         client.auth.admin.delete_user(user_id, should_soft_delete=soft)
     except Exception as exc:
         raise AuthError(_clean(exc)) from exc
+
+
+# --- password reset --------------------------------------------------------
+
+def send_password_reset(email: str, redirect_to: str | None = None) -> None:
+    """Ask Supabase to email a password-reset link.
+
+    We deliberately do NOT raise on unknown emails — the caller should show
+    a generic success message either way to avoid leaking which addresses
+    are registered.
+    """
+    client = anon_client()
+    options: dict = {}
+    if redirect_to:
+        options["redirect_to"] = redirect_to
+    try:
+        client.auth.reset_password_for_email(email, options or None)
+    except Exception as exc:
+        # Log it, but don't reveal to the user whether the email exists.
+        log.warning("reset_password_for_email failed for %s: %s", email, exc)
+
+
+def update_password_with_token(access_token: str, new_password: str) -> None:
+    """Complete a reset.
+
+    Strategy: use the recovery access token to resolve the user via the
+    admin API, then set the new password with the service-role client.
+    This works across Supabase SDK versions and both implicit + PKCE flows
+    (the frontend exchanges the PKCE code and hands us the access_token).
+    """
+    if not access_token:
+        raise AuthError("Missing reset token.")
+    if not new_password or len(new_password) < 8:
+        raise AuthError("Password must be at least 8 characters.")
+
+    admin = admin_client()
+
+    # Resolve the user behind the recovery token.
+    try:
+        user_resp = admin.auth.get_user(access_token)
+    except Exception as exc:
+        log.warning("get_user(recovery token) failed: %s", exc)
+        raise AuthError("This reset link is invalid or has expired.") from exc
+
+    user = getattr(user_resp, "user", None)
+    if user is None or not getattr(user, "id", None):
+        raise AuthError("This reset link is invalid or has expired.")
+
+    # Set the new password.
+    try:
+        admin.auth.admin.update_user_by_id(
+            user.id, {"password": new_password}
+        )
+    except Exception as exc:
+        raise AuthError(_clean(exc)) from exc
