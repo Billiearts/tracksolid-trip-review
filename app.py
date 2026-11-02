@@ -1103,14 +1103,23 @@ def download(filename):
     )
     abort(404)
 @app.context_processor
-def _inject_alert_count():
+def _inject_nav_context():
+    """Values the base template's nav needs on every page."""
+    ctx = {
+        "nav_unacked_alerts": 0,
+        "nav_pending_jobs":   0,
+    }
+    if not session.get("user_id"):
+        return ctx
     try:
         if session.get("role") == "admin":
             from services.audit import unacked_alert_count
-            return {"nav_unacked_alerts": unacked_alert_count()}
+            ctx["nav_unacked_alerts"] = unacked_alert_count()
+        from services import jobs as jobs_svc
+        ctx["nav_pending_jobs"] = jobs_svc.count_pending(session.get("user_id"))
     except Exception:
         pass
-    return {"nav_unacked_alerts": 0}
+    return ctx
 
 if __name__ == "__main__":
     app.run(debug=FLASK_DEBUG, host="127.0.0.1", port=5000)

@@ -131,3 +131,15 @@ def get_report_owner(filename: str) -> str | None:
 
 def all_jobs_sorted() -> list[dict]:
     return all_jobs_sorted_for(user_id=None, show_all=True)
+
+def count_pending(user_id: str | None) -> int:
+    """Number of queued/running jobs for a user (all jobs for admins is
+    handled by passing user_id=None and relying on show_all)."""
+    try:
+        rows = reports_repo.list_for(user_id, show_all=(user_id is None))
+        return sum(
+            1 for r in rows
+            if r.get("status") in ("queued", "running")
+        )
+    except Exception:
+        return 0
