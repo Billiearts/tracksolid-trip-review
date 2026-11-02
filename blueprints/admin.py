@@ -27,7 +27,6 @@ _EXTRA_ROLE_KEYS = {
     "extra_live_fleet_view": "live_fleet_view",
 }
 
-
 @bp.route("/")
 @admin_required
 def index():
