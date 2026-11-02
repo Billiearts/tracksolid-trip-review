@@ -22,6 +22,7 @@ from report import (
     utc_str, find_trips,
 )
 from services.devices import classify_device, find_device, get_devices
+from services import audit
 from services import jobs
 from services import reports_repo
 from services import sessions as sessions_svc
@@ -30,6 +31,7 @@ from services.previews import (
     store_preview, get_preview, mark_ready_reports, mark_failed,
 )
 from services.ratelimit import status as ratelimit_status
+from services.audit_middleware import register_audit_middleware
 
 
 logging.basicConfig(
@@ -56,8 +58,8 @@ from blueprints.live_fleet import bp as live_fleet_bp
 
 app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
-app.register_blueprint(live_fleet_bp) 
-
+app.register_blueprint(live_fleet_bp)
+register_audit_middleware(app)
 
 # --- startup maintenance --------------------------------------------------
 try:
@@ -421,6 +423,22 @@ def trips_list():
         flash("Dates must be 'YYYY-MM-DD HH:MM:SS'.", "error")
         return redirect(url_for("index"))
 
+    audit.record(
+        "search.trips",
+        target=", ".join(t.get("name") or t["imei"] for t in trucks)[:200],
+        detail=(
+            f"trucks={len(trucks)}, "
+            f"begin={begin_s}, end={end_s}, "
+            f"include_history={include_history}"
+        ),
+        meta={
+            "truck_count":     len(trucks),
+            "include_history": include_history,
+            "begin":           begin_s,
+            "end":             end_s,
+        },
+    )
+
     resolved = []
     not_found = []
     for t in trucks:
@@ -481,8 +499,6 @@ def trips_list():
         include_history=include_history,
         max_per_truck=MAX_TRIPS_PER_TRUCK,
     )
-
-
 @app.route("/preview", methods=["POST"])
 @login_required
 def preview_start():
@@ -643,6 +659,23 @@ def export():
                                 trip=trip_index))
 
     executor.submit(_run_export, job_id, computed, out_path, manual)
+
+    audit.record(
+        "report.export",
+        target=computed["truck_id"],
+        detail=(
+            f"filename={filename}, "
+            f"trip_index={trip_index}, "
+            f"trip_start={utc_str(computed['trip_start']) if computed['trip_start'] else ''}"
+        ),
+        meta={
+            "job_id":     job_id,
+            "filename":   filename,
+            "trip_index": trip_index,
+            "imei":       computed["imei"],
+        },
+    )
+
     flash(
         f"Export queued for {computed['truck_id']} "
         f"(trip {trip_index + 1} of {len(reports)}). "
@@ -735,6 +768,32 @@ def export_bulk():
     executor.submit(_run_bulk_export, job_id, reports, out_path, per_trip_manual)
 
     truck_count = len({r["truck_id"] for r in reports})
+    audit.record_diff(
+        "report.export_bulk",
+        target=bulk_label,
+        before=None,
+        after={
+            "filename":    filename,
+            "scope":       scope,
+            "trip_count":  len(reports),
+            "truck_count": truck_count,
+            "job_id":      job_id,
+            "truck_ids":   _unique_trucks_from_reports(reports),
+        },
+        detail=(
+            f"filename={filename}, scope={scope}, "
+            f"trips={len(reports)}, trucks={truck_count}"
+        ),
+        meta={
+            "job_id":      job_id,
+            "filename":    filename,
+            "scope":       scope,
+            "trip_count":  len(reports),
+            "truck_count": truck_count,
+        },
+        tags=["export", "bulk"],
+    )
+
     flash(
         f"Bulk export queued: {len(reports)} trip(s) across "
         f"{truck_count} truck(s). Download from the Reports page.",
@@ -794,6 +853,17 @@ def report_view(report_id):
         current_manual = existing_manual.get(str(current_index), {})
     else:
         current_manual = existing_manual
+
+    # Audit: only record a "view" for the first trip of the report so
+    # paging through a bulk report doesn't spam the log.
+    if current_index == 0:
+        audit.record(
+            "report.view",
+            target=row.get("truck_id") or report_id,
+            detail=f"filename={row.get('filename')}, bulk={is_bulk}, "
+                   f"trips={len(reports)}",
+            meta={"report_id": report_id, "is_bulk": is_bulk},
+        )
 
     return render_template(
         "preview.html",
@@ -900,6 +970,31 @@ def report_edit_meta(report_id):
         except Exception:
             log.exception("storage mirror failed for %s", out_path.name)
 
+        # Capture before/after for the specific trip being edited.
+        if is_bulk:
+            before_manual = (row.get("manual_json") or {}).get(
+                str(trip_index), {}
+            ) if isinstance(row.get("manual_json"), dict) else {}
+            after_manual  = per_trip_manual.get(str(trip_index), {})
+        else:
+            before_manual = row.get("manual_json") or {}
+            after_manual  = merged_manual
+
+        audit.record_diff(
+            "report.edit_meta",
+            target=row.get("truck_id") or report_id,
+            before={"manual": before_manual},
+            after={"manual": after_manual},
+            detail=(
+                f"filename={filename}, trip_index={trip_index}, bulk={is_bulk}"
+            ),
+            meta={
+                "report_id":  report_id,
+                "trip_index": trip_index,
+                "is_bulk":    is_bulk,
+            },
+        )
+
         if is_bulk:
             flash(
                 f"Trip {trip_index + 1} ({computed['truck_id']}) updated; "
@@ -954,6 +1049,19 @@ def download(filename):
 
     if local_path.exists():
         log.info("download: serving %s from local disk", filename)
+        audit.record(
+            "report.download",
+            target=filename,
+            detail=f"source=local, size={local_path.stat().st_size} bytes",
+            meta={
+                "filename": filename,
+                "source":   "local",
+                "size":     local_path.stat().st_size,
+            },
+            severity="info",
+            outcome="success",
+            tags=["download"],
+        )
         return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
     log.info("download: %s missing on disk; trying Supabase Storage", filename)
@@ -966,6 +1074,20 @@ def download(filename):
 
     if ok:
         log.info("download: serving %s from storage fallback", filename)
+        size = local_path.stat().st_size if local_path.exists() else None
+        audit.record(
+            "report.download",
+            target=filename,
+            detail=f"source=storage, size={size} bytes",
+            meta={
+                "filename": filename,
+                "source":   "storage",
+                "size":     size,
+            },
+            severity="info",
+            outcome="success",
+            tags=["download"],
+        )
         return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
     log.warning(
@@ -974,8 +1096,21 @@ def download(filename):
         "original upload succeeded (search the logs for 'NOT mirrored').",
         filename,
     )
+    audit.record(
+        "report.download_failed",
+        target=filename,
+        detail="not on disk and not in storage",
+    )
     abort(404)
-
+@app.context_processor
+def _inject_alert_count():
+    try:
+        if session.get("role") == "admin":
+            from services.audit import unacked_alert_count
+            return {"nav_unacked_alerts": unacked_alert_count()}
+    except Exception:
+        pass
+    return {"nav_unacked_alerts": 0}
 
 if __name__ == "__main__":
     app.run(debug=FLASK_DEBUG, host="127.0.0.1", port=5000)

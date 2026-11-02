@@ -555,6 +555,7 @@
     window.__API_PROBE__    = {{ (api_probe_url or '') | tojson }};
     window.__API_SEED__     = {{ (api_seed_url or '') | tojson }};
     window.__API_SAVE_FENCES__ = {{ (api_save_fences_url or '') | tojson }};
+    window.__API_HEARTBEAT__   = {{ (api_heartbeat_url or '') | tojson }};
   </script>
   <script>
     (function () {
@@ -582,6 +583,7 @@
       const API_PROBE      = window.__API_PROBE__ || '';
       const API_SEED       = window.__API_SEED__ || '';
       const API_SAVE_FENCES= window.__API_SAVE_FENCES__ || '';
+      const API_HEARTBEAT  = window.__API_HEARTBEAT__ || '';
       const IS_ADMIN       = !!window.__IS_ADMIN__;
 
       const LABELS = {
@@ -1220,6 +1222,37 @@
       } else if (scanBtn) {
         scanBtn.hidden = true;
       }
+
+      // ---------- viewer heartbeat ----------
+      //
+      // Sent every 20 s while the tab is visible. The server's fleet
+      // endpoint also records a heartbeat on each fleet call, so this is
+      // only needed to keep the "one shared cache" alive between polls
+      // when the tab is visible but idle. Fire-and-forget.
+      function sendHeartbeat() {
+        if (!API_HEARTBEAT) return;
+        if (document.visibilityState !== 'visible') return;
+        try {
+          fetch(API_HEARTBEAT, {
+            method: 'POST',
+            credentials: 'same-origin',
+            keepalive: true,
+          }).catch(function () {});
+        } catch (e) { /* ignore */ }
+      }
+      sendHeartbeat();
+      setInterval(sendHeartbeat, 20000);
+
+      // On tab visibility change, refresh immediately and re-register a
+      // heartbeat. When the tab is hidden, the heartbeat stops, so after
+      // 60 s the server falls back to "no active viewers" and stops
+      // making Tracksolid calls. The next visibility change wakes it up.
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') {
+          sendHeartbeat();
+          fetchStates(false);
+        }
+      });
 
       // Initial fetch — this is the "show" moment for non-admins (cached snapshot).
       fetchStates(false);

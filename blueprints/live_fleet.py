@@ -9,6 +9,15 @@ Scanning is GLOBAL:
     the global pause is on.
   - Only admins can toggle the pause via POST /live/api/scan.
   - While paused, everyone sees the same frozen snapshot.
+
+Viewer presence:
+  - GET /live/api/fleet and POST /live/api/heartbeat both record a
+    heartbeat for the calling session. When no heartbeat has arrived in
+    _VIEWER_TTL_SEC (60 s), get_fleet_state() returns the cached snapshot
+    instead of calling Tracksolid, regardless of the admin pause state.
+  - The front-end calls /live/api/heartbeat every 20 s while the tab is
+    visible. This keeps the "one shared cache" alive without polling the
+    full fleet endpoint more often than necessary.
 """
 from __future__ import annotations
 
@@ -20,10 +29,12 @@ from flask import (
 )
 
 from decorators import has_role
+from services import audit
 from services.live_fleet import (
     get_fleet_state, summarise, _load_facilities_diagnostic,
     save_fences, delete_fence, seed_default_fences,
     is_scanning, set_scanning, paused_since,
+    heartbeat, viewer_count, forget_session as _forget_viewer,
 )
 
 
@@ -75,7 +86,23 @@ def index():
         api_probe_url=_safe_url("live_fleet.api_probe"),
         api_seed_url=_safe_url("live_fleet.api_seed_defaults"),
         api_save_fences_url=_safe_url("live_fleet.api_save_fences"),
+        api_heartbeat_url=_safe_url("live_fleet.api_heartbeat"),
     )
+
+
+@bp.route("/api/heartbeat", methods=["POST"])
+@has_role("live_fleet_view")
+def api_heartbeat():
+    """Lightweight presence ping. The front-end sends this every 20 s while
+    the tab is visible, so the fleet endpoint can skip Tracksolid calls
+    when nobody is watching."""
+    sid = session.get("session_id", "")
+    heartbeat(sid)
+    return jsonify({
+        "ok":           True,
+        "viewer_count": viewer_count(),
+        "scanning":     is_scanning(),
+    })
 
 
 @bp.route("/api/fleet")
@@ -87,6 +114,10 @@ def api_fleet():
             "error": "rate_limited",
             "retry_in_sec": _RATE_LIMIT_WINDOW,
         }), 429
+
+    # Every fleet call also registers a heartbeat, so a viewer who keeps
+    # the tab open never has to wait for the heartbeat endpoint.
+    heartbeat(sid)
 
     scanning_allowed = _scan_allowed_for_this_session()
     force = (request.args.get("refresh") == "1") and scanning_allowed
@@ -136,6 +167,10 @@ def api_scan():
         "live_fleet: admin %s set global scanning=%s",
         session.get("email"), action == "start",
     )
+    audit.record(
+        "live.scan_start" if action == "start" else "live.scan_stop",
+        detail=f"global scanning {'enabled' if action == 'start' else 'disabled'}",
+    )
     return jsonify({
         "scanning": is_scanning(),
         "paused":   not is_scanning(),
@@ -162,6 +197,11 @@ def api_probe():
         result = r.get("result") or r.get("data") or []
         if isinstance(result, dict):
             result = result.get("list") or []
+        audit.record(
+            "live.probe",
+            detail=f"devices={len(devices)}, sample={imei}, "
+                   f"location_returned={bool(result)}",
+        )
         return jsonify({
             "ok": True,
             "device_count": len(devices),
@@ -170,6 +210,10 @@ def api_probe():
         })
     except Exception as exc:
         log.exception("live_fleet probe failed")
+        audit.record(
+            "live.probe",
+            detail=f"failed: {type(exc).__name__}: {exc}",
+        )
         return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 200
 
 
@@ -183,6 +227,11 @@ def api_seed_defaults():
     except Exception as exc:
         log.exception("seed_default_fences failed")
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+    audit.record(
+        "live.seed_defaults",
+        detail=f"inserted={result.get('inserted')}, skipped={result.get('skipped')}",
+        meta=result,
+    )
     corridor, yards, _err = _load_facilities_diagnostic()
     return jsonify({
         **result,
@@ -214,6 +263,58 @@ def api_save_fences():
     except Exception as exc:
         log.exception("save_fences failed")
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+    # Capture per-fence before/after for the audit trail.
+    names = [f.get("name") or f.get("key") or "?" for f in payload
+             if isinstance(f, dict)]
+
+    # Look up the current rows so the diff is real.
+    before_by_id: dict = {}
+    before_by_name: dict = {}
+    try:
+        current = (admin_client().table("fence_polygons")
+                   .select("id,name,kind,shape,lat,lng,radius_km,polygon")
+                   .execute().data or [])
+        for row in current:
+            if row.get("id"):
+                before_by_id[row["id"]] = row
+            if row.get("name"):
+                before_by_name[row["name"]] = row
+    except Exception as exc:
+        log.warning("fence before-snapshot failed: %s", exc)
+
+    before_fences = []
+    after_fences = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        row_id = item.get("id")
+        name   = item.get("name") or item.get("key")
+        before_row = before_by_id.get(row_id) if row_id else before_by_name.get(name)
+        before_fences.append(before_row or {"_new": True, "name": name})
+        after_fences.append({
+            "id":         row_id,
+            "name":       name,
+            "kind":       item.get("kind"),
+            "shape":      item.get("shape"),
+            "lat":        item.get("lat"),
+            "lng":        item.get("lng"),
+            "radius_km":  item.get("radius_km"),
+            "polygon":    item.get("polygon"),
+        })
+
+    audit.record_diff(
+        "live.fence_save",
+        before={"fences": before_fences},
+        after={"fences": after_fences},
+        detail=f"saved={result.get('saved')} fence(s): {', '.join(names)[:400]}",
+        meta={
+            "saved": result.get("saved"),
+            "names": names,
+        },
+        severity="warning" if result.get("saved", 0) >= 6 else "notice",
+        tags=["fence"],
+    )
     return jsonify(result)
 
 
@@ -230,5 +331,10 @@ def api_delete_fence(row_id):
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
     if not ok:
         return jsonify({"error": "not found"}), 404
+    audit.record(
+        "live.fence_delete",
+        target=row_id,
+        detail="fence deleted",
+    )
     corridor, yards, _err = _load_facilities_diagnostic()
     return jsonify({"deleted": row_id, "yards": yards, "corridor": corridor})

@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block body_class %}wide{% endblock %}
+
+{% block heading %}Admin — alerts{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem;">
+      <h2 style="font-size: 1.1rem; margin: 0;">
+        Alerts
+        {% if unacked_count %}
+          <span style="font-size: 0.75rem; color: #a02525; font-weight: 400;">
+            ({{ unacked_count }} unacknowledged)
+          </span>
+        {% endif %}
+      </h2>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <a class="btn-edit" href="{{ url_for('admin.alerts', unacked='1' if not only_unacked else '') }}">
+          {% if only_unacked %}Show all{% else %}Show unacked only{% endif %}
+        </a>
+        <a class="btn-edit" href="{{ url_for('admin.audit') }}">← Audit trail</a>
+      </div>
+    </div>
+
+    <div class="table-scroll">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>When (UTC)</th>
+            <th>Severity</th>
+            <th>Rule</th>
+            <th>Message</th>
+            <th>Actor</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in result.rows %}
+            <tr>
+              <td style="white-space: nowrap; font-variant-numeric: tabular-nums;">
+                {{ a.created_at.strftime('%Y-%m-%d %H:%M:%S') if a.created_at else '' }}
+              </td>
+              <td>
+                <span class="sev sev-{{ 'critical' if a.severity == 'critical' else ('warning' if a.severity == 'warning' else 'info') }}">
+                  {{ a.severity }}
+                </span>
+              </td>
+              <td><code style="font-size: 0.8rem;">{{ a.rule }}</code></td>
+              <td>{{ a.message }}</td>
+              <td>{{ a.actor_email or '—' }}</td>
+              <td>
+                {% if a.acknowledged %}
+                  <span style="color: #256b2a; font-size: 0.8rem;">acknowledged</span>
+                {% else %}
+                  <span style="color: #a02525; font-size: 0.8rem;">open</span>
+                {% endif %}
+              </td>
+              <td style="text-align: right; white-space: nowrap;">
+                {% if not a.acknowledged %}
+                  <form method="post"
+                        action="{{ url_for('admin.alert_ack', alert_id=a.id) }}"
+                        style="display: inline;">
+                    <button type="submit" class="btn-edit">Acknowledge</button>
+                  </form>
+                {% endif %}
+                {% if a.audit_id %}
+                  <a class="btn-edit" href="{{ url_for('admin.audit', request_id=a.audit_id) }}">Audit</a>
+                {% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="7" class="muted">No alerts. Everything is quiet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="pagination">
+      {% if result.page > 1 %}
+        <a class="btn-edit" style="text-decoration: none;"
+           href="{{ url_for('admin.alerts', page=result.page-1, unacked='1' if only_unacked else '') }}">← Prev</a>
+      {% else %}
+        <button class="btn-edit" disabled>← Prev</button>
+      {% endif %}
+      <span>Page {{ result.page }}</span>
+      {% if result.has_more %}
+        <a class="btn-edit" style="text-decoration: none;"
+           href="{{ url_for('admin.alerts', page=result.page+1, unacked='1' if only_unacked else '') }}">Next →</a>
+      {% else %}
+        <button class="btn-edit" disabled>Next →</button>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

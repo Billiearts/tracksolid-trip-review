@@ -1,0 +1,539 @@
+{% extends "base.html" %}
+
+{% block body_class %}wide{% endblock %}
+
+{% block heading %}Admin — audit trail{% endblock %}
+
+{% block head %}
+<style>
+  /* ---------- audit page layout ---------- */
+  .audit-toolbar {
+    display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-end;
+    margin-bottom: 1rem;
+  }
+  .audit-toolbar .field-inline {
+    flex: 1 1 140px; min-width: 140px;
+  }
+  .audit-toolbar .field-inline label {
+    font-size: 0.72rem; margin-bottom: 0.2rem; color: #666;
+  }
+  .audit-toolbar input,
+  .audit-toolbar select {
+    font-size: 0.85rem; padding: 0.35rem 0.5rem;
+  }
+  .audit-toolbar button {
+    padding: 0.4rem 0.85rem; font-size: 0.85rem;
+  }
+
+  /* ---------- audit table ---------- */
+  .audit-table {
+    width: 100%; border-collapse: collapse; font-size: 0.85rem;
+  }
+  .audit-table th {
+    text-align: left; font-weight: 500; color: #666;
+    padding: 0.4rem 0.6rem 0.4rem 0; border-bottom: 1px solid #eee;
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.03em;
+    white-space: nowrap;
+  }
+  .audit-table td {
+    padding: 0.45rem 0.6rem 0.45rem 0;
+    border-bottom: 1px solid #f0f0f0;
+    vertical-align: top;
+  }
+  .audit-table tr.row-click { cursor: pointer; }
+  .audit-table tr.row-click:hover { background: #f7f9fb; }
+  .audit-table tr.row-critical { background: #fdf1f1; }
+  .audit-table tr.row-critical:hover { background: #fbe6e6; }
+  .audit-table tr.row-warning { background: #fffdf2; }
+
+  .audit-event {
+    display: inline-block; font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.78rem; background: #eef2f6; color: #1e5f9e;
+    padding: 1px 6px; border-radius: 4px; white-space: nowrap;
+  }
+
+  .sev { display: inline-block; font-size: 0.7rem; padding: 1px 6px;
+          border-radius: 8px; text-transform: uppercase; letter-spacing: 0.03em;
+          font-weight: 600; white-space: nowrap; }
+  .sev-debug    { background: #f0f0f0; color: #888; }
+  .sev-info     { background: #e6f0fb; color: #1e5f9e; }
+  .sev-notice   { background: #eaf7ec; color: #256b2a; }
+  .sev-warning  { background: #fff7e6; color: #8a5a00; }
+  .sev-critical { background: #fde7e7; color: #a02525; }
+
+  .outcome { font-size: 0.72rem; padding: 1px 6px; border-radius: 8px; }
+  .outcome-success { background: #eaf7ec; color: #256b2a; }
+  .outcome-failure { background: #fde7e7; color: #a02525; }
+  .outcome-partial { background: #fff7e6; color: #8a5a00; }
+  .outcome-attempt { background: #f0f0f0; color: #666; }
+
+  .audit-redacted-badge {
+    display: inline-block; font-size: 0.68rem; padding: 0 5px;
+    background: #f5e6fb; color: #7a1c8a; border-radius: 6px;
+    margin-left: 0.25rem;
+  }
+
+  /* ---------- drawer ---------- */
+  .audit-drawer-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.35);
+    z-index: 800; display: none;
+  }
+  .audit-drawer-backdrop.open { display: block; }
+
+  .audit-drawer {
+    position: fixed; top: 0; right: 0; bottom: 0;
+    width: min(680px, 92vw);
+    background: #fff; z-index: 810;
+    box-shadow: -8px 0 32px rgba(0,0,0,0.2);
+    transform: translateX(100%); transition: transform 0.2s ease;
+    display: flex; flex-direction: column;
+  }
+  .audit-drawer.open { transform: translateX(0); }
+
+  .audit-drawer-head {
+    padding: 0.85rem 1rem; border-bottom: 1px solid #e2e6ea;
+    display: flex; align-items: center; justify-content: space-between;
+    background: #f7f8fa;
+  }
+  .audit-drawer-head h3 { margin: 0; font-size: 0.95rem; color: #1e5f9e; }
+  .audit-drawer-head button.close-btn {
+    background: transparent; border: none; cursor: pointer;
+    font-size: 1.3rem; line-height: 1; color: #666; padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+  }
+  .audit-drawer-head button.close-btn:hover { background: rgba(0,0,0,0.08); }
+
+  .audit-drawer-body {
+    flex: 1 1 auto; overflow-y: auto; padding: 1rem;
+    font-size: 0.85rem;
+  }
+
+  .audit-drawer-body h4 {
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;
+    color: #666; margin: 1rem 0 0.4rem;
+  }
+  .audit-drawer-body h4:first-child { margin-top: 0; }
+
+  .kv { display: grid; grid-template-columns: 120px 1fr; gap: 0.35rem 0.75rem; }
+  .kv .k { color: #666; font-size: 0.8rem; }
+  .kv .v { color: #222; word-break: break-all; font-size: 0.82rem; }
+
+  .pre {
+    background: #f5f7fa; border: 1px solid #e2e6ea; border-radius: 4px;
+    padding: 0.5rem 0.65rem; font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.78rem; white-space: pre-wrap; word-break: break-all;
+    max-height: 260px; overflow-y: auto;
+  }
+
+  .diff-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  .diff-table th {
+    text-align: left; font-size: 0.72rem; color: #666; font-weight: 500;
+    padding: 0.35rem 0.5rem 0.35rem 0; border-bottom: 1px solid #eee;
+    text-transform: uppercase; letter-spacing: 0.03em;
+  }
+  .diff-table td {
+    padding: 0.4rem 0.5rem 0.4rem 0; border-bottom: 1px solid #f0f0f0;
+    vertical-align: top;
+  }
+  .diff-before { color: #a02525; }
+  .diff-after  { color: #256b2a; }
+
+  .correlate-btn {
+    background: #f0f2f5; border: 1px solid #d7dbe0;
+    border-radius: 4px; font-size: 0.75rem;
+    padding: 0.2rem 0.55rem; cursor: pointer; font-family: inherit;
+    color: #333;
+  }
+  .correlate-btn:hover { background: #e2e6eb; color: #1e5f9e; }
+
+  /* ---------- live tail ---------- */
+  .live-tail-btn {
+    background: #2b8a3e; color: #fff;
+    border: none; border-radius: 4px; padding: 0.35rem 0.75rem;
+    font-size: 0.82rem; cursor: pointer;
+  }
+  .live-tail-btn.active { background: #a02525; }
+  .live-tail-btn.active:hover { background: #7a1c1c; }
+
+  /* ---------- alert badge in the nav ---------- */
+  .alert-badge {
+    display: inline-block; background: #a02525; color: #fff;
+    font-size: 0.65rem; padding: 1px 6px; border-radius: 8px;
+    margin-left: 0.2rem; vertical-align: top;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem;">
+      <h2 style="font-size: 1.1rem; margin: 0;">Audit trail</h2>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <a class="btn-edit" href="{{ url_for('admin.alerts') }}">
+          Alerts{% if unacked_alerts %} <span class="alert-badge">{{ unacked_alerts }}</span>{% endif %}
+        </a>
+        <a class="btn-edit" href="{{ url_for('admin.audit_verify') }}">Verify chain</a>
+        <a class="btn-edit" href="{{ url_for('admin.audit_export', format='csv', days=90) }}">Export CSV</a>
+        <a class="btn-edit" href="{{ url_for('admin.audit_export', format='jsonl', days=90) }}">Export JSONL</a>
+        <button type="button" class="live-tail-btn" id="live-tail-btn">Live tail</button>
+        <a href="{{ url_for('admin.index') }}" style="font-size: 0.9rem;">← Users</a>
+      </div>
+    </div>
+
+    <form method="get" class="audit-toolbar">
+      <div class="field-inline">
+        <label>Event</label>
+        <select name="event">
+          <option value="">All</option>
+          {% for e in events %}
+            <option value="{{ e }}" {% if e == f_event %}selected{% endif %}>{{ e }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field-inline">
+        <label>Severity</label>
+        <select name="severity">
+          <option value="">All</option>
+          {% for s in severities %}
+            <option value="{{ s }}" {% if s == f_severity %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field-inline">
+        <label>Outcome</label>
+        <select name="outcome">
+          <option value="">All</option>
+          <option value="success" {% if f_outcome == 'success' %}selected{% endif %}>success</option>
+          <option value="failure" {% if f_outcome == 'failure' %}selected{% endif %}>failure</option>
+          <option value="partial" {% if f_outcome == 'partial' %}selected{% endif %}>partial</option>
+          <option value="attempt" {% if f_outcome == 'attempt' %}selected{% endif %}>attempt</option>
+        </select>
+      </div>
+      <div class="field-inline">
+        <label>Actor email</label>
+        <input type="text" name="actor" value="{{ f_actor }}" placeholder="contains…">
+      </div>
+      <div class="field-inline">
+        <label>Target</label>
+        <input type="text" name="target" value="{{ f_target }}" placeholder="contains…">
+      </div>
+      <div class="field-inline">
+        <label>Last</label>
+        <select name="days">
+          <option value="">Any</option>
+          <option value="1"  {% if f_days == '1'  %}selected{% endif %}>24 h</option>
+          <option value="7"  {% if f_days == '7'  %}selected{% endif %}>7 d</option>
+          <option value="30" {% if f_days == '30' %}selected{% endif %}>30 d</option>
+          <option value="90" {% if f_days == '90' %}selected{% endif %}>90 d</option>
+        </select>
+      </div>
+      <div class="field-inline">
+        <label>Request id</label>
+        <input type="text" name="request_id" value="{{ f_request_id }}" placeholder="uuid…">
+      </div>
+      <button type="submit">Filter</button>
+      <a href="{{ url_for('admin.audit') }}" class="btn-edit"
+         style="text-decoration:none;">Clear</a>
+    </form>
+
+    <div class="table-scroll">
+      <table class="audit-table" id="audit-table">
+        <thead>
+          <tr>
+            <th>When (UTC)</th>
+            <th>Severity</th>
+            <th>Event</th>
+            <th>Outcome</th>
+            <th>Actor</th>
+            <th>Target</th>
+            <th>Detail</th>
+            <th>Correlate</th>
+          </tr>
+        </thead>
+        <tbody id="audit-body">
+          {% for r in result.rows %}
+            <tr class="row-click row-{{ r.severity }}" data-id="{{ r.id }}"
+                {% if r.request_id %}data-request-id="{{ r.request_id }}"{% endif %}>
+              <td style="white-space: nowrap; font-variant-numeric: tabular-nums;">
+                {{ r.created_at.strftime('%Y-%m-%d %H:%M:%S') if r.created_at else '' }}
+              </td>
+              <td><span class="sev sev-{{ r.severity }}">{{ r.severity }}</span></td>
+              <td><span class="audit-event">{{ r.event }}</span></td>
+              <td><span class="outcome outcome-{{ r.outcome }}">{{ r.outcome }}</span></td>
+              <td>{{ r.actor_email or ('(' + r.actor_id[:8] + '…)' if r.actor_id else '—') }}</td>
+              <td>{{ r.target or '' }}</td>
+              <td style="max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                  title="{{ r.detail }}">
+                {{ r.detail or '' }}{% if r.redacted %}<span class="audit-redacted-badge">redacted</span>{% endif %}
+              </td>
+              <td>
+                {% if r.request_id %}
+                  <button type="button" class="correlate-btn"
+                          data-request-id="{{ r.request_id }}"
+                          title="Show all rows from the same request">
+                    ⋯
+                  </button>
+                {% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="8" class="muted">No audit rows match.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="pagination">
+      {% if result.page > 1 %}
+        <a class="btn-edit" style="text-decoration:none;"
+           href="{{ url_for('admin.audit', page=result.page-1, event=f_event, severity=f_severity, outcome=f_outcome, actor=f_actor, target=f_target, days=f_days, request_id=f_request_id) }}">← Prev</a>
+      {% else %}
+        <button class="btn-edit" disabled>← Prev</button>
+      {% endif %}
+      <span>Page {{ result.page }}</span>
+      {% if result.has_more %}
+        <a class="btn-edit" style="text-decoration:none;"
+           href="{{ url_for('admin.audit', page=result.page+1, event=f_event, severity=f_severity, outcome=f_outcome, actor=f_actor, target=f_target, days=f_days, request_id=f_request_id) }}">Next →</a>
+      {% else %}
+        <button class="btn-edit" disabled>Next →</button>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- drawer -->
+  <div class="audit-drawer-backdrop" id="drawer-backdrop"></div>
+  <aside class="audit-drawer" id="drawer" aria-hidden="true">
+    <div class="audit-drawer-head">
+      <h3 id="drawer-title">Audit row</h3>
+      <button type="button" class="close-btn" id="drawer-close" aria-label="Close">×</button>
+    </div>
+    <div class="audit-drawer-body" id="drawer-body">
+      <p class="muted">Loading…</p>
+    </div>
+  </aside>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const drawer      = document.getElementById('drawer');
+  const backdrop    = document.getElementById('drawer-backdrop');
+  const body        = document.getElementById('drawer-body');
+  const title       = document.getElementById('drawer-title');
+  const closeBtn    = document.getElementById('drawer-close');
+  const liveTailBtn = document.getElementById('live-tail-btn');
+  const tableBody   = document.getElementById('audit-body');
+
+  let liveTimer   = null;
+  let lastTopId   = null;
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  function prettyJson(obj) {
+    if (obj == null) return '<em>none</em>';
+    try {
+      return '<div class="pre">' + esc(JSON.stringify(obj, null, 2)) + '</div>';
+    } catch (e) {
+      return '<div class="pre">' + esc(String(obj)) + '</div>';
+    }
+  }
+
+  function renderDiff(diff) {
+    if (!diff || !Object.keys(diff).length) {
+      return '<em>No changes recorded.</em>';
+    }
+    let html = '<table class="diff-table"><thead><tr>' +
+      '<th>Field</th><th>Before</th><th>After</th></tr></thead><tbody>';
+    Object.keys(diff).forEach(function (k) {
+      const d = diff[k] || {};
+      html += '<tr>' +
+        '<td><code>' + esc(k) + '</code></td>' +
+        '<td class="diff-before">' + esc(typeof d.before === 'object'
+          ? JSON.stringify(d.before) : d.before) + '</td>' +
+        '<td class="diff-after">'  + esc(typeof d.after  === 'object'
+          ? JSON.stringify(d.after)  : d.after)  + '</td>' +
+      '</tr>';
+    });
+    return html + '</tbody></table>';
+  }
+
+  function openDrawer() {
+    drawer.classList.add('open');
+    backdrop.classList.add('open');
+    drawer.setAttribute('aria-hidden', 'false');
+  }
+  function closeDrawer() {
+    drawer.classList.remove('open');
+    backdrop.classList.remove('open');
+    drawer.setAttribute('aria-hidden', 'true');
+    body.innerHTML = '<p class="muted">Loading…</p>';
+  }
+
+  closeBtn.addEventListener('click', closeDrawer);
+  backdrop.addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && drawer.classList.contains('open')) closeDrawer();
+  });
+
+  async function loadRow(rowId) {
+    title.textContent = 'Audit row ' + rowId.slice(0, 8) + '…';
+    body.innerHTML = '<p class="muted">Loading…</p>';
+    try {
+      const r = await fetch('/admin/audit/' + encodeURIComponent(rowId));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      renderRowDetail(j);
+    } catch (e) {
+      body.innerHTML = '<p class="muted">Could not load row: ' + esc(e) + '</p>';
+    }
+  }
+
+  function renderRowDetail(j) {
+    const kv = [
+      ['When (UTC)',   j.created_at || ''],
+      ['Event',        j.event || ''],
+      ['Severity',     j.severity || ''],
+      ['Outcome',      j.outcome || ''],
+      ['Actor',        j.actor_email || j.actor_id || '—'],
+      ['Target',       j.target || ''],
+      ['IP',           j.ip || ''],
+      ['User agent',   j.user_agent || ''],
+      ['Route',        j.route || ''],
+      ['Method',       j.method || ''],
+      ['Path',         j.path || ''],
+      ['Status code',  j.status_code == null ? '' : String(j.status_code)],
+      ['Duration',     j.duration_ms == null ? '' : j.duration_ms + ' ms'],
+      ['Request id',   j.request_id || ''],
+      ['Redacted',     j.redacted ? 'yes' : 'no'],
+      ['Tags',         (j.tags || []).join(', ')],
+    ].filter(function (p) { return p[1] !== '' && p[1] != null; });
+
+    let html = '<h4>Summary</h4><div class="kv">';
+    kv.forEach(function (p) {
+      html += '<div class="k">' + esc(p[0]) + '</div>' +
+              '<div class="v">' + esc(p[1]) + '</div>';
+    });
+    html += '</div>';
+
+    if (j.detail) {
+      html += '<h4>Detail</h4><div class="pre">' + esc(j.detail) + '</div>';
+    }
+    if (j.diff && Object.keys(j.diff).length) {
+      html += '<h4>Changes</h4>' + renderDiff(j.diff);
+    }
+    if (j.meta && Object.keys(j.meta).length) {
+      html += '<h4>Meta</h4>' + prettyJson(j.meta);
+    }
+    if (j.before != null) {
+      html += '<h4>Before</h4>' + prettyJson(j.before);
+    }
+    if (j.after != null) {
+      html += '<h4>After</h4>' + prettyJson(j.after);
+    }
+    if (j.request_id) {
+      html += '<h4>Correlated rows</h4>' +
+              '<div id="correlate-block"><em>Loading…</em></div>';
+    }
+    body.innerHTML = html;
+    if (j.request_id) loadCorrelated(j.request_id);
+  }
+
+  async function loadCorrelated(requestId) {
+    const el = document.getElementById('correlate-block');
+    if (!el) return;
+    try {
+      const r = await fetch('/admin/audit/correlate/' + encodeURIComponent(requestId));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      const rows = j.rows || [];
+      if (!rows.length) {
+        el.innerHTML = '<em>No other rows with this request id.</em>';
+        return;
+      }
+      let html = '<table class="diff-table"><thead><tr>' +
+        '<th>When</th><th>Event</th><th>Outcome</th><th>Detail</th></tr></thead><tbody>';
+      rows.forEach(function (row) {
+        html += '<tr>' +
+          '<td style="white-space:nowrap;">' +
+            esc(row.created_at ? String(row.created_at).replace('T', ' ').slice(0, 19) : '') +
+          '</td>' +
+          '<td><span class="audit-event">' + esc(row.event) + '</span></td>' +
+          '<td><span class="outcome outcome-' + esc(row.outcome) + '">' +
+            esc(row.outcome) + '</span></td>' +
+          '<td>' + esc(row.detail || '') + '</td>' +
+        '</tr>';
+      });
+      el.innerHTML = html + '</tbody></table>';
+    } catch (e) {
+      el.innerHTML = '<em>Could not load correlated rows: ' + esc(e) + '</em>';
+    }
+  }
+
+  tableBody.addEventListener('click', function (e) {
+    const btn = e.target.closest('.correlate-btn');
+    if (btn) {
+      e.stopPropagation();
+      const rid = btn.getAttribute('data-request-id');
+      title.textContent = 'Correlated rows';
+      body.innerHTML = '<div id="correlate-block"><p class="muted">Loading…</p></div>';
+      openDrawer();
+      loadCorrelated(rid);
+      return;
+    }
+    const tr = e.target.closest('tr[data-id]');
+    if (!tr) return;
+    openDrawer();
+    loadRow(tr.getAttribute('data-id'));
+  });
+
+  // ---------- live tail ----------
+  async function pollLatest() {
+    if (!liveTimer) return;
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set('page', '1');
+      const r = await fetch(url.toString(), { credentials: 'same-origin' });
+      if (!r.ok) return;
+      const html = await r.text();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      const newBody = doc.getElementById('audit-body');
+      if (!newBody) return;
+      const firstTr = newBody.querySelector('tr[data-id]');
+      const newTopId = firstTr ? firstTr.getAttribute('data-id') : null;
+      if (newTopId && newTopId !== lastTopId) {
+        lastTopId = newTopId;
+        tableBody.innerHTML = newBody.innerHTML;
+        // Brief flash on the new top row.
+        const top = tableBody.querySelector('tr[data-id]');
+        if (top) {
+          top.style.transition = 'background 1s';
+          top.style.background = '#eaf7ec';
+          setTimeout(function () { top.style.background = ''; }, 900);
+        }
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  liveTailBtn.addEventListener('click', function () {
+    if (liveTimer) {
+      clearInterval(liveTimer);
+      liveTimer = null;
+      liveTailBtn.classList.remove('active');
+      liveTailBtn.textContent = 'Live tail';
+      return;
+    }
+    const firstTr = tableBody.querySelector('tr[data-id]');
+    lastTopId = firstTr ? firstTr.getAttribute('data-id') : null;
+    liveTailBtn.classList.add('active');
+    liveTailBtn.textContent = 'Stop tail';
+    liveTimer = setInterval(pollLatest, 5000);
+    pollLatest();
+  });
+})();
+</script>
+{% endblock %}

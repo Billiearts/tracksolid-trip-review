@@ -1,0 +1,1009 @@
+"""
+services/audit.py — advanced audit trail.
+
+Public API (all safe to call from any request context; failures never
+propagate into the audited code path):
+
+    record(event, *, severity='info', outcome='success',
+           target=None, detail=None, meta=None,
+           before=None, after=None, tags=None,
+           user_id=None, email=None,
+           status_code=None, duration_ms=None,
+           request_id=None) -> str | None
+
+    record_diff(event, *, before, after, target=None, ...) -> str | None
+        Convenience wrapper: computes diff_json from before/after and calls
+        record().
+
+    begin_request() -> str
+        Returns a per-request correlation id and installs it in the Flask
+        `g` object. Called by the middleware; callers that want to link
+        follow-up rows just pass the same request_id.
+
+    current_request_id() -> str | None
+
+    verify_chain(limit=10000) -> dict
+        Walk the hash chain from the start, recompute it, report the first
+        mismatch.
+
+    export_rows(...) -> iterator of dicts
+        For the CSV/JSONL export endpoint.
+
+Severity levels:
+    debug    — verbose trace, dropped after 7 days by default
+    info     — routine action (login, download, view)
+    notice   — state-changing but benign (export, edit meta)
+    warning  — suspicious or partially failed (failed login, 403)
+    critical — must look (role escalation, quota exhaust, hash mismatch)
+
+Outcome values:
+    success  — action completed
+    failure  — action was rejected or errored
+    partial  — action completed with caveats (e.g. upload mirror failed)
+    attempt  — action was tried but the result is not yet known
+
+Redaction:
+    Keys matching REDACT_KEYS anywhere in `meta`, `before`, `after`, `detail`
+    are replaced with "[redacted]". The row also gets redacted=true.
+    Matching is case-insensitive substring on the key name.
+
+Hash chain:
+    Every row's `hash` is sha256(prev_hash || canonical_json(row_without_hash)).
+    The chain is seeded from audit_chain_head.last_hash and the head is
+    updated in the same transaction (best-effort; we accept the small
+    window of concurrency we get from the Supabase client).
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import re
+import uuid
+from datetime import datetime, timedelta, timezone
+
+from flask import g, has_request_context, request, session
+
+from services.supabase_client import admin_client
+
+
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+SEVERITY_LEVELS = ("debug", "info", "notice", "warning", "critical")
+OUTCOME_VALUES  = ("success", "failure", "partial", "attempt")
+
+# Keys whose *values* are redacted before insert. Substring match,
+# case-insensitive, applied recursively through dicts and lists.
+REDACT_KEYS = (
+    "password", "passwd", "pwd", "secret", "token",
+    "api_key", "apikey", "authorization", "cookie", "session_id",
+    "signature", "meta_signature",
+)
+
+# Keys we keep even though they contain "token" as a substring — these are
+# the request/response tracking ids that are safe to log.
+REDACT_ALLOWLIST = frozenset({
+    "access_token_present", "token_present",
+})
+
+_MAX_STRING_LEN = 2000
+_MAX_META_BYTES = 32 * 1024   # hard cap; oversized meta is truncated
+_MAX_DETAIL_LEN = 2000
+
+
+# ---------------------------------------------------------------------------
+# Per-process caches
+# ---------------------------------------------------------------------------
+
+_table_ready: bool | None = None
+_chain_lock_ready = False
+
+
+def _client():
+    return admin_client()
+
+
+def _table_ok() -> bool:
+    global _table_ready
+    if _table_ready is not None:
+        return _table_ready
+    try:
+        _client().table("audit_log").select("id").limit(1).execute()
+        _table_ready = True
+    except Exception as exc:
+        log.warning("audit_log table not ready: %s", exc)
+        _table_ready = False
+    return _table_ready
+
+
+# ---------------------------------------------------------------------------
+# Redaction
+# ---------------------------------------------------------------------------
+
+def _is_sensitive(key: str) -> bool:
+    if not key:
+        return False
+    k = key.lower()
+    if k in REDACT_ALLOWLIST:
+        return False
+    return any(s in k for s in REDACT_KEYS)
+
+
+def _redact(obj, *, depth: int = 0):
+    """Recursively redact values of sensitive keys in dicts/lists."""
+    if depth > 12:
+        return "[truncated]"
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if _is_sensitive(str(k)):
+                out[k] = "[redacted]"
+            else:
+                out[k] = _redact(v, depth=depth + 1)
+        return out
+    if isinstance(obj, list):
+        return [_redact(v, depth=depth + 1) for v in obj]
+    if isinstance(obj, str):
+        return _safe(obj, _MAX_STRING_LEN)
+    if isinstance(obj, (int, float, bool)) or obj is None:
+        return obj
+    return _safe(str(obj), _MAX_STRING_LEN)
+
+
+def _redact_any(obj) -> tuple[object, bool]:
+    """Redact and report whether anything was redacted."""
+    redacted_flag = {"hit": False}
+
+    def walk(o, depth=0):
+        if depth > 12:
+            return "[truncated]"
+        if isinstance(o, dict):
+            out = {}
+            for k, v in o.items():
+                if _is_sensitive(str(k)):
+                    redacted_flag["hit"] = True
+                    out[k] = "[redacted]"
+                else:
+                    out[k] = walk(v, depth + 1)
+            return out
+        if isinstance(o, list):
+            return [walk(v, depth + 1) for v in o]
+        if isinstance(o, str):
+            return _safe(o, _MAX_STRING_LEN)
+        if isinstance(o, (int, float, bool)) or o is None:
+            return o
+        return _safe(str(o), _MAX_STRING_LEN)
+
+    redacted = walk(obj)
+    return redacted, redacted_flag["hit"]
+
+
+def _safe(value, max_len: int = _MAX_STRING_LEN):
+    if value is None:
+        return None
+    if isinstance(value, (int, float, bool)):
+        return value
+    s = str(value)
+    return s[:max_len]
+
+
+# ---------------------------------------------------------------------------
+# Request context
+# ---------------------------------------------------------------------------
+
+def _ip() -> str | None:
+    if not has_request_context():
+        return None
+    try:
+        fwd = request.headers.get("X-Forwarded-For")
+        if fwd:
+            return fwd.split(",")[0].strip()[:64]
+        return (request.remote_addr or "")[:64] or None
+    except Exception:
+        return None
+
+
+def _ua() -> str | None:
+    if not has_request_context():
+        return None
+    try:
+        return (request.headers.get("User-Agent") or "")[:200] or None
+    except Exception:
+        return None
+
+
+def _route() -> str | None:
+    if not has_request_context():
+        return None
+    try:
+        return (request.endpoint or "")[:120] or None
+    except Exception:
+        return None
+
+
+def _method() -> str | None:
+    if not has_request_context():
+        return None
+    try:
+        return (request.method or "")[:8] or None
+    except Exception:
+        return None
+
+
+def _path() -> str | None:
+    if not has_request_context():
+        return None
+    try:
+        # Strip the query string so tokens/params don't land in the log.
+        return (request.path or "")[:300] or None
+    except Exception:
+        return None
+
+
+def begin_request() -> str:
+    """Install a per-request correlation id and return it."""
+    rid = str(uuid.uuid4())
+    if has_request_context():
+        try:
+            g.audit_request_id = rid
+        except Exception:
+            pass
+    return rid
+
+
+def current_request_id() -> str | None:
+    if not has_request_context():
+        return None
+    try:
+        return getattr(g, "audit_request_id", None)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Canonicalisation for the hash chain
+# ---------------------------------------------------------------------------
+
+def _canonical_json(obj) -> str:
+    """Stable JSON for hashing: sorted keys, no whitespace, no nulls dropped
+    (we want the hash to change if nulls appear/disappear)."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"),
+                      default=str, ensure_ascii=False)
+
+
+def _row_digest(row: dict, prev_hash: str) -> str:
+    body = {
+        "event":       row.get("event"),
+        "actor_id":    row.get("actor_id"),
+        "actor_email": row.get("actor_email"),
+        "target":      row.get("target"),
+        "detail":      row.get("detail"),
+        "severity":    row.get("severity"),
+        "outcome":     row.get("outcome"),
+        "status_code": row.get("status_code"),
+        "duration_ms": row.get("duration_ms"),
+        "request_id":  str(row.get("request_id")) if row.get("request_id") else None,
+        "meta":        row.get("meta"),
+        "diff_json":   row.get("diff_json"),
+        "tags":        sorted(row.get("tags") or []),
+        "ip":          row.get("ip"),
+        "created_at":  row.get("created_at"),
+    }
+    return hashlib.sha256(
+        (prev_hash + _canonical_json(body)).encode("utf-8")
+    ).hexdigest()
+
+
+def _read_chain_head() -> str:
+    try:
+        resp = (_client().table("audit_chain_head")
+                .select("last_hash")
+                .eq("id", 1)
+                .limit(1)
+                .execute())
+        rows = resp.data or []
+        return rows[0]["last_hash"] if rows else ("0" * 64)
+    except Exception:
+        return "0" * 64
+
+
+def _write_chain_head(new_hash: str, row_id: str | None) -> None:
+    try:
+        _client().table("audit_chain_head").update({
+            "last_hash":  new_hash,
+            "last_id":    row_id,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", 1).execute()
+    except Exception as exc:
+        log.warning("audit chain head update failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Diff
+# ---------------------------------------------------------------------------
+
+def _compute_diff(before: dict | None, after: dict | None) -> dict | None:
+    if before is None and after is None:
+        return None
+    before = before or {}
+    after  = after  or {}
+    keys = set(before) | set(after)
+    out = {}
+    for k in keys:
+        b = before.get(k) if k in before else "<absent>"
+        a = after.get(k)  if k in after  else "<absent>"
+        if b != a:
+            out[k] = {"before": b, "after": a}
+    return out or None
+# ---------------------------------------------------------------------------
+# Writer
+# ---------------------------------------------------------------------------
+
+def record(
+    event: str,
+    *,
+    severity: str = "info",
+    outcome: str = "success",
+    target: str | None = None,
+    detail: str | None = None,
+    meta: dict | None = None,
+    before: dict | None = None,
+    after: dict | None = None,
+    tags: list[str] | None = None,
+    user_id: str | None = None,
+    email: str | None = None,
+    status_code: int | None = None,
+    duration_ms: int | None = None,
+    request_id: str | None = None,
+) -> str | None:
+    """Write one audit row. Returns the new row's id, or None on failure."""
+    try:
+        if not _table_ok():
+            return None
+
+        severity = (severity or "info").lower()
+        if severity not in SEVERITY_LEVELS:
+            severity = "info"
+        outcome = (outcome or "success").lower()
+        if outcome not in OUTCOME_VALUES:
+            outcome = "success"
+
+        actor_id    = user_id if user_id is not None else (
+            session.get("user_id") if has_request_context() else None
+        )
+        actor_email = email if email is not None else (
+            session.get("email") if has_request_context() else None
+        )
+
+        rid = request_id
+        if rid is None:
+            rid = current_request_id()
+
+        # --- redact everything user-supplied ---
+        meta_r, meta_hit       = _redact_any(meta or {})
+        before_r, before_hit   = _redact_any(before) if before is not None else (None, False)
+        after_r,  after_hit    = _redact_any(after)  if after  is not None else (None, False)
+        detail_r = _safe(detail, _MAX_DETAIL_LEN)
+        if detail_r:
+            # Cheap scan of the free-form string too.
+            for needle in REDACT_KEYS:
+                if needle in detail_r.lower():
+                    meta_hit = True
+                    break
+
+        # --- keep meta within the byte budget ---
+        try:
+            if len(_canonical_json(meta_r).encode("utf-8")) > _MAX_META_BYTES:
+                meta_r = {"_truncated": True,
+                          "keys": list(meta_r.keys())[:20]}
+                meta_hit = True
+        except Exception:
+            pass
+
+        diff = _compute_diff(before_r, after_r)
+
+        row: dict = {
+            "event":       _safe(event, 64),
+            "actor_id":    actor_id,
+            "actor_email": _safe(actor_email, 200),
+            "target":      _safe(target, 200),
+            "detail":      detail_r,
+            "severity":    severity,
+            "outcome":     outcome,
+            "status_code": status_code,
+            "duration_ms": duration_ms,
+            "meta":        meta_r,
+            "before_json": before_r,
+            "after_json":  after_r,
+            "diff_json":   diff,
+            "tags":        [str(t)[:40] for t in (tags or [])][:20],
+            "ip":          _ip(),
+            "user_agent":  _ua(),
+            "request_id":  rid,
+            "route":       _route(),
+            "method":      _method(),
+            "path":        _path(),
+            "redacted":    bool(meta_hit or before_hit or after_hit),
+        }
+        row = {k: v for k, v in row.items() if v is not None}
+        row.setdefault("meta", {})
+        row["created_at"] = datetime.now(timezone.utc).isoformat()
+
+        # --- append to the hash chain ---
+        prev_hash = _read_chain_head()
+        row["prev_hash"] = prev_hash
+        row["hash"]      = _row_digest(row, prev_hash)
+
+        resp = _client().table("audit_log").insert(row).execute()
+        inserted = (resp.data or [])
+        row_id = inserted[0]["id"] if inserted else None
+
+        _write_chain_head(row["hash"], row_id)
+
+        # --- alert rules ---
+        try:
+            _evaluate_alert_rules(row, row_id)
+        except Exception as exc:
+            log.warning("audit alert evaluation failed: %s", exc)
+
+        return row_id
+    except Exception as exc:
+        log.warning("audit.record(%s) failed: %s", event, exc)
+        return None
+
+
+def record_diff(event: str, *, before: dict | None, after: dict | None,
+                **kwargs) -> str | None:
+    """Convenience wrapper: pass before/after and we compute the diff.
+    Severity defaults to 'notice' when the diff is non-empty."""
+    kwargs.setdefault("severity", "notice")
+    if "meta" not in kwargs and (before is not None or after is not None):
+        kwargs["meta"] = {
+            "changed_fields": list(_compute_diff(before, after) or {}),
+        }
+    return record(event, before=before, after=after, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Alert rule engine
+# ---------------------------------------------------------------------------
+
+# Every rule is (name, predicate(row) -> bool, severity, message_template).
+# A row that matches multiple rules produces multiple alert rows; that is
+# intentional — an admin should see every reason a row is worth looking at.
+
+def _alert_rule_failed_login(row: dict) -> tuple[str, str] | None:
+    if row.get("event") == "auth.login_failed":
+        # Read the last 10 minutes of failures for the same actor_email.
+        email = (row.get("actor_email") or row.get("target") or "").lower()
+        if not email:
+            return None
+        try:
+            since = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+            resp = (_client().table("audit_log")
+                    .select("id")
+                    .eq("event", "auth.login_failed")
+                    .eq("actor_email", email)
+                    .gte("created_at", since)
+                    .limit(20)
+                    .execute())
+            n = len(resp.data or [])
+        except Exception:
+            return None
+        if n >= 5:
+            return (
+                "failed_login_burst",
+                f"{n} failed logins for {email} in 10 minutes",
+            )
+    return None
+
+
+def _alert_rule_privilege_escalation(row: dict) -> tuple[str, str] | None:
+    if row.get("event") == "admin.role_change":
+        old = (row.get("meta") or {}).get("old_role")
+        new = (row.get("meta") or {}).get("new_role")
+        if new == "admin" and old != "admin":
+            return (
+                "privilege_escalation",
+                f"{row.get('target')} was promoted to admin",
+            )
+    if row.get("event") == "admin.user_update":
+        detail = row.get("detail") or ""
+        if "extra_roles" in detail:
+            return (
+                "extra_roles_change",
+                f"extra roles changed for {row.get('target')}: {detail[:200]}",
+            )
+    return None
+
+
+def _alert_rule_quota_exhaust(row: dict) -> tuple[str, str] | None:
+    if row.get("event") == "live.probe" and "rate limit" in (row.get("detail") or "").lower():
+        return ("quota_exhaust", "Tracksolid daily quota exhausted")
+    if row.get("event") == "auth.password_reset_completed" and not row.get("actor_id"):
+        return ("password_reset_anonymous", "password reset completed with no actor")
+    return None
+
+
+def _alert_rule_fence_tamper(row: dict) -> tuple[str, str] | None:
+    if row.get("event") == "live.fence_save":
+        meta = row.get("meta") or {}
+        names = meta.get("names") or []
+        if len(names) >= 6:
+            return (
+                "bulk_fence_change",
+                f"{len(names)} fences modified in one request",
+            )
+    if row.get("event") == "live.fence_delete":
+        return (
+            "fence_deleted",
+            f"fence {row.get('target')} deleted",
+        )
+    return None
+
+
+def _alert_rule_hash_mismatch(row: dict) -> tuple[str, str] | None:
+    if row.get("event") == "audit.chain_mismatch":
+        return ("audit_chain_mismatch", "audit hash chain failed verification")
+    return None
+
+
+_ALERT_RULES = (
+    _alert_rule_failed_login,
+    _alert_rule_privilege_escalation,
+    _alert_rule_quota_exhaust,
+    _alert_rule_fence_tamper,
+    _alert_rule_hash_mismatch,
+)
+
+
+def _evaluate_alert_rules(row: dict, row_id: str | None) -> None:
+    for rule in _ALERT_RULES:
+        try:
+            hit = rule(row)
+        except Exception as exc:
+            log.debug("alert rule %s errored: %s", rule.__name__, exc)
+            continue
+        if not hit:
+            continue
+        name, message = hit
+        _write_alert(
+            rule=name,
+            severity=("critical" if name in ("privilege_escalation",
+                                             "audit_chain_mismatch")
+                      else "warning"),
+            message=message,
+            audit_id=row_id,
+            actor_id=row.get("actor_id"),
+            actor_email=row.get("actor_email"),
+            meta={"event": row.get("event"), "target": row.get("target")},
+        )
+
+
+def _write_alert(*, rule: str, severity: str, message: str,
+                 audit_id: str | None = None,
+                 actor_id: str | None = None,
+                 actor_email: str | None = None,
+                 meta: dict | None = None) -> None:
+    try:
+        _client().table("audit_alert").insert({
+            "rule":        rule,
+            "severity":    severity,
+            "message":     message[:1000],
+            "audit_id":    audit_id,
+            "actor_id":    actor_id,
+            "actor_email": actor_email,
+            "meta":        meta or {},
+        }).execute()
+    except Exception as exc:
+        log.warning("audit alert insert failed (%s): %s", rule, exc)
+        # ---------------------------------------------------------------------------
+# Chain verification
+# ---------------------------------------------------------------------------
+
+def verify_chain(limit: int = 10000) -> dict:
+    """Walk the audit_log from the oldest row and recompute the hash chain.
+
+    Returns:
+        {"ok": bool, "checked": n, "first_mismatch": row_id | None,
+         "expected": hash, "actual": hash}
+    """
+    try:
+        page_size = 500
+        prev = "0" * 64
+        checked = 0
+        first_mismatch = None
+        first_expected = None
+        first_actual   = None
+
+        while checked < limit:
+            offset = checked
+            try:
+                resp = (_client().table("audit_log")
+                        .select("id,event,actor_id,actor_email,target,detail,"
+                                "severity,outcome,status_code,duration_ms,"
+                                "request_id,meta,diff_json,tags,ip,"
+                                "created_at,hash,prev_hash")
+                        .order("created_at", desc=False)
+                        .range(offset, offset + page_size - 1)
+                        .execute())
+            except Exception as exc:
+                return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                        "checked": checked}
+
+            rows = resp.data or []
+            if not rows:
+                break
+
+            for r in rows:
+                checked += 1
+                stored_hash = r.get("hash") or ""
+                stored_prev = r.get("prev_hash") or ""
+                if stored_prev != prev and first_mismatch is None:
+                    first_mismatch = r.get("id")
+                    first_expected = prev
+                    first_actual   = stored_prev
+                expected = _row_digest(r, prev)
+                if stored_hash != expected and first_mismatch is None:
+                    first_mismatch = r.get("id")
+                    first_expected = expected
+                    first_actual   = stored_hash
+                prev = stored_hash or expected
+
+            if len(rows) < page_size:
+                break
+
+        result = {
+            "ok": first_mismatch is None,
+            "checked": checked,
+            "first_mismatch": first_mismatch,
+            "expected": first_expected,
+            "actual":   first_actual,
+        }
+        if first_mismatch:
+            # Record the failure as its own audit row (which will itself
+            # trigger the hash_mismatch alert rule).
+            record(
+                "audit.chain_mismatch",
+                severity="critical",
+                outcome="failure",
+                detail=f"chain broken at row {first_mismatch}",
+                meta={"checked": checked, "row_id": first_mismatch},
+            )
+        return result
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# Read API
+# ---------------------------------------------------------------------------
+
+def _parse_ts(s) -> datetime | None:
+    if not s:
+        return None
+    if isinstance(s, datetime):
+        return s
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def list_events(
+    *,
+    page: int = 1, per_page: int = 100,
+    event: str | None = None,
+    actor_email: str | None = None,
+    actor_id: str | None = None,
+    target: str | None = None,
+    severity: str | None = None,
+    outcome: str | None = None,
+    request_id: str | None = None,
+    days: int | None = None,
+    include_debug: bool = False,
+) -> dict:
+    client = _client()
+    per_page = max(10, min(500, per_page))
+    offset = (max(1, page) - 1) * per_page
+
+    q = client.table("audit_log").select("*").order("created_at", desc=True)
+
+    if event:
+        q = q.eq("event", event)
+    if actor_email:
+        q = q.ilike("actor_email", f"%{actor_email}%")
+    if actor_id:
+        q = q.eq("actor_id", actor_id)
+    if target:
+        q = q.ilike("target", f"%{target}%")
+    if severity:
+        q = q.eq("severity", severity)
+    if outcome:
+        q = q.eq("outcome", outcome)
+    if request_id:
+        q = q.eq("request_id", request_id)
+    if days:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        q = q.gte("created_at", cutoff)
+    if not include_debug:
+        q = q.neq("severity", "debug")
+
+    resp = q.range(offset, offset + per_page - 1).execute()
+    rows = resp.data or []
+
+    out = []
+    for r in rows:
+        out.append({
+            "id":          r.get("id"),
+            "event":       r.get("event") or "",
+            "severity":    r.get("severity") or "info",
+            "outcome":     r.get("outcome") or "success",
+            "actor_id":    r.get("actor_id"),
+            "actor_email": r.get("actor_email") or "",
+            "target":      r.get("target") or "",
+            "detail":      r.get("detail") or "",
+            "meta":        r.get("meta") or {},
+            "diff":        r.get("diff_json") or {},
+            "tags":        r.get("tags") or [],
+            "ip":          r.get("ip") or "",
+            "user_agent":  r.get("user_agent") or "",
+            "request_id":  r.get("request_id"),
+            "route":       r.get("route") or "",
+            "method":      r.get("method") or "",
+            "path":        r.get("path") or "",
+            "status_code": r.get("status_code"),
+            "duration_ms": r.get("duration_ms"),
+            "redacted":    bool(r.get("redacted")),
+            "created_at":  _parse_ts(r.get("created_at")),
+        })
+
+    return {
+        "rows":     out,
+        "page":     page,
+        "per_page": per_page,
+        "has_more": len(rows) == per_page,
+    }
+
+
+def distinct_events(limit_days: int = 30) -> list[str]:
+    try:
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(days=limit_days)).isoformat()
+        resp = (_client().table("audit_log")
+                .select("event")
+                .gte("created_at", cutoff)
+                .limit(5000)
+                .execute())
+        return sorted({r.get("event") for r in (resp.data or [])
+                       if r.get("event")})
+    except Exception:
+        return []
+
+
+def distinct_severities() -> list[str]:
+    return list(SEVERITY_LEVELS)
+
+
+# ---------------------------------------------------------------------------
+# Alert read / ack API
+# ---------------------------------------------------------------------------
+
+def list_alerts(*, page: int = 1, per_page: int = 50,
+                only_unacked: bool = False) -> dict:
+    try:
+        per_page = max(10, min(500, per_page))
+        offset = (max(1, page) - 1) * per_page
+        q = (_client().table("audit_alert")
+             .select("*")
+             .order("created_at", desc=True))
+        if only_unacked:
+            q = q.eq("acknowledged", False)
+        resp = q.range(offset, offset + per_page - 1).execute()
+        rows = resp.data or []
+        out = []
+        for r in rows:
+            out.append({
+                "id":           r.get("id"),
+                "rule":         r.get("rule") or "",
+                "severity":     r.get("severity") or "warning",
+                "message":      r.get("message") or "",
+                "audit_id":     r.get("audit_id"),
+                "actor_email":  r.get("actor_email") or "",
+                "acknowledged": bool(r.get("acknowledged")),
+                "acked_at":     _parse_ts(r.get("acked_at")),
+                "meta":         r.get("meta") or {},
+                "created_at":   _parse_ts(r.get("created_at")),
+            })
+        return {"rows": out, "page": page, "per_page": per_page,
+                "has_more": len(rows) == per_page}
+    except Exception as exc:
+        log.warning("audit.list_alerts failed: %s", exc)
+        return {"rows": [], "page": page, "per_page": per_page,
+                "has_more": False}
+
+
+def unacked_alert_count() -> int:
+    try:
+        resp = (_client().table("audit_alert")
+                .select("id", count="exact")
+                .eq("acknowledged", False)
+                .execute())
+        return int(getattr(resp, "count", 0) or 0)
+    except Exception:
+        return 0
+
+
+def acknowledge_alert(alert_id: str, *, user_id: str | None,
+                      email: str | None) -> None:
+    try:
+        _client().table("audit_alert").update({
+            "acknowledged": True,
+            "acked_by":     user_id,
+            "acked_at":     datetime.now(timezone.utc).isoformat(),
+        }).eq("id", alert_id).execute()
+        record(
+            "audit.alert_ack",
+            target=alert_id,
+            detail=f"acknowledged by {email or user_id}",
+            severity="info",
+        )
+    except Exception as exc:
+        log.warning("acknowledge_alert failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Retention / export
+# ---------------------------------------------------------------------------
+
+def prune(*, debug_days: int = 7, info_days: int = 90,
+          notice_days: int = 180, warning_days: int = 365,
+          critical_days: int = 3650) -> dict:
+    """Delete rows older than each severity's retention window.
+
+    Never touches critical rows below 10 years by default. Returns the
+    number of rows deleted per severity.
+    """
+    deleted = {}
+    now = datetime.now(timezone.utc)
+    windows = {
+        "debug":    now - timedelta(days=debug_days),
+        "info":     now - timedelta(days=info_days),
+        "notice":   now - timedelta(days=notice_days),
+        "warning":  now - timedelta(days=warning_days),
+        "critical": now - timedelta(days=critical_days),
+    }
+    for sev, cutoff in windows.items():
+        try:
+            resp = (_client().table("audit_log")
+                    .delete()
+                    .eq("severity", sev)
+                    .lt("created_at", cutoff.isoformat())
+                    .execute())
+            deleted[sev] = len(resp.data or [])
+        except Exception as exc:
+            log.warning("audit.prune(%s) failed: %s", sev, exc)
+            deleted[sev] = 0
+
+    # Also prune acknowledged alerts older than 90 days.
+    try:
+        cutoff = (now - timedelta(days=90)).isoformat()
+        resp = (_client().table("audit_alert")
+                .delete()
+                .eq("acknowledged", True)
+                .lt("created_at", cutoff)
+                .execute())
+        deleted["acked_alerts"] = len(resp.data or [])
+    except Exception as exc:
+        log.warning("audit.prune(acked_alerts) failed: %s", exc)
+        deleted["acked_alerts"] = 0
+
+    record(
+        "audit.prune",
+        severity="notice",
+        detail=f"pruned {sum(deleted.values())} rows",
+        meta=deleted,
+    )
+    return deleted
+
+
+def export_rows(*, fmt: str = "csv", days: int | None = None,
+                max_rows: int = 100_000) -> tuple[str, str]:
+    """Return (mimetype, body) for a CSV or JSONL export.
+
+    Streams in pages of 500. Caps at max_rows.
+    """
+    import csv
+    import io
+
+    days = days or 90
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    columns = [
+        "created_at", "event", "severity", "outcome", "actor_email",
+        "target", "detail", "request_id", "route", "method", "path",
+        "status_code", "duration_ms", "ip", "tags", "hash",
+    ]
+
+    if fmt == "jsonl":
+        buf = io.StringIO()
+        written = 0
+        while written < max_rows:
+            resp = (_client().table("audit_log")
+                    .select(",".join(columns) + ",meta,diff_json")
+                    .gte("created_at", cutoff)
+                    .order("created_at", desc=False)
+                    .range(written, written + 499)
+                    .execute())
+            rows = resp.data or []
+            if not rows:
+                break
+            for r in rows:
+                buf.write(json.dumps(r, default=str) + "\n")
+                written += 1
+            if len(rows) < 500:
+                break
+        return "application/x-ndjson", buf.getvalue()
+
+    # CSV
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
+    w.writeheader()
+    written = 0
+    while written < max_rows:
+        resp = (_client().table("audit_log")
+                .select(",".join(columns))
+                .gte("created_at", cutoff)
+                .order("created_at", desc=False)
+                .range(written, written + 499)
+                .execute())
+        rows = resp.data or []
+        if not rows:
+            break
+        for r in rows:
+            # Flatten tags into a pipe-joined string for CSV friendliness.
+            r = dict(r)
+            if isinstance(r.get("tags"), list):
+                r["tags"] = "|".join(r["tags"])
+            w.writerow(r)
+            written += 1
+        if len(rows) < 500:
+            break
+    return "text/csv", buf.getvalue()
+
+
+def correlation_rows(request_id: str) -> list[dict]:
+    """All audit rows with the given request_id, ordered by time."""
+    if not request_id:
+        return []
+    try:
+        resp = (_client().table("audit_log")
+                .select("*")
+                .eq("request_id", request_id)
+                .order("created_at", desc=False)
+                .limit(200)
+                .execute())
+        out = []
+        for r in (resp.data or []):
+            out.append({
+                "id":          r.get("id"),
+                "event":       r.get("event") or "",
+                "severity":    r.get("severity") or "info",
+                "outcome":     r.get("outcome") or "success",
+                "actor_email": r.get("actor_email") or "",
+                "target":      r.get("target") or "",
+                "detail":      r.get("detail") or "",
+                "meta":        r.get("meta") or {},
+                "diff":        r.get("diff_json") or {},
+                "created_at":  _parse_ts(r.get("created_at")),
+                "status_code": r.get("status_code"),
+                "duration_ms": r.get("duration_ms"),
+            })
+        return out
+    except Exception:
+        return []

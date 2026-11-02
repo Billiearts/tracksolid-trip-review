@@ -294,6 +294,20 @@
       display: flex; align-items: center; gap: 0.6rem;
       margin: 0 -2rem;
     }
+    .ratelimit-banner .ratelimit-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: #7a1c1c;
+  cursor: pointer;
+  font-size: 1.2rem;
+  line-height: 1;
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+}
+.ratelimit-banner .ratelimit-close:hover {
+  background: rgba(0,0,0,0.08);
+}
     .ratelimit-banner[hidden] { display: none; }
     .ratelimit-banner-icon { font-size: 1.15rem; line-height: 1; }
     .ratelimit-banner-text strong { font-weight: 600; }
@@ -348,6 +362,11 @@
     .role-pill {
       display: inline-block; font-size: 0.75rem; padding: 2px 8px;
       border-radius: 10px; text-transform: uppercase; letter-spacing: 0.03em;
+    }
+        .alert-badge {
+      display: inline-block; background: #a02525; color: #fff;
+      font-size: 0.65rem; padding: 1px 6px; border-radius: 8px;
+      margin-left: 0.2rem; vertical-align: top;
     }
     .role-admin { background: #e6f0fb; color: #1e5f9e; }
     .role-user  { background: #f0f0f0; color: #666; }
@@ -474,9 +493,15 @@
     <a href="{{ url_for('live_fleet.index') }}"
        class="{{ 'active' if request.endpoint and request.endpoint.startswith('live_fleet.') else '' }}">Live</a>
   {% endif %}
-  {% if session.get('role') == 'admin' %}
+    {% if session.get('role') == 'admin' %}
     <a href="{{ url_for('admin.index') }}"
-       class="{{ 'active' if request.endpoint and request.endpoint.startswith('admin.') else '' }}">Admin</a>
+       class="{{ 'active' if request.endpoint and request.endpoint.startswith('admin.') and request.endpoint != 'admin.audit' and request.endpoint != 'admin.alerts' else '' }}">Admin</a>
+    <a href="{{ url_for('admin.audit') }}"
+       class="{{ 'active' if request.endpoint == 'admin.audit' else '' }}">Audit</a>
+    <a href="{{ url_for('admin.alerts') }}"
+       class="{{ 'active' if request.endpoint == 'admin.alerts' else '' }}">
+      Alerts{% if nav_unacked_alerts %}<span class="alert-badge">{{ nav_unacked_alerts }}</span>{% endif %}
+    </a>
   {% endif %}
   <span class="spacer"></span>
   <span class="user">{{ session.get('full_name') or session.get('email') }}</span>
@@ -484,11 +509,14 @@
 </nav>
 
     {# Rate-limit banner and modal are only rendered for signed-in users. #}
+        {# Rate-limit banner and modal are only rendered for signed-in users. #}
     <div id="ratelimit-banner" class="ratelimit-banner" hidden>
       <span class="ratelimit-banner-icon">&#9888;&#65039;</span>
       <span class="ratelimit-banner-text" id="ratelimit-banner-text">
         Tracksolid Pro daily API limit reached.
       </span>
+      <button type="button" class="ratelimit-close" id="ratelimit-banner-close"
+              aria-label="Dismiss">&times;</button>
     </div>
   {% endif %}
 
@@ -548,31 +576,70 @@
       }
     })();
 
-    // --- rate-limit banner + modal (only if rendered) -------------------
+        // --- rate-limit banner + modal (only if rendered) -------------------
     (function () {
       const banner     = document.getElementById("ratelimit-banner");
       const bannerText = document.getElementById("ratelimit-banner-text");
+      const closeBtn   = document.getElementById("ratelimit-banner-close");
       const modal      = document.getElementById("ratelimit-modal");
       const modalText  = document.getElementById("ratelimit-modal-text");
       if (!banner || !modal) return;   // not signed in — nothing to poll
 
-      function apply(state) {
-        if (!state.rate_limited) { banner.hidden = true; return; }
-        banner.hidden = false;
-        bannerText.innerHTML =
-          '<strong>Tracksolid Pro daily API limit reached.</strong> ' +
-          'Resets at ' + state.resets_at + ' UTC. ' +
-          'Reports generated before then may be incomplete.';
+      // The banner stays dismissed until `limited_at` changes (i.e. a new
+      // rate-limit event occurs after a reset). Closing it sets a
+      // sessionStorage key tied to the current `limited_at`.
+      const DISMISS_KEY = "ratelimit-banner-dismissed-at";
 
+      function isDismissed(limitedAt) {
+        return limitedAt && sessionStorage.getItem(DISMISS_KEY) === limitedAt;
+      }
+      function dismiss(limitedAt) {
+        if (limitedAt) sessionStorage.setItem(DISMISS_KEY, limitedAt);
+        banner.hidden = true;
+      }
+
+      if (closeBtn) {
+        closeBtn.addEventListener("click", function () {
+          const limitedAt = banner.dataset.limitedAt || "";
+          dismiss(limitedAt);
+        });
+      }
+
+      function apply(state) {
+        if (!state.rate_limited) {
+          // Either never limited, or it just cleared. Hide immediately.
+          banner.hidden = true;
+          banner.dataset.limitedAt = "";
+          // A completed reset wipes the dismissal so the next event shows.
+          if (state.last_clear) {
+            sessionStorage.removeItem(DISMISS_KEY);
+          }
+          return;
+        }
+
+        const limitedAt = state.limited_at || "";
+        banner.dataset.limitedAt = limitedAt;
+
+        if (isDismissed(limitedAt)) {
+          banner.hidden = true;
+        } else {
+          banner.hidden = false;
+          bannerText.innerHTML =
+            '<strong>Tracksolid Pro daily API limit reached.</strong> ' +
+            'Resets at ' + state.resets_at + ' UTC. ' +
+            'Reports generated before then may be incomplete.';
+        }
+
+        // One-shot modal per limited_at value.
         const seen = sessionStorage.getItem("ratelimit-modal-seen") || "";
-        if (state.limited_at && state.limited_at !== seen) {
+        if (limitedAt && limitedAt !== seen) {
           modalText.textContent =
             "Your Tracksolid Pro API quota for today has been used up. " +
             "The quota resets at " + state.resets_at + " UTC.";
           if (typeof modal.showModal === "function" && !modal.open) {
             modal.showModal();
           }
-          sessionStorage.setItem("ratelimit-modal-seen", state.limited_at);
+          sessionStorage.setItem("ratelimit-modal-seen", limitedAt);
         }
       }
 
@@ -585,7 +652,8 @@
       }
 
       poll();
-      setInterval(poll, 30000);
+      // 10 s (was 30 s) so the banner disappears promptly after reset.
+      setInterval(poll, 10000);
     })();
   </script>
   {% block scripts %}{% endblock %}

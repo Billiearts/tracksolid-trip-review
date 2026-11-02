@@ -17,13 +17,21 @@ Scanning control (GLOBAL, admin-only):
   without calling Tracksolid, and *everyone* sees the same frozen frame.
   Only admins can flip the flag via /live/api/scan.
 
+Viewer presence (single-cache for the whole process):
+  Every /live/api/fleet and /live/api/heartbeat call records a heartbeat
+  for the calling session. When no session has heartbeated in
+  _VIEWER_TTL_SEC, get_fleet_state() returns the cached snapshot instead
+  of fetching, even if the global pause is off. This gives a "one-person
+  cache": one shared poll cycle regardless of viewer count, and zero
+  Tracksolid calls when nobody is watching.
+
 Yard-alarm polling:
   get_fleet_state() calls _refresh_yard_state() which re-reads the last
   24h of alarms for any truck whose yard cache is stale (60s TTL).
   The corridor cache (last GBC fence out event) is warmed in the
   background the first time it's empty.
 
-Yard membership has TWO freshness windows:
+Yard membership has THREE freshness windows:
   * _YARD_GPS_TRUST_AGE (15 min) — how old a fix may be for the
     *corridor direction* logic to trust it for "which way is it going".
   * _YARD_GPS_MEMBERSHIP_AGE (4 h) — how old a fix may be for the
@@ -31,6 +39,18 @@ Yard membership has TWO freshness windows:
     truck's last fix still tells us which polygon it's inside, even
     if it's hours old. This lets us resolve membership by geometry
     when Tracksolid's own geofence is smaller than our app's polygon.
+  * _YARD_SANITY_DISTANCE_KM (5 km) — if a truck's GPS says it is more
+    than this far from every polygon that its alarm state claims it is
+    inside, the alarm state is discarded regardless of age. This is the
+    direct fix for "truck 250 km away still shows as in the fence".
+
+Direction classification:
+  A truck is `at_<facility>` when:
+    - its GPS fix is inside the corridor facility polygon, OR
+    - its GPS fix is within _FACILITY_NEAR_KM of the corridor facility
+      polygon AND it is not moving above _FACILITY_NEAR_MOVING_KPH.
+  This catches trucks parked just outside a shrunken polygon without
+  misclassifying a truck driving past on the highway.
 """
 from __future__ import annotations
 
@@ -62,11 +82,33 @@ _FACILITIES_TTL_SEC    = 30
 _YARD_ALARM_LOOKBACK_HOURS = 24
 _YARD_ALARM_PAGE_SIZE      = 500
 _YARD_STATE_TTL_SEC        = 60
-_YARD_STATE_MAX_AGE        = timedelta(hours=24)
 
-# Two separate freshness windows — see module docstring.
+# How long a stale alarm `in` is still trusted if GPS can't contradict it.
+# Reduced from 24 h to 4 h to match the parked-GPS window; a truck that
+# hasn't reported an `in` or `out` for 4 h is almost certainly not still
+# parked inside a yard.
+_YARD_STATE_MAX_AGE        = timedelta(hours=4)
+
+# If a truck's GPS says it is farther than this from the polygon that its
+# alarm state claims it is inside, discard the alarm state. This is the
+# hard sanity check for the "250 km away but still counted" bug.
+_YARD_SANITY_DISTANCE_KM   = 5.0
+
+# Two separate freshness windows for the corridor direction logic.
 _YARD_GPS_TRUST_AGE        = timedelta(minutes=15)
 _YARD_GPS_MEMBERSHIP_AGE   = timedelta(hours=4)
+
+# "At facility" heuristic: within this many km of a corridor facility and
+# not moving faster than _FACILITY_NEAR_MOVING_KPH → counted as AT that
+# facility, not "heading to" the other one. Defaults tuned so that a truck
+# parked in the Takoradi yard just outside a shrunken polygon still reads
+# as at_takoradi, but a truck driving the highway at 60 kph does not.
+_FACILITY_NEAR_KM          = 5.0
+_FACILITY_NEAR_MOVING_KPH  = 20.0
+
+# Viewer presence: no /live/api/fleet or heartbeat in this many seconds →
+# treat the process as "nobody watching" and skip the Tracksolid fetch.
+_VIEWER_TTL_SEC            = 60
 
 _YARD_FENCES = (
     {"key": "waiting", "fence_name": "WAITING TIME", "label": "Dispatch"},
@@ -125,8 +167,45 @@ def paused_since() -> datetime | None:
         return _paused_since
 
 
+# ---------------------------------------------------------------------------
+# Viewer presence (single-cache for the whole process)
+# ---------------------------------------------------------------------------
+
+_viewers: dict[str, float] = {}
+_viewers_lock = Lock()
+
+
+def heartbeat(session_id: str | None) -> None:
+    """Record a viewer heartbeat. Called by /live/api/fleet and
+    /live/api/heartbeat. Uses the session_id (empty string for unauthenticated
+    probes, which we ignore)."""
+    if not session_id:
+        return
+    with _viewers_lock:
+        _viewers[session_id] = time.time()
+
+
+def viewer_count() -> int:
+    """Number of distinct sessions that have heartbeated in the TTL window."""
+    cutoff = time.time() - _VIEWER_TTL_SEC
+    with _viewers_lock:
+        # Opportunistically evict expired entries.
+        stale = [k for k, t in _viewers.items() if t < cutoff]
+        for k in stale:
+            _viewers.pop(k, None)
+        return len(_viewers)
+
+
+def has_active_viewers() -> bool:
+    return viewer_count() > 0
+
+
 def forget_session(session_id: str | None) -> None:
-    return
+    """Drop a viewer's heartbeat (called on logout)."""
+    if not session_id:
+        return
+    with _viewers_lock:
+        _viewers.pop(session_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +294,63 @@ def _point_in_polygon(lat: float, lng: float, points: list[list[float]]) -> bool
     return inside
 
 
+def _point_to_segment_km(lat: float, lng: float,
+                         lat1: float, lng1: float,
+                         lat2: float, lng2: float) -> float:
+    """Shortest distance from a point to a great-circle segment, in km.
+
+    Uses an equirectangular approximation local to the segment's latitude
+    band, which is accurate to well under 1 % for segments shorter than a
+    few km at these latitudes. That is more than enough for a "is this
+    truck anywhere near the fence" sanity check.
+    """
+    ref_lat = math.radians((lat + lat1 + lat2) / 3.0)
+    kx = 111.32 * math.cos(ref_lat)
+    ky = 111.32
+
+    # Project to a local plane centred on the point.
+    px, py = 0.0, 0.0
+    ax = (lng1 - lng) * kx
+    ay = (lat1 - lat) * ky
+    bx = (lng2 - lng) * kx
+    by = (lat2 - lat) * ky
+
+    dx = bx - ax
+    dy = by - ay
+    if dx == 0.0 and dy == 0.0:
+        return math.hypot(ax, ay)
+    t = -(ax * dx + ay * dy) / (dx * dx + dy * dy)
+    t = max(0.0, min(1.0, t))
+    cx = ax + t * dx
+    cy = ay + t * dy
+    return math.hypot(cx, cy)
+
+
+def _distance_to_facility_km(lat: float, lng: float, facility: dict) -> float:
+    """Shortest distance from (lat, lng) to the facility geometry, in km.
+
+    For a polygon: min distance to any edge (0 if inside).
+    For a circle: max(0, haversine to centre − radius).
+    """
+    if facility.get("shape") == "polygon" and facility.get("polygon"):
+        poly = facility["polygon"]
+        if _point_in_polygon(lat, lng, poly):
+            return 0.0
+        best = float("inf")
+        n = len(poly)
+        for i in range(n):
+            y1, x1 = poly[i]
+            y2, x2 = poly[(i + 1) % n]
+            d = _point_to_segment_km(lat, lng, y1, x1, y2, x2)
+            if d < best:
+                best = d
+        return best
+
+    if facility.get("shape") == "circle" and facility.get("radius_km") is not None:
+        d = _haversine_km(lat, lng, facility["lat"], facility["lng"])
+        return max(0.0, d - facility["radius_km"])
+
+    return float("inf")
 def _validate_polygon(points) -> list[list[float]] | None:
     if not isinstance(points, list) or len(points) < 3:
         return None
@@ -236,6 +372,8 @@ def _validate_polygon(points) -> list[list[float]] | None:
     if _polygon_area_km2(out) <= 0.0:
         return None
     return out
+
+
 # ---------------------------------------------------------------------------
 # Facility loading
 # ---------------------------------------------------------------------------
@@ -509,6 +647,25 @@ def _inside_yard(lat, lng, yards):
 
 
 _inside_yard_gps = _inside_yard
+
+
+def _nearest_facility(lat: float, lng: float,
+                      facilities: list[dict]) -> tuple[dict | None, float]:
+    """Return (facility, distance_km) for the closest corridor facility.
+
+    `distance_km` is 0 if inside, otherwise the shortest distance to the
+    facility's edge (polygon edges or circle circumference).
+    """
+    best: dict | None = None
+    best_d = float("inf")
+    for f in facilities:
+        if f.get("shape") not in ("polygon", "circle"):
+            continue
+        d = _distance_to_facility_km(lat, lng, f)
+        if d < best_d:
+            best_d = d
+            best = f
+    return best, best_d
 # ---------------------------------------------------------------------------
 # Corridor event state
 # ---------------------------------------------------------------------------
@@ -753,7 +910,9 @@ def _schedule_rescan(imei: str, lat, lng):
         target=_scan_one_truck_deduped,
         args=(imei, lat, lng), daemon=True,
     ).start()
-    # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # Fleet state
 # ---------------------------------------------------------------------------
 
@@ -767,36 +926,84 @@ def _resolve_yard_membership(
     gps_yard: dict | None,
     gps_membership_ok: bool,
     gps_time: datetime | None = None,
+    gps_lat: float | None = None,
+    gps_lng: float | None = None,
+    yard_facilities: list[dict] | None = None,
 ) -> dict | None:
     """Decide whether a truck is inside a yard fence right now.
 
-    The GPS branch is the authoritative one when `gps_membership_ok` is
-    True (fresh fix, or a parked truck with an older fix). This handles
-    the case where our app's fence polygon is *larger* than Tracksolid's
-    own geofence: the truck is physically parked inside our polygon but
-    Tracksolid never fired an 'in' alarm, so the alarm state is null.
-    GPS rescues it.
+    Priority (most trustworthy first):
 
-    The alarm branch still wins when the alarm's `since` is NEWER than
-    the GPS fix — e.g. the truck just crossed into the fence after the
-    last GPS report, and Tracksolid fired a fresh `in` before the next
-    GPS sample arrived.
+    1. **GPS-outside with fresh fix beats a stale alarm-`in`.**
+       If GPS membership is trustworthy and says "not in any yard",
+       and the alarm state's `since` is older than the GPS fix, the
+       truck has left. Return None.
+       This is the direct fix for the "250 km away but still counted" bug.
+
+    2. **Alarm-`in` newer than the GPS fix wins.**
+       The truck just crossed into the fence after the last GPS sample.
+
+    3. **GPS-inside wins.**
+       The app's polygon is authoritative when GPS says the truck is
+       inside it, even if Tracksolid never fired an `in` (because the
+       app polygon is larger than Tracksolid's geofence).
+
+    4. **Sanity check on the alarm state.**
+       If we still have an alarm-`in` that survived the above, verify
+       the truck is actually near the claimed yard polygon. If it is
+       more than _YARD_SANITY_DISTANCE_KM away, drop the alarm state.
+       This catches stale alarms when GPS is old or missing.
+
+    5. Otherwise → outside.
     """
     alarm_time = None
     if alarm_state and alarm_state.get("since"):
         try:
             alarm_time = datetime.fromisoformat(alarm_state["since"])
+            if alarm_time.tzinfo is None:
+                alarm_time = alarm_time.replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
             alarm_time = None
 
-    alarm_wins = (
-        alarm_state is not None
-        and (alarm_time is not None)
-        and (gps_time is None or alarm_time > gps_time)
-    )
+    # --- Step 1: fresh GPS saying "outside" overrides a stale alarm-in ---
+    if gps_membership_ok and gps_yard is None and alarm_state is not None:
+        if gps_time is not None and alarm_time is not None and alarm_time <= gps_time:
+            log.debug(
+                "membership: GPS outside beats stale alarm-in for %s "
+                "(alarm %s, gps %s)",
+                alarm_state.get("key"), alarm_time, gps_time,
+            )
+            return None
 
-    if alarm_wins:
-        return alarm_state
+    # --- Step 2: alarm-in newer than the fix ---
+    if (alarm_state is not None
+            and alarm_time is not None
+            and (gps_time is None or alarm_time > gps_time)):
+        # Still run the distance sanity check if we have coordinates.
+        if (gps_lat is not None and gps_lng is not None
+                and yard_facilities):
+            claimed = next(
+                (y for y in yard_facilities
+                 if y.get("key") == alarm_state.get("key")),
+                None,
+            )
+            if claimed is not None and claimed.get("shape") in ("polygon", "circle"):
+                dist = _distance_to_facility_km(gps_lat, gps_lng, claimed)
+                if dist > _YARD_SANITY_DISTANCE_KM:
+                    log.info(
+                        "membership: dropping alarm-in for %s — truck is "
+                        "%.1f km from the polygon (max %.1f)",
+                        alarm_state.get("key"), dist, _YARD_SANITY_DISTANCE_KM,
+                    )
+                    alarm_state = None
+                else:
+                    return alarm_state
+            else:
+                return alarm_state
+        else:
+            return alarm_state
+
+    # --- Step 3: GPS inside wins ---
     if gps_membership_ok and gps_yard is not None:
         return {
             "key":       gps_yard["key"],
@@ -805,8 +1012,36 @@ def _resolve_yard_membership(
             "radius_km": gps_yard.get("radius_km"),
             "source":    "gps",
         }
+
+    # --- Step 4: fall back to alarm state, with distance sanity check ---
     if alarm_state is not None:
+        if (gps_lat is not None and gps_lng is not None
+                and yard_facilities):
+            claimed = next(
+                (y for y in yard_facilities
+                 if y.get("key") == alarm_state.get("key")),
+                None,
+            )
+            if claimed is not None and claimed.get("shape") in ("polygon", "circle"):
+                dist = _distance_to_facility_km(gps_lat, gps_lng, claimed)
+                if dist > _YARD_SANITY_DISTANCE_KM:
+                    log.debug(
+                        "membership: falling back to alarm-in for %s but "
+                        "truck is %.1f km away — dropping",
+                        alarm_state.get("key"), dist,
+                    )
+                    return None
         return alarm_state
+
+    return None
+
+
+def _direction_from_heading(heading: float) -> str | None:
+    """Map a compass bearing to a corridor direction, or None if ambiguous."""
+    if heading >= _DIR_WEST_MIN or heading <= _DIR_EAST_MIN:
+        return "heading_to_awaso"
+    if _DIR_SOUTH_MIN <= heading <= _DIR_SOUTH_MAX:
+        return "heading_to_takoradi"
     return None
 
 
@@ -825,9 +1060,11 @@ def get_fleet_state(
         "locations_fetched":    None,
         "yard_states_resolved": None,
         "fences_error":         None,
+        "viewer_count":         viewer_count(),
         "reason":               None,
     }
 
+    # ---- viewer presence / pause gate ----
     if not scanning_allowed:
         with _fleet_cache_lock:
             cached = _fleet_cache["data"]
@@ -841,6 +1078,22 @@ def get_fleet_state(
             return cached, False, True, diagnostics
         diagnostics["reason"] = "paused (no snapshot yet)"
         return [], False, True, diagnostics
+
+    # If nobody has heartbeated within the viewer TTL, don't spend API
+    # calls. Fall back to the cached snapshot if we have one.
+    if not has_active_viewers():
+        with _fleet_cache_lock:
+            cached = _fleet_cache["data"]
+            expires = _fleet_cache["expires_at"]
+        if cached is not None:
+            diagnostics["reason"] = "no active viewers (cached snapshot)"
+            diagnostics["snapshot_age_sec"] = (
+                max(0.0, now - (expires - CACHE_TTL_SEC))
+                if expires else None
+            )
+            return cached, _scan_in_progress.is_set(), False, diagnostics
+        diagnostics["reason"] = "no active viewers (no snapshot yet)"
+        return [], False, False, diagnostics
 
     corridor_facilities, yard_facilities, fences_error = _load_facilities_diagnostic()
     diagnostics["fences_error"] = fences_error
@@ -968,11 +1221,28 @@ def get_fleet_state(
         inside = (_inside_facility(lat, lng, corridor_facilities)
                   if lat is not None and lng is not None else None)
 
-        # A heading is only meaningful when we KNOW the truck is moving
-        # *now* — i.e. the GPS fix is fresh AND speed is above the
-        # threshold. A 20-min-old fix from a truck that has since parked
-        # must not be trusted for direction; it will point at wherever
-        # the truck happened to be facing when it last reported.
+        # --- Direction classification ---
+        #
+        # Three inputs:
+        #   * `inside` — truck is geometrically inside a corridor facility.
+        #   * `near_facility` — truck is within _FACILITY_NEAR_KM of a
+        #     corridor facility AND not moving fast. This catches trucks
+        #     parked just outside a shrunken polygon (they are physically
+        #     at Takoradi but the polygon is small).
+        #   * `moving_now` — fresh fix + speed > MOVING_KPH + heading.
+        #
+        # Priority:
+        #   1. Inside → at_<kind>
+        #   2. Near (and slow) → at_<kind>
+        #   3. Moving now → heading-based
+        #   4. Fallback → last_event_state, then "unknown"
+        near_facility = None
+        near_dist = float("inf")
+        if lat is not None and lng is not None:
+            near_facility, near_dist = _nearest_facility(
+                lat, lng, corridor_facilities
+            )
+
         moving_now = (
             speed > MOVING_KPH
             and heading is not None
@@ -981,19 +1251,24 @@ def get_fleet_state(
 
         if inside is not None:
             direction = f"at_{inside['kind']}"
+        elif (near_facility is not None
+                and near_dist <= _FACILITY_NEAR_KM
+                and speed < _FACILITY_NEAR_MOVING_KPH):
+            # Truck is physically at the facility but parked/creeping
+            # just outside the polygon. Count as "at".
+            direction = f"at_{near_facility['kind']}"
         elif moving_now:
-            if heading >= _DIR_WEST_MIN or heading <= _DIR_EAST_MIN:
-                direction = "heading_to_awaso"
-            elif _DIR_SOUTH_MIN <= heading <= _DIR_SOUTH_MAX:
-                direction = "heading_to_takoradi"
+            heading_dir = _direction_from_heading(heading)
+            if heading_dir:
+                direction = heading_dir
             elif last_event_state:
                 direction = last_event_state
             else:
                 direction = "unknown"
         else:
-            # Not inside a facility and not demonstrably moving → do not
-            # invent a heading. Prefer the last corridor alarm state, else
-            # "unknown".
+            # Not inside a facility, not near one, and not demonstrably
+            # moving → do not invent a heading. Prefer the last corridor
+            # alarm state, else "unknown".
             direction = last_event_state or "unknown"
 
         motion = _motion_state(speed, gps_time, now_dt)
@@ -1005,6 +1280,9 @@ def get_fleet_state(
             gps_yard=gps_yard,
             gps_membership_ok=gps_membership_ok,
             gps_time=gps_time,
+            gps_lat=lat,
+            gps_lng=lng,
+            yard_facilities=yard_facilities,
         )
 
         out.append({
@@ -1163,4 +1441,4 @@ def delete_fence(row_id: str) -> bool:
     )
     deleted = len(resp.data or []) > 0
     invalidate_facilities_cache()
-    return deletedy
+    return deleted
