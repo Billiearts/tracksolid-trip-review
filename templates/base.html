@@ -538,6 +538,35 @@
     .auth-card .swap a { color: var(--brand); text-decoration: none; }
     .auth-card .swap a:hover { text-decoration: underline; }
 
+         .auth-logo-head {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 0.15rem;
+      margin: 0 0 1.5rem;
+      padding-bottom: 1.25rem;
+      border-bottom: 1px solid #e2e6ea;
+    }
+    .auth-logo-head img {
+      width: 50px; height: 50px;
+      border-radius: 5px;
+      object-fit: contain;
+      background: #fff;
+      padding: 4px;
+      border: 1px solid #e2e6ea;
+    }
+    .auth-logo-head h2 {
+      margin: 0;
+      flex-direction: column;
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: #1a2027;
+    }
+    .auth-logo-head p {
+      margin: 0;
+      font-size: 0.82rem;
+      color: #6b7280;
+    }
+
     /* alert badge (in nav) */
     .alert-badge {
       display: inline-block;
@@ -611,6 +640,7 @@
 </head>
 <body class="{% block body_class %}{% endblock %}">
 
+   {% if session.get('user_id') %}
   <nav class="topbar" role="navigation" aria-label="Main">
     <a class="topbar-brand" href="{{ url_for('index') }}">
       <img src="{{ url_for('static', filename='gbc_logo.png') }}"
@@ -682,34 +712,34 @@
       <div class="topbar-spacer"></div>
 
       <div class="topbar-right">
-        {% if session.get('role') == 'admin' %}
-          <a href="{{ url_for('admin.alerts') }}"
-             class="icon-btn"
-             title="Alerts{% if nav_unacked_alerts %} ({{ nav_unacked_alerts }} unread){% endif %}"
-             aria-label="Alerts">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
-              <path d="M13.7 21a2 2 0 0 1-3.4 0"></path>
-            </svg>
-            {% if nav_unacked_alerts %}
-              <span class="badge">{{ nav_unacked_alerts if nav_unacked_alerts < 100 else '99+' }}</span>
-            {% endif %}
-          </a>
+              {% if session.get('role') == 'super_admin' %}
+        <a href="{{ url_for('admin.alerts') }}"
+           class="icon-btn"
+           title="Alerts{% if nav_unacked_alerts %} ({{ nav_unacked_alerts }} unread){% endif %}"
+           aria-label="Alerts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+            <path d="M13.7 21a2 2 0 0 1-3.4 0"></path>
+          </svg>
+          {% if nav_unacked_alerts %}
+            <span class="badge">{{ nav_unacked_alerts if nav_unacked_alerts < 100 else '99+' }}</span>
+          {% endif %}
+        </a>
 
-          <a href="{{ url_for('admin.audit') }}"
-             class="icon-btn"
-             title="Audit trail"
-             aria-label="Audit trail">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M9 5h10M9 12h10M9 19h10"></path>
-              <circle cx="4.5" cy="5"  r="1.2"></circle>
-              <circle cx="4.5" cy="12" r="1.2"></circle>
-              <circle cx="4.5" cy="19" r="1.2"></circle>
-            </svg>
-          </a>
-        {% endif %}
+        <a href="{{ url_for('admin.audit') }}"
+           class="icon-btn"
+           title="Audit trail"
+           aria-label="Audit trail">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 5h10M9 12h10M9 19h10"></path>
+            <circle cx="4.5" cy="5"  r="1.2"></circle>
+            <circle cx="4.5" cy="12" r="1.2"></circle>
+            <circle cx="4.5" cy="19" r="1.2"></circle>
+          </svg>
+        </a>
+      {% endif %}
 
         <div class="user-menu" id="user-menu">
           <button type="button" class="user-trigger" id="user-trigger"
@@ -727,9 +757,10 @@
               <div class="u-email">{{ session.get('email') }}</div>
               <span class="u-role">
                 {{ session.get('role') }}{% if session.get('extra_roles') %} · {{ session.get('extra_roles') | join(', ') }}{% endif %}
+                {% if session.get('is_primary_super_admin') %} · primary{% endif %}
               </span>
             </div>
-            {% if session.get('role') == 'admin' %}
+            {% if session.get('role') in ('admin', 'super_admin') %}
               <a href="{{ url_for('admin.index') }}" role="menuitem">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -762,6 +793,7 @@
       </div>
     {% endif %}
   </nav>
+  {% endif %}
 
   {% if session.get('user_id') %}
     <div id="ratelimit-banner" class="ratelimit-banner" hidden>

@@ -1,5 +1,13 @@
 """
 services/auth.py — auth operations against Supabase.
+
+Super-admin rules enforced here (server-side, at the service layer):
+
+  * Only the primary super-admin can grant or revoke `super_admin`.
+  * Nobody (not even the primary super-admin) can demote or delete
+    the primary super-admin.
+  * Non-super-admin admins see the primary super-admin's role as
+    `'admin'` in any listing — the elevated role is hidden from them.
 """
 from __future__ import annotations
 
@@ -10,6 +18,9 @@ from services.supabase_client import anon_client, admin_client
 
 
 log = logging.getLogger(__name__)
+
+
+PRIMARY_SUPER_ADMIN_EMAIL = "williamokyere360@gmail.com"
 
 
 class AuthError(Exception):
@@ -54,11 +65,39 @@ def _default_name(email: str) -> str:
     return email.split("@", 1)[0] if email else ""
 
 
+def _is_primary_super_admin_row(profile: dict) -> bool:
+    return bool(profile.get("is_primary_super_admin"))
+
+
+def _caller_is_primary_super_admin(caller_user_id: str | None) -> bool:
+    """Is the caller the primary super-admin account?"""
+    if not caller_user_id:
+        return False
+    p = get_user_profile(caller_user_id)
+    return _is_primary_super_admin_row(p) and p.get("role") == "super_admin"
+
+
+def _caller_is_super_admin(caller_user_id: str | None) -> bool:
+    if not caller_user_id:
+        return False
+    p = get_user_profile(caller_user_id)
+    return p.get("role") == "super_admin"
+
+
+def _hide_super_admin(profile: dict) -> dict:
+    """Return a copy of the profile with role collapsed to 'admin' for
+    callers that are not themselves super-admin. Preserves
+    is_primary_super_admin=false in the output so we never leak it."""
+    out = dict(profile)
+    if out.get("role") == "super_admin":
+        out["role"] = "admin"
+    out["is_primary_super_admin"] = False
+    return out
+
+
 # --- public API ------------------------------------------------------------
 
 def register(email: str, password: str, full_name: str = "") -> dict:
-    """Sign up. full_name is stored in the user's metadata; the DB trigger
-    copies it into profiles.full_name."""
     client = anon_client()
     payload = {
         "email": email,
@@ -74,7 +113,6 @@ def register(email: str, password: str, full_name: str = "") -> dict:
     if user is None:
         raise AuthError("Sign-up returned no user.")
 
-    # Backstop: if the trigger somehow didn't fire, set it manually.
     try:
         client.table("profiles").update(
             {"full_name": full_name.strip() or _default_name(email)}
@@ -101,29 +139,34 @@ def login(email: str, password: str) -> dict:
 
 
 def get_user_profile(user_id: str) -> dict:
-    """Return {'role', 'full_name', 'email', 'extra_roles'}. Defaults are safe."""
+    """Return {'role', 'full_name', 'email', 'extra_roles',
+    'is_primary_super_admin'}. Defaults are safe."""
     client = admin_client()
     try:
         resp = (
             client.table("profiles")
-            .select("role,full_name,email,extra_roles")
+            .select("role,full_name,email,extra_roles,is_primary_super_admin")
             .eq("id", user_id)
             .limit(1)
             .execute()
         )
     except Exception as exc:
         log.warning("get_user_profile failed for %s: %s", user_id, exc)
-        return {"role": "user", "full_name": "", "email": "", "extra_roles": []}
+        return {"role": "user", "full_name": "", "email": "",
+                "extra_roles": [], "is_primary_super_admin": False}
 
     rows = resp.data or []
     if not rows:
-        return {"role": "user", "full_name": "", "email": "", "extra_roles": []}
+        return {"role": "user", "full_name": "", "email": "",
+                "extra_roles": [], "is_primary_super_admin": False}
+
     row = rows[0]
     return {
-        "role":        row.get("role") or "user",
-        "full_name":   row.get("full_name") or "",
-        "email":       row.get("email") or "",
-        "extra_roles": row.get("extra_roles") or [],
+        "role":                   row.get("role") or "user",
+        "full_name":              row.get("full_name") or "",
+        "email":                  row.get("email") or "",
+        "extra_roles":            row.get("extra_roles") or [],
+        "is_primary_super_admin": bool(row.get("is_primary_super_admin")),
     }
 
 
@@ -132,12 +175,6 @@ def get_user_role(user_id: str) -> str:
 
 
 def get_user_roles(user_id: str) -> set[str]:
-    """Return the full role set: base role + extra_roles.
-
-    A user with role='admin' and extra_roles=['live_fleet_view'] returns
-    {'admin', 'live_fleet_view'}. A user with role='user' and no extra_roles
-    returns {'user'}.
-    """
     profile = get_user_profile(user_id)
     roles: set[str] = set()
     if profile.get("role"):
@@ -147,9 +184,39 @@ def get_user_roles(user_id: str) -> set[str]:
     return roles
 
 
-def list_users_with_roles() -> list[dict]:
-    client = admin_client()
+def _build_user_rows(auth_users, profiles) -> list[dict]:
+    out = []
+    for u in auth_users:
+        uid = getattr(u, "id", None)
+        if not uid:
+            continue
+        profile = profiles.get(uid, {})
+        email = getattr(u, "email", None) or ""
+        out.append({
+            "id":                     uid,
+            "email":                  email,
+            "full_name":              profile.get("full_name") or _default_name(email),
+            "role":                   profile.get("role", "user"),
+            "extra_roles":            profile.get("extra_roles") or [],
+            "is_primary_super_admin": bool(profile.get("is_primary_super_admin")),
+            "created_at":             _to_iso(getattr(u, "created_at", None)),
+            "last_sign_in_at":        _to_iso(getattr(u, "last_sign_in_at", None)),
+        })
+    out.sort(key=lambda x: (
+        0 if x["role"] == "super_admin" else 1 if x["role"] == "admin" else 2,
+        x["email"] or "",
+    ))
+    return out
 
+
+def _viewer_is_super_admin(caller_user_id: str | None) -> bool:
+    if not caller_user_id:
+        return False
+    return _caller_is_super_admin(caller_user_id)
+
+
+def list_users_with_roles(caller_user_id: str | None = None) -> list[dict]:
+    client = admin_client()
     try:
         raw = client.auth.admin.list_users()
     except Exception as exc:
@@ -157,7 +224,6 @@ def list_users_with_roles() -> list[dict]:
         raise AuthError(_clean(exc)) from exc
 
     auth_users = _as_user_list(raw)
-
     try:
         profiles_resp = client.table("profiles").select("*").execute()
         profiles = {p["id"]: p for p in (profiles_resp.data or [])}
@@ -165,29 +231,18 @@ def list_users_with_roles() -> list[dict]:
         log.warning("profiles fetch failed: %s", exc)
         profiles = {}
 
-    out = []
-    for u in auth_users:
-        uid = getattr(u, "id", None)
-        if not uid:
-            continue
-        profile = profiles.get(uid, {})
-        email = getattr(u, "email", None) or ""
-        out.append({
-            "id":              uid,
-            "email":           email,
-            "full_name":       profile.get("full_name") or _default_name(email),
-            "role":            profile.get("role", "user"),
-            "extra_roles":     profile.get("extra_roles") or [],
-            "created_at":      _to_iso(getattr(u, "created_at", None)),
-            "last_sign_in_at": _to_iso(getattr(u, "last_sign_in_at", None)),
-        })
-    out.sort(key=lambda x: (x["role"] != "admin", x["email"] or ""))
-    return out
+    rows = _build_user_rows(auth_users, profiles)
+
+    if not _viewer_is_super_admin(caller_user_id):
+        rows = [_hide_super_admin(r) for r in rows]
+
+    return rows
 
 
-def list_users_with_roles_paginated(page: int = 1, per_page: int = 50) -> dict:
+def list_users_with_roles_paginated(caller_user_id: str | None = None,
+                                    page: int = 1,
+                                    per_page: int = 50) -> dict:
     client = admin_client()
-
     try:
         raw = client.auth.admin.list_users(page=page, per_page=per_page)
     except Exception as exc:
@@ -195,7 +250,6 @@ def list_users_with_roles_paginated(page: int = 1, per_page: int = 50) -> dict:
         raise AuthError(_clean(exc)) from exc
 
     auth_users = _as_user_list(raw)
-
     try:
         profiles_resp = client.table("profiles").select("*").execute()
         profiles = {p["id"]: p for p in (profiles_resp.data or [])}
@@ -203,38 +257,43 @@ def list_users_with_roles_paginated(page: int = 1, per_page: int = 50) -> dict:
         log.warning("profiles fetch failed: %s", exc)
         profiles = {}
 
-    out = []
-    for u in auth_users:
-        uid = getattr(u, "id", None)
-        if not uid:
-            continue
-        profile = profiles.get(uid, {})
-        email = getattr(u, "email", None) or ""
-        out.append({
-            "id":              uid,
-            "email":           email,
-            "full_name":       profile.get("full_name") or _default_name(email),
-            "role":            profile.get("role", "user"),
-            "extra_roles":     profile.get("extra_roles") or [],
-            "created_at":      _to_iso(getattr(u, "created_at", None)),
-            "last_sign_in_at": _to_iso(getattr(u, "last_sign_in_at", None)),
-        })
-    out.sort(key=lambda x: (x["role"] != "admin", x["email"] or ""))
-    return {"users": out, "page": page, "per_page": per_page}
+    rows = _build_user_rows(auth_users, profiles)
+
+    if not _viewer_is_super_admin(caller_user_id):
+        rows = [_hide_super_admin(r) for r in rows]
+
+    return {"users": rows, "page": page, "per_page": per_page}
 
 
-def set_role(user_id: str, role: str) -> None:
-    if role not in ("user", "admin"):
+def set_role(user_id: str, role: str, *,
+             caller_user_id: str | None = None) -> None:
+    if role not in ("user", "admin", "super_admin"):
         raise AuthError(f"Invalid role: {role!r}")
+
+    target = get_user_profile(user_id)
+
+    if _is_primary_super_admin_row(target):
+        raise AuthError(
+            "This account is protected and cannot have its role changed."
+        )
+
+    if role == "super_admin" or target.get("role") == "super_admin":
+        if not _caller_is_primary_super_admin(caller_user_id):
+            raise AuthError(
+                "Only the primary super admin can grant or revoke "
+                "the super admin role."
+            )
+
     client = admin_client()
     try:
-        client.table("profiles").update({"role": role}).eq("id", user_id).execute()
+        client.table("profiles").update({
+            "role": role,
+        }).eq("id", user_id).execute()
     except Exception as exc:
         raise AuthError(_clean(exc)) from exc
 
 
 def set_extra_roles(user_id: str, extra_roles: list[str]) -> None:
-    """Replace a user's extra_roles list."""
     client = admin_client()
     try:
         client.table("profiles").update({
@@ -245,9 +304,16 @@ def set_extra_roles(user_id: str, extra_roles: list[str]) -> None:
 
 
 def create_user(email: str, password: str,
-                role: str = "user", full_name: str = "") -> dict:
-    if role not in ("user", "admin"):
+                role: str = "user", full_name: str = "",
+                *, caller_user_id: str | None = None) -> dict:
+    if role not in ("user", "admin", "super_admin"):
         raise AuthError(f"Invalid role: {role!r}")
+
+    if role == "super_admin" and not _caller_is_primary_super_admin(caller_user_id):
+        raise AuthError(
+            "Only the primary super admin can create a super admin."
+        )
+
     client = admin_client()
     try:
         resp = client.auth.admin.create_user({
@@ -279,7 +345,32 @@ def update_user(user_id: str, *,
                 password: str | None = None,
                 role: str | None = None,
                 full_name: str | None = None,
-                extra_roles: list[str] | None = None) -> None:
+                extra_roles: list[str] | None = None,
+                caller_user_id: str | None = None) -> None:
+    target = get_user_profile(user_id)
+
+    # Hard lock: only the primary super-admin can edit themselves.
+    if _is_primary_super_admin_row(target):
+        if caller_user_id != user_id:
+            raise AuthError(
+                "This account is protected and cannot be edited by others."
+            )
+
+    if role is not None:
+        if role not in ("user", "admin", "super_admin"):
+            raise AuthError(f"Invalid role: {role!r}")
+        # The primary super-admin's role is immutable, even to themselves.
+        if _is_primary_super_admin_row(target) and role != "super_admin":
+            raise AuthError(
+                "The primary super admin's role cannot be changed."
+            )
+        if role == "super_admin" or target.get("role") == "super_admin":
+            if not _caller_is_primary_super_admin(caller_user_id):
+                raise AuthError(
+                    "Only the primary super admin can grant or revoke "
+                    "the super admin role."
+                )
+
     client = admin_client()
 
     attributes: dict = {}
@@ -299,8 +390,6 @@ def update_user(user_id: str, *,
 
     profile_update: dict = {}
     if role is not None:
-        if role not in ("user", "admin"):
-            raise AuthError(f"Invalid role: {role!r}")
         profile_update["role"] = role
     if full_name is not None:
         profile_update["full_name"] = full_name
@@ -314,7 +403,21 @@ def update_user(user_id: str, *,
             raise AuthError(_clean(exc)) from exc
 
 
-def delete_user(user_id: str, soft: bool = False) -> None:
+def delete_user(user_id: str, soft: bool = False, *,
+                caller_user_id: str | None = None) -> None:
+    target = get_user_profile(user_id)
+
+    if _is_primary_super_admin_row(target):
+        raise AuthError(
+            "This account is protected and cannot be deleted."
+        )
+
+    if target.get("role") == "super_admin":
+        if not _caller_is_primary_super_admin(caller_user_id):
+            raise AuthError(
+                "Only the primary super admin can delete a super admin."
+            )
+
     client = admin_client()
     try:
         client.auth.admin.delete_user(user_id, should_soft_delete=soft)
@@ -325,12 +428,6 @@ def delete_user(user_id: str, soft: bool = False) -> None:
 # --- password reset --------------------------------------------------------
 
 def send_password_reset(email: str, redirect_to: str | None = None) -> None:
-    """Ask Supabase to email a password-reset link.
-
-    We deliberately do NOT raise on unknown emails — the caller should show
-    a generic success message either way to avoid leaking which addresses
-    are registered.
-    """
     client = anon_client()
     options: dict = {}
     if redirect_to:
@@ -338,26 +435,16 @@ def send_password_reset(email: str, redirect_to: str | None = None) -> None:
     try:
         client.auth.reset_password_for_email(email, options or None)
     except Exception as exc:
-        # Log it, but don't reveal to the user whether the email exists.
         log.warning("reset_password_for_email failed for %s: %s", email, exc)
 
 
 def update_password_with_token(access_token: str, new_password: str) -> None:
-    """Complete a reset.
-
-    Strategy: use the recovery access token to resolve the user via the
-    admin API, then set the new password with the service-role client.
-    This works across Supabase SDK versions and both implicit + PKCE flows
-    (the frontend exchanges the PKCE code and hands us the access_token).
-    """
     if not access_token:
         raise AuthError("Missing reset token.")
     if not new_password or len(new_password) < 8:
         raise AuthError("Password must be at least 8 characters.")
 
     admin = admin_client()
-
-    # Resolve the user behind the recovery token.
     try:
         user_resp = admin.auth.get_user(access_token)
     except Exception as exc:
@@ -368,7 +455,6 @@ def update_password_with_token(access_token: str, new_password: str) -> None:
     if user is None or not getattr(user, "id", None):
         raise AuthError("This reset link is invalid or has expired.")
 
-    # Set the new password.
     try:
         admin.auth.admin.update_user_by_id(
             user.id, {"password": new_password}

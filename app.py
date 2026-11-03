@@ -381,7 +381,7 @@ def _inject_nav_context():
     if not session.get("user_id"):
         return ctx
     try:
-        if session.get("role") == "admin":
+        if session.get("role") == "super_admin":
             ctx["nav_unacked_alerts"] = audit.unacked_alert_count()
         ctx["nav_pending_jobs"] = jobs.count_pending(session.get("user_id"))
     except Exception:

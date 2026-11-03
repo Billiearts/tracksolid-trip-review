@@ -112,16 +112,8 @@
           let begin, end;
           switch (btn.dataset.preset) {
             case 'shift': {
-              // Yesterday 07:00 (local) → Today 07:00 (local).
-              // If it is currently before 07:00, "today" would be in the
-              // future — anchor to the most recent completed 7am-to-7am
-              // window instead, so the button always yields a past range.
               const today7 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 0, 0);
-              if (now < today7) {
-                // Today's 7am hasn't happened yet: use yesterday 7am → today 7am
-                // of the previous day (i.e. two days ago → yesterday).
-                today7.setDate(today7.getDate() - 1);
-              }
+              if (now < today7) today7.setDate(today7.getDate() - 1);
               begin = new Date(today7.getTime() - 24 * 3600 * 1000);
               end = today7;
               break;

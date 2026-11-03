@@ -9,6 +9,14 @@
       <a href="{{ url_for('admin.index') }}" style="font-size: 0.9rem;">← Back</a>
     </div>
 
+    {% if user.is_primary_super_admin %}
+      <div class="flash info" style="margin-bottom: 1rem;">
+        This is the primary super-admin account. You can edit your own
+        name, email, and password, but the role is locked and cannot be
+        changed by anyone, including you.
+      </div>
+    {% endif %}
+
     <p class="muted" style="font-size: 0.85rem;">
       User ID: <code>{{ user.id }}</code>
     </p>
@@ -31,13 +39,22 @@
           Leave blank to keep the current password.
         </p>
       </div>
-      <div class="field">
-        <label for="role">Role</label>
-        <select id="role" name="role">
-          <option value="user"  {{ 'selected' if user.role != 'admin' else '' }}>User</option>
-          <option value="admin" {{ 'selected' if user.role == 'admin' else '' }}>Admin</option>
-        </select>
-      </div>
+
+      {% if not user.is_primary_super_admin %}
+        <div class="field">
+          <label for="role">Role</label>
+          <select id="role" name="role">
+            <option value="user"  {{ 'selected' if user.role == 'user'  else '' }}>User</option>
+            <option value="admin" {{ 'selected' if user.role == 'admin' else '' }}>Admin</option>
+            {% if caller_is_primary %}
+              <option value="super_admin" {{ 'selected' if user.role == 'super_admin' else '' }}>
+                Super admin
+              </option>
+            {% endif %}
+          </select>
+        </div>
+      {% endif %}
+
       <div class="field">
         <label>Additional roles</label>
         <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.9rem;cursor:pointer;margin-bottom:0.35rem;">
@@ -46,21 +63,18 @@
           Live fleet view
           <span class="muted" style="font-size:0.8rem;">(access the Live tab)</span>
         </label>
-        <p class="muted" style="font-size:0.78rem;margin:0.25rem 0 0;">
-          Additional roles are independent of the base role. An admin without
-          this role cannot access the Live page.
-        </p>
       </div>
       <button type="submit" style="width: 100%;">Save changes</button>
     </form>
 
-    <form method="post"
-          action="{{ url_for('admin.delete_user_route', user_id=user.id) }}"
-          onsubmit="return confirm('Delete this user? This cannot be undone.');"
-          style="margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid #eee;">
-      <input type="hidden" name="soft" value="0">
-      <button type="submit"
-              style="background: #c92a2a; width: 100%;">Delete user</button>
-    </form>
+    {% if not user.is_primary_super_admin %}
+      <form method="post"
+            action="{{ url_for('admin.delete_user_route', user_id=user.id) }}"
+            onsubmit="return confirm('Delete this user? This cannot be undone.');"
+            style="margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid #eee;">
+        <input type="hidden" name="soft" value="0">
+        <button type="submit" style="background: #c92a2a; width: 100%;">Delete user</button>
+      </form>
+    {% endif %}
   </div>
 {% endblock %}

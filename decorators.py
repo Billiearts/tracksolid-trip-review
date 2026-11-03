@@ -2,12 +2,13 @@
 decorators.py — auth guards for Flask routes.
 
 Session shape (set by blueprints/auth.py):
-  session['session_id']  -> uuid string from user_sessions table
-  session['user_id']     -> cached for convenience
-  session['email']       -> cached
-  session['role']        -> cached
-  session['full_name']   -> cached
-  session['extra_roles'] -> cached list
+  session['session_id']             -> uuid string from user_sessions table
+  session['user_id']                -> cached for convenience
+  session['email']                  -> cached
+  session['role']                   -> cached ('user' | 'admin' | 'super_admin')
+  session['full_name']              -> cached
+  session['extra_roles']            -> cached list
+  session['is_primary_super_admin'] -> cached bool (only true for the primary)
 
 Every request verifies the session row still exists in Postgres.
 If not, the cookie is cleared and the user is bounced to /login.
@@ -32,6 +33,9 @@ def _refresh_session_from_record(record: dict) -> None:
     session["role"]        = record["role"]
     session["full_name"]   = record["full_name"]
     session["extra_roles"] = record.get("extra_roles") or []
+    session["is_primary_super_admin"] = bool(
+        record.get("is_primary_super_admin")
+    )
 
 
 def login_required(f):
@@ -47,17 +51,43 @@ def login_required(f):
 
 
 def admin_required(f):
+    """Any admin OR super_admin passes."""
     @wraps(f)
     def wrapper(*args, **kwargs):
         record = _current_session()
         if record is None:
             session.clear()
             return redirect(url_for("auth.login", next=request.path))
-        if record["role"] != "admin":
+        if record["role"] not in ("admin", "super_admin"):
             abort(403)
         _refresh_session_from_record(record)
         return f(*args, **kwargs)
     return wrapper
+
+
+def super_admin_required(f):
+    """Only super_admin passes (primary or secondary)."""
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        record = _current_session()
+        if record is None:
+            session.clear()
+            return redirect(url_for("auth.login", next=request.path))
+        if record["role"] != "super_admin":
+            abort(403)
+        _refresh_session_from_record(record)
+        return f(*args, **kwargs)
+    return wrapper
+
+
+def is_primary_super_admin() -> bool:
+    """True only for the primary super-admin account."""
+    return bool(session.get("is_primary_super_admin"))
+
+
+def is_super_admin() -> bool:
+    """True for any super-admin (primary or not)."""
+    return session.get("role") == "super_admin"
 
 
 def has_role(role_name: str):
@@ -75,8 +105,6 @@ def has_role(role_name: str):
                 session.clear()
                 return redirect(url_for("auth.login", next=request.path))
 
-            # Refresh the extra_roles from profiles on every call so
-            # grant / revoke takes effect without a re-login.
             from services.auth import get_user_profile
             profile = get_user_profile(record["user_id"])
             extra_roles = profile.get("extra_roles") or []

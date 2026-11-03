@@ -31,8 +31,13 @@
       <div class="field">
         <label for="role">Role</label>
         <select id="role" name="role">
-          <option value="user"  {{ 'selected' if role != 'admin' else '' }}>User</option>
+          <option value="user"  {{ 'selected' if role != 'admin' and role != 'super_admin' else '' }}>User</option>
           <option value="admin" {{ 'selected' if role == 'admin' else '' }}>Admin</option>
+          {% if caller_is_primary %}
+            <option value="super_admin" {{ 'selected' if role == 'super_admin' else '' }}>
+              Super admin
+            </option>
+          {% endif %}
         </select>
       </div>
       <button type="submit" style="width: 100%;">Create user</button>

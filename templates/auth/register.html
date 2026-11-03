@@ -4,7 +4,13 @@
 
 {% block content %}
   <div class="card auth-card">
-    <h1>Create account</h1>
+    <div class="auth-logo-head">
+      <img src="{{ url_for('static', filename='gbc_logo.png') }}"
+           alt="Trip Review">
+      <h2>Trip Review</h2>
+      <p>Create your account</p>
+    </div>
+
     <form method="post">
       <div class="field">
         <label for="full_name">Full name</label>

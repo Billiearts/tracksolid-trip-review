@@ -27,20 +27,35 @@
         </thead>
         <tbody>
           {% for u in result.users %}
+            {% set is_primary = u.is_primary_super_admin %}
+            {% set protected = is_primary and not caller_is_primary %}
             <tr>
               <td>{{ u.full_name }}</td>
-              <td>{{ u.email }}</td>
-              <td><span class="role-pill role-{{ u.role }}">{{ u.role }}</span></td>
+              <td>
+                {{ u.email }}
+                {% if is_primary and caller_is_primary %}
+                  <span class="role-pill role-admin" style="margin-left: 0.3rem;">primary</span>
+                {% endif %}
+              </td>
+              <td>
+                <span class="role-pill role-{{ 'admin' if u.role in ('admin', 'super_admin') else 'user' }}">
+                  {{ 'admin' if u.role == 'super_admin' and not caller_is_primary else u.role }}
+                </span>
+              </td>
               <td style="white-space: nowrap;">{{ u.created_at or '—' }}</td>
               <td style="white-space: nowrap;">{{ u.last_sign_in_at or '—' }}</td>
               <td style="text-align: right; white-space: nowrap;">
-                <a class="btn-edit"
-                   href="{{ url_for('admin.edit_user', user_id=u.id) }}">Edit</a>
+                {% if protected %}
+                  <span class="muted" style="font-size: 0.78rem;">protected</span>
+                {% else %}
+                  <a class="btn-edit"
+                     href="{{ url_for('admin.edit_user', user_id=u.id) }}">Edit</a>
+                {% endif %}
               </td>
             </tr>
           {% endfor %}
         </tbody>
-         </table>
+      </table>
       </div>
 
       <div class="pagination">
