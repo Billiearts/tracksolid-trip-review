@@ -4,54 +4,18 @@ services/audit.py — advanced audit trail.
 Public API (all safe to call from any request context; failures never
 propagate into the audited code path):
 
-    record(event, *, severity='info', outcome='success',
-           target=None, detail=None, meta=None,
-           before=None, after=None, tags=None,
-           user_id=None, email=None,
-           status_code=None, duration_ms=None,
-           request_id=None) -> str | None
-
-    record_diff(event, *, before, after, target=None, ...) -> str | None
-        Convenience wrapper: computes diff_json from before/after and calls
-        record().
-
+    record(event, *, severity='info', outcome='success', ...) -> str | None
+    record_diff(event, *, before, after, ...)                -> str | None
     begin_request() -> str
-        Returns a per-request correlation id and installs it in the Flask
-        `g` object. Called by the middleware; callers that want to link
-        follow-up rows just pass the same request_id.
-
     current_request_id() -> str | None
-
     verify_chain(limit=10000) -> dict
-        Walk the hash chain from the start, recompute it, report the first
-        mismatch.
+    export_rows(...) -> (mimetype, body)
+    correlation_rows(request_id) -> list[dict]
+    prune(...) -> dict
 
-    export_rows(...) -> iterator of dicts
-        For the CSV/JSONL export endpoint.
-
-Severity levels:
-    debug    — verbose trace, dropped after 7 days by default
-    info     — routine action (login, download, view)
-    notice   — state-changing but benign (export, edit meta)
-    warning  — suspicious or partially failed (failed login, 403)
-    critical — must look (role escalation, quota exhaust, hash mismatch)
-
-Outcome values:
-    success  — action completed
-    failure  — action was rejected or errored
-    partial  — action completed with caveats (e.g. upload mirror failed)
-    attempt  — action was tried but the result is not yet known
-
-Redaction:
-    Keys matching REDACT_KEYS anywhere in `meta`, `before`, `after`, `detail`
-    are replaced with "[redacted]". The row also gets redacted=true.
-    Matching is case-insensitive substring on the key name.
-
-Hash chain:
-    Every row's `hash` is sha256(prev_hash || canonical_json(row_without_hash)).
-    The chain is seeded from audit_chain_head.last_hash and the head is
-    updated in the same transaction (best-effort; we accept the small
-    window of concurrency we get from the Supabase client).
+The hash chain is monotonic thanks to `chain_seq` (a Postgres sequence).
+An advisory lock (`audit_chain_lock` RPC) serialises the
+read-compute-insert-update of the chain head across processes.
 """
 from __future__ import annotations
 
@@ -77,22 +41,18 @@ log = logging.getLogger(__name__)
 SEVERITY_LEVELS = ("debug", "info", "notice", "warning", "critical")
 OUTCOME_VALUES  = ("success", "failure", "partial", "attempt")
 
-# Keys whose *values* are redacted before insert. Substring match,
-# case-insensitive, applied recursively through dicts and lists.
 REDACT_KEYS = (
     "password", "passwd", "pwd", "secret", "token",
     "api_key", "apikey", "authorization", "cookie", "session_id",
     "signature", "meta_signature",
 )
 
-# Keys we keep even though they contain "token" as a substring — these are
-# the request/response tracking ids that are safe to log.
 REDACT_ALLOWLIST = frozenset({
     "access_token_present", "token_present",
 })
 
 _MAX_STRING_LEN = 2000
-_MAX_META_BYTES = 32 * 1024   # hard cap; oversized meta is truncated
+_MAX_META_BYTES = 32 * 1024
 _MAX_DETAIL_LEN = 2000
 
 
@@ -101,7 +61,6 @@ _MAX_DETAIL_LEN = 2000
 # ---------------------------------------------------------------------------
 
 _table_ready: bool | None = None
-_chain_lock_ready = False
 
 
 def _client():
@@ -134,30 +93,17 @@ def _is_sensitive(key: str) -> bool:
     return any(s in k for s in REDACT_KEYS)
 
 
-def _redact(obj, *, depth: int = 0):
-    """Recursively redact values of sensitive keys in dicts/lists."""
-    if depth > 12:
-        return "[truncated]"
-    if isinstance(obj, dict):
-        out = {}
-        for k, v in obj.items():
-            if _is_sensitive(str(k)):
-                out[k] = "[redacted]"
-            else:
-                out[k] = _redact(v, depth=depth + 1)
-        return out
-    if isinstance(obj, list):
-        return [_redact(v, depth=depth + 1) for v in obj]
-    if isinstance(obj, str):
-        return _safe(obj, _MAX_STRING_LEN)
-    if isinstance(obj, (int, float, bool)) or obj is None:
-        return obj
-    return _safe(str(obj), _MAX_STRING_LEN)
+def _safe(value, max_len: int = _MAX_STRING_LEN):
+    if value is None:
+        return None
+    if isinstance(value, (int, float, bool)):
+        return value
+    s = str(value)
+    return s[:max_len]
 
 
 def _redact_any(obj) -> tuple[object, bool]:
-    """Redact and report whether anything was redacted."""
-    redacted_flag = {"hit": False}
+    hit = {"flag": False}
 
     def walk(o, depth=0):
         if depth > 12:
@@ -166,7 +112,7 @@ def _redact_any(obj) -> tuple[object, bool]:
             out = {}
             for k, v in o.items():
                 if _is_sensitive(str(k)):
-                    redacted_flag["hit"] = True
+                    hit["flag"] = True
                     out[k] = "[redacted]"
                 else:
                     out[k] = walk(v, depth + 1)
@@ -180,16 +126,7 @@ def _redact_any(obj) -> tuple[object, bool]:
         return _safe(str(o), _MAX_STRING_LEN)
 
     redacted = walk(obj)
-    return redacted, redacted_flag["hit"]
-
-
-def _safe(value, max_len: int = _MAX_STRING_LEN):
-    if value is None:
-        return None
-    if isinstance(value, (int, float, bool)):
-        return value
-    s = str(value)
-    return s[:max_len]
+    return redacted, hit["flag"]
 
 
 # ---------------------------------------------------------------------------
@@ -239,14 +176,12 @@ def _path() -> str | None:
     if not has_request_context():
         return None
     try:
-        # Strip the query string so tokens/params don't land in the log.
         return (request.path or "")[:300] or None
     except Exception:
         return None
 
 
 def begin_request() -> str:
-    """Install a per-request correlation id and return it."""
     rid = str(uuid.uuid4())
     if has_request_context():
         try:
@@ -270,8 +205,6 @@ def current_request_id() -> str | None:
 # ---------------------------------------------------------------------------
 
 def _canonical_json(obj) -> str:
-    """Stable JSON for hashing: sorted keys, no whitespace, no nulls dropped
-    (we want the hash to change if nulls appear/disappear)."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"),
                       default=str, ensure_ascii=False)
 
@@ -323,6 +256,20 @@ def _write_chain_head(new_hash: str, row_id: str | None) -> None:
         log.warning("audit chain head update failed: %s", exc)
 
 
+def _chain_lock() -> None:
+    try:
+        _client().rpc("audit_chain_lock", {}).execute()
+    except Exception as exc:
+        log.debug("audit_chain_lock RPC not available: %s", exc)
+
+
+def _chain_unlock() -> None:
+    try:
+        _client().rpc("audit_chain_unlock", {}).execute()
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Diff
 # ---------------------------------------------------------------------------
@@ -361,7 +308,6 @@ def record(
     duration_ms: int | None = None,
     request_id: str | None = None,
 ) -> str | None:
-    """Write one audit row. Returns the new row's id, or None on failure."""
     try:
         if not _table_ok():
             return None
@@ -384,19 +330,18 @@ def record(
         if rid is None:
             rid = current_request_id()
 
-        # --- redact everything user-supplied ---
         meta_r, meta_hit       = _redact_any(meta or {})
-        before_r, before_hit   = _redact_any(before) if before is not None else (None, False)
-        after_r,  after_hit    = _redact_any(after)  if after  is not None else (None, False)
+        before_r, before_hit   = (_redact_any(before) if before is not None
+                                  else (None, False))
+        after_r,  after_hit    = (_redact_any(after) if after is not None
+                                  else (None, False))
         detail_r = _safe(detail, _MAX_DETAIL_LEN)
         if detail_r:
-            # Cheap scan of the free-form string too.
             for needle in REDACT_KEYS:
                 if needle in detail_r.lower():
                     meta_hit = True
                     break
 
-        # --- keep meta within the byte budget ---
         try:
             if len(_canonical_json(meta_r).encode("utf-8")) > _MAX_META_BYTES:
                 meta_r = {"_truncated": True,
@@ -434,18 +379,21 @@ def record(
         row.setdefault("meta", {})
         row["created_at"] = datetime.now(timezone.utc).isoformat()
 
-        # --- append to the hash chain ---
-        prev_hash = _read_chain_head()
-        row["prev_hash"] = prev_hash
-        row["hash"]      = _row_digest(row, prev_hash)
+        # --- serialise the chain read/compute/insert/update ---
+        _chain_lock()
+        try:
+            prev_hash = _read_chain_head()
+            row["prev_hash"] = prev_hash
+            row["hash"]      = _row_digest(row, prev_hash)
 
-        resp = _client().table("audit_log").insert(row).execute()
-        inserted = (resp.data or [])
-        row_id = inserted[0]["id"] if inserted else None
+            resp = _client().table("audit_log").insert(row).execute()
+            inserted = (resp.data or [])
+            row_id = inserted[0]["id"] if inserted else None
 
-        _write_chain_head(row["hash"], row_id)
+            _write_chain_head(row["hash"], row_id)
+        finally:
+            _chain_unlock()
 
-        # --- alert rules ---
         try:
             _evaluate_alert_rules(row, row_id)
         except Exception as exc:
@@ -459,8 +407,6 @@ def record(
 
 def record_diff(event: str, *, before: dict | None, after: dict | None,
                 **kwargs) -> str | None:
-    """Convenience wrapper: pass before/after and we compute the diff.
-    Severity defaults to 'notice' when the diff is non-empty."""
     kwargs.setdefault("severity", "notice")
     if "meta" not in kwargs and (before is not None or after is not None):
         kwargs["meta"] = {
@@ -473,13 +419,8 @@ def record_diff(event: str, *, before: dict | None, after: dict | None,
 # Alert rule engine
 # ---------------------------------------------------------------------------
 
-# Every rule is (name, predicate(row) -> bool, severity, message_template).
-# A row that matches multiple rules produces multiple alert rows; that is
-# intentional — an admin should see every reason a row is worth looking at.
-
-def _alert_rule_failed_login(row: dict) -> tuple[str, str] | None:
+def _alert_rule_failed_login(row: dict):
     if row.get("event") == "auth.login_failed":
-        # Read the last 10 minutes of failures for the same actor_email.
         email = (row.get("actor_email") or row.get("target") or "").lower()
         if not email:
             return None
@@ -496,33 +437,27 @@ def _alert_rule_failed_login(row: dict) -> tuple[str, str] | None:
         except Exception:
             return None
         if n >= 5:
-            return (
-                "failed_login_burst",
-                f"{n} failed logins for {email} in 10 minutes",
-            )
+            return ("failed_login_burst",
+                    f"{n} failed logins for {email} in 10 minutes")
     return None
 
 
-def _alert_rule_privilege_escalation(row: dict) -> tuple[str, str] | None:
+def _alert_rule_privilege_escalation(row: dict):
     if row.get("event") == "admin.role_change":
         old = (row.get("meta") or {}).get("old_role")
         new = (row.get("meta") or {}).get("new_role")
         if new == "admin" and old != "admin":
-            return (
-                "privilege_escalation",
-                f"{row.get('target')} was promoted to admin",
-            )
+            return ("privilege_escalation",
+                    f"{row.get('target')} was promoted to admin")
     if row.get("event") == "admin.user_update":
         detail = row.get("detail") or ""
         if "extra_roles" in detail:
-            return (
-                "extra_roles_change",
-                f"extra roles changed for {row.get('target')}: {detail[:200]}",
-            )
+            return ("extra_roles_change",
+                    f"extra roles changed for {row.get('target')}: {detail[:200]}")
     return None
 
 
-def _alert_rule_quota_exhaust(row: dict) -> tuple[str, str] | None:
+def _alert_rule_quota_exhaust(row: dict):
     if row.get("event") == "live.probe" and "rate limit" in (row.get("detail") or "").lower():
         return ("quota_exhaust", "Tracksolid daily quota exhausted")
     if row.get("event") == "auth.password_reset_completed" and not row.get("actor_id"):
@@ -530,24 +465,19 @@ def _alert_rule_quota_exhaust(row: dict) -> tuple[str, str] | None:
     return None
 
 
-def _alert_rule_fence_tamper(row: dict) -> tuple[str, str] | None:
+def _alert_rule_fence_tamper(row: dict):
     if row.get("event") == "live.fence_save":
         meta = row.get("meta") or {}
         names = meta.get("names") or []
         if len(names) >= 6:
-            return (
-                "bulk_fence_change",
-                f"{len(names)} fences modified in one request",
-            )
+            return ("bulk_fence_change",
+                    f"{len(names)} fences modified in one request")
     if row.get("event") == "live.fence_delete":
-        return (
-            "fence_deleted",
-            f"fence {row.get('target')} deleted",
-        )
+        return ("fence_deleted", f"fence {row.get('target')} deleted")
     return None
 
 
-def _alert_rule_hash_mismatch(row: dict) -> tuple[str, str] | None:
+def _alert_rule_hash_mismatch(row: dict):
     if row.get("event") == "audit.chain_mismatch":
         return ("audit_chain_mismatch", "audit hash chain failed verification")
     return None
@@ -603,16 +533,10 @@ def _write_alert(*, rule: str, severity: str, message: str,
     except Exception as exc:
         log.warning("audit alert insert failed (%s): %s", rule, exc)
         # ---------------------------------------------------------------------------
-# Chain verification
+# Chain verification — order by chain_seq (monotonic), not created_at
 # ---------------------------------------------------------------------------
 
 def verify_chain(limit: int = 10000) -> dict:
-    """Walk the audit_log from the oldest row and recompute the hash chain.
-
-    Returns:
-        {"ok": bool, "checked": n, "first_mismatch": row_id | None,
-         "expected": hash, "actual": hash}
-    """
     try:
         page_size = 500
         prev = "0" * 64
@@ -628,8 +552,8 @@ def verify_chain(limit: int = 10000) -> dict:
                         .select("id,event,actor_id,actor_email,target,detail,"
                                 "severity,outcome,status_code,duration_ms,"
                                 "request_id,meta,diff_json,tags,ip,"
-                                "created_at,hash,prev_hash")
-                        .order("created_at", desc=False)
+                                "created_at,chain_seq,hash,prev_hash")
+                        .order("chain_seq", desc=False)
                         .range(offset, offset + page_size - 1)
                         .execute())
             except Exception as exc:
@@ -666,8 +590,6 @@ def verify_chain(limit: int = 10000) -> dict:
             "actual":   first_actual,
         }
         if first_mismatch:
-            # Record the failure as its own audit row (which will itself
-            # trigger the hash_mismatch alert rule).
             record(
                 "audit.chain_mismatch",
                 severity="critical",
@@ -695,39 +617,29 @@ def _parse_ts(s) -> datetime | None:
         return None
 
 
-def list_events(
-    *,
-    page: int = 1, per_page: int = 100,
-    event: str | None = None,
-    actor_email: str | None = None,
-    actor_id: str | None = None,
-    target: str | None = None,
-    severity: str | None = None,
-    outcome: str | None = None,
-    request_id: str | None = None,
-    days: int | None = None,
-    include_debug: bool = False,
-) -> dict:
+def list_events(*, page: int = 1, per_page: int = 100,
+                event: str | None = None,
+                actor_email: str | None = None,
+                actor_id: str | None = None,
+                target: str | None = None,
+                severity: str | None = None,
+                outcome: str | None = None,
+                request_id: str | None = None,
+                days: int | None = None,
+                include_debug: bool = False) -> dict:
     client = _client()
     per_page = max(10, min(500, per_page))
     offset = (max(1, page) - 1) * per_page
 
     q = client.table("audit_log").select("*").order("created_at", desc=True)
 
-    if event:
-        q = q.eq("event", event)
-    if actor_email:
-        q = q.ilike("actor_email", f"%{actor_email}%")
-    if actor_id:
-        q = q.eq("actor_id", actor_id)
-    if target:
-        q = q.ilike("target", f"%{target}%")
-    if severity:
-        q = q.eq("severity", severity)
-    if outcome:
-        q = q.eq("outcome", outcome)
-    if request_id:
-        q = q.eq("request_id", request_id)
+    if event:        q = q.eq("event", event)
+    if actor_email:  q = q.ilike("actor_email", f"%{actor_email}%")
+    if actor_id:     q = q.eq("actor_id", actor_id)
+    if target:       q = q.ilike("target", f"%{target}%")
+    if severity:     q = q.eq("severity", severity)
+    if outcome:      q = q.eq("outcome", outcome)
+    if request_id:   q = q.eq("request_id", request_id)
     if days:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         q = q.gte("created_at", cutoff)
@@ -857,18 +769,42 @@ def acknowledge_alert(alert_id: str, *, user_id: str | None,
         log.warning("acknowledge_alert failed: %s", exc)
 
 
-# ---------------------------------------------------------------------------
+def correlation_rows(request_id: str) -> list[dict]:
+    if not request_id:
+        return []
+    try:
+        resp = (_client().table("audit_log")
+                .select("*")
+                .eq("request_id", request_id)
+                .order("chain_seq", desc=False)
+                .limit(200)
+                .execute())
+        out = []
+        for r in (resp.data or []):
+            out.append({
+                "id":          r.get("id"),
+                "event":       r.get("event") or "",
+                "severity":    r.get("severity") or "info",
+                "outcome":     r.get("outcome") or "success",
+                "actor_email": r.get("actor_email") or "",
+                "target":      r.get("target") or "",
+                "detail":      r.get("detail") or "",
+                "meta":        r.get("meta") or {},
+                "diff":        r.get("diff_json") or {},
+                "created_at":  _parse_ts(r.get("created_at")),
+                "status_code": r.get("status_code"),
+                "duration_ms": r.get("duration_ms"),
+            })
+        return out
+    except Exception:
+        return []
+    # ---------------------------------------------------------------------------
 # Retention / export
 # ---------------------------------------------------------------------------
 
 def prune(*, debug_days: int = 7, info_days: int = 90,
           notice_days: int = 180, warning_days: int = 365,
           critical_days: int = 3650) -> dict:
-    """Delete rows older than each severity's retention window.
-
-    Never touches critical rows below 10 years by default. Returns the
-    number of rows deleted per severity.
-    """
     deleted = {}
     now = datetime.now(timezone.utc)
     windows = {
@@ -890,7 +826,6 @@ def prune(*, debug_days: int = 7, info_days: int = 90,
             log.warning("audit.prune(%s) failed: %s", sev, exc)
             deleted[sev] = 0
 
-    # Also prune acknowledged alerts older than 90 days.
     try:
         cutoff = (now - timedelta(days=90)).isoformat()
         resp = (_client().table("audit_alert")
@@ -914,10 +849,6 @@ def prune(*, debug_days: int = 7, info_days: int = 90,
 
 def export_rows(*, fmt: str = "csv", days: int | None = None,
                 max_rows: int = 100_000) -> tuple[str, str]:
-    """Return (mimetype, body) for a CSV or JSONL export.
-
-    Streams in pages of 500. Caps at max_rows.
-    """
     import csv
     import io
 
@@ -937,7 +868,7 @@ def export_rows(*, fmt: str = "csv", days: int | None = None,
             resp = (_client().table("audit_log")
                     .select(",".join(columns) + ",meta,diff_json")
                     .gte("created_at", cutoff)
-                    .order("created_at", desc=False)
+                    .order("chain_seq", desc=False)
                     .range(written, written + 499)
                     .execute())
             rows = resp.data or []
@@ -950,7 +881,6 @@ def export_rows(*, fmt: str = "csv", days: int | None = None,
                 break
         return "application/x-ndjson", buf.getvalue()
 
-    # CSV
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
     w.writeheader()
@@ -959,14 +889,13 @@ def export_rows(*, fmt: str = "csv", days: int | None = None,
         resp = (_client().table("audit_log")
                 .select(",".join(columns))
                 .gte("created_at", cutoff)
-                .order("created_at", desc=False)
+                .order("chain_seq", desc=False)
                 .range(written, written + 499)
                 .execute())
         rows = resp.data or []
         if not rows:
             break
         for r in rows:
-            # Flatten tags into a pipe-joined string for CSV friendliness.
             r = dict(r)
             if isinstance(r.get("tags"), list):
                 r["tags"] = "|".join(r["tags"])
@@ -975,35 +904,3 @@ def export_rows(*, fmt: str = "csv", days: int | None = None,
         if len(rows) < 500:
             break
     return "text/csv", buf.getvalue()
-
-
-def correlation_rows(request_id: str) -> list[dict]:
-    """All audit rows with the given request_id, ordered by time."""
-    if not request_id:
-        return []
-    try:
-        resp = (_client().table("audit_log")
-                .select("*")
-                .eq("request_id", request_id)
-                .order("created_at", desc=False)
-                .limit(200)
-                .execute())
-        out = []
-        for r in (resp.data or []):
-            out.append({
-                "id":          r.get("id"),
-                "event":       r.get("event") or "",
-                "severity":    r.get("severity") or "info",
-                "outcome":     r.get("outcome") or "success",
-                "actor_email": r.get("actor_email") or "",
-                "target":      r.get("target") or "",
-                "detail":      r.get("detail") or "",
-                "meta":        r.get("meta") or {},
-                "diff":        r.get("diff_json") or {},
-                "created_at":  _parse_ts(r.get("created_at")),
-                "status_code": r.get("status_code"),
-                "duration_ms": r.get("duration_ms"),
-            })
-        return out
-    except Exception:
-        return []

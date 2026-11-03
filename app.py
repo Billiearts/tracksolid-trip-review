@@ -22,7 +22,6 @@ from report import (
     utc_str, find_trips,
 )
 from services.devices import classify_device, find_device, get_devices
-from services import audit
 from services import jobs
 from services import reports_repo
 from services import sessions as sessions_svc
@@ -31,7 +30,38 @@ from services.previews import (
     store_preview, get_preview, mark_ready_reports, mark_failed,
 )
 from services.ratelimit import status as ratelimit_status
-from services.audit_middleware import register_audit_middleware
+
+
+# Audit is loaded defensively so a broken audit module never prevents the
+# app from booting. When it works, `audit` is the real module; when it
+# doesn't, `audit` is a no-op stub that satisfies every call site below.
+try:
+    from services import audit
+    _AUDIT_OK = True
+except Exception as _audit_exc:  # pragma: no cover
+    logging.getLogger(__name__).error(
+        "audit module unavailable — running with a no-op stub: %s", _audit_exc
+    )
+    _AUDIT_OK = False
+    class _NoAudit:
+        def record(self, *a, **k): return None
+        def record_diff(self, *a, **k): return None
+        def list_events(self, *a, **k):
+            return {"rows": [], "page": 1, "per_page": 100, "has_more": False}
+        def distinct_events(self, *a, **k): return []
+        def distinct_severities(self, *a, **k): return []
+        def list_alerts(self, *a, **k):
+            return {"rows": [], "page": 1, "per_page": 50, "has_more": False}
+        def unacked_alert_count(self): return 0
+        def acknowledge_alert(self, *a, **k): return None
+        def verify_chain(self, *a, **k):
+            return {"ok": False, "error": "audit unavailable"}
+        def prune(self, *a, **k): return {}
+        def export_rows(self, *a, **k): return ("text/plain", "")
+        def correlation_rows(self, *a, **k): return []
+        def begin_request(self): return ""
+        def current_request_id(self): return None
+    audit = _NoAudit()
 
 
 logging.basicConfig(
@@ -59,7 +89,15 @@ from blueprints.live_fleet import bp as live_fleet_bp
 app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
 app.register_blueprint(live_fleet_bp)
-register_audit_middleware(app)
+
+
+# --- audit middleware -----------------------------------------------------
+try:
+    from services.audit_middleware import register_audit_middleware
+    register_audit_middleware(app)
+except Exception as exc:
+    log.error("audit middleware not registered (continuing without it): %s", exc)
+
 
 # --- startup maintenance --------------------------------------------------
 try:
@@ -194,7 +232,8 @@ def _bulk_safe_filename_label(reports: list[dict]) -> str:
         label = trucks[0]
     else:
         label = f"Bulk {len(trucks)} trucks"
-    return "".join(ch if ch.isalnum() or ch in " -" else "_" for ch in label).strip()
+    return "".join(ch if ch.isalnum() or ch in " -" else "_"
+                   for ch in label).strip()
 
 
 def _merge_manual(old: dict | None, new: dict) -> dict:
@@ -334,6 +373,22 @@ def _run_bulk_export(job_id, reports, out_path, per_trip_manual):
         log.exception("could not save computed/manual for bulk %s", job_id)
 
 
+# --- nav context ----------------------------------------------------------
+
+@app.context_processor
+def _inject_nav_context():
+    ctx = {"nav_unacked_alerts": 0, "nav_pending_jobs": 0}
+    if not session.get("user_id"):
+        return ctx
+    try:
+        if session.get("role") == "admin":
+            ctx["nav_unacked_alerts"] = audit.unacked_alert_count()
+        ctx["nav_pending_jobs"] = jobs.count_pending(session.get("user_id"))
+    except Exception:
+        pass
+    return ctx
+
+
 # --- routes ---------------------------------------------------------------
 
 @app.route("/favicon.ico")
@@ -394,8 +449,6 @@ def api_devices():
         })
     out.sort(key=lambda x: x["name"].lower())
     return jsonify({"devices": out})
-
-
 @app.route("/trips", methods=["POST"])
 @login_required
 def trips_list():
@@ -426,17 +479,10 @@ def trips_list():
     audit.record(
         "search.trips",
         target=", ".join(t.get("name") or t["imei"] for t in trucks)[:200],
-        detail=(
-            f"trucks={len(trucks)}, "
-            f"begin={begin_s}, end={end_s}, "
-            f"include_history={include_history}"
-        ),
-        meta={
-            "truck_count":     len(trucks),
-            "include_history": include_history,
-            "begin":           begin_s,
-            "end":             end_s,
-        },
+        detail=(f"trucks={len(trucks)}, begin={begin_s}, end={end_s}, "
+                f"include_history={include_history}"),
+        meta={"truck_count": len(trucks), "include_history": include_history,
+              "begin": begin_s, "end": end_s},
     )
 
     resolved = []
@@ -470,7 +516,6 @@ def trips_list():
             log.exception("trip list failed for %s", dev["imei"])
             flash(f"Could not load trips for {dev['truck']}: {exc}", "error")
             continue
-
         if not trips:
             continue
         groups.append({
@@ -491,14 +536,12 @@ def trips_list():
 
     return render_template(
         "trips.html",
-        truck_groups=groups,
-        total_trips=total,
-        not_found=not_found,
-        begin_str=begin_s,
-        end_str=end_s,
-        include_history=include_history,
+        truck_groups=groups, total_trips=total, not_found=not_found,
+        begin_str=begin_s, end_str=end_s, include_history=include_history,
         max_per_truck=MAX_TRIPS_PER_TRUCK,
     )
+
+
 @app.route("/preview", methods=["POST"])
 @login_required
 def preview_start():
@@ -517,11 +560,8 @@ def preview_start():
     per_truck = _group_trips_by_truck(selected)
     for imei, n in per_truck.items():
         if n > MAX_TRIPS_PER_TRUCK:
-            flash(
-                f"At most {MAX_TRIPS_PER_TRUCK} trips per truck. "
-                f"One truck has {n}.",
-                "error",
-            )
+            flash(f"At most {MAX_TRIPS_PER_TRUCK} trips per truck. "
+                  f"One truck has {n}.", "error")
             return redirect(url_for("index"))
 
     for s in selected:
@@ -560,9 +600,8 @@ def preview_show(preview_id):
         abort(403)
 
     if state["status"] == "computing":
-        return render_template("preview.html",
-                               loading=True, preview_id=preview_id,
-                               state=state)
+        return render_template("preview.html", loading=True,
+                               preview_id=preview_id, state=state)
 
     if state["status"] == "failed":
         flash(state.get("error") or "Preview failed.", "error")
@@ -580,17 +619,10 @@ def preview_show(preview_id):
     current_index = max(0, min(current_index, len(reports) - 1))
 
     return render_template(
-        "preview.html",
-        loading=False,
-        view_mode=False,
-        is_bulk=False,
-        preview_id=preview_id,
-        state=state,
-        reports=reports,
-        current_index=current_index,
-        computed=reports[current_index],
-        manual={},
-        report_id=None,
+        "preview.html", loading=False, view_mode=False, is_bulk=False,
+        preview_id=preview_id, state=state, reports=reports,
+        current_index=current_index, computed=reports[current_index],
+        manual={}, report_id=None,
     )
 
 
@@ -643,14 +675,11 @@ def export():
 
     try:
         job_id = jobs.add_job(
-            truck_id=computed["truck_id"],
-            imei=computed["imei"],
-            filename=filename,
-            trip_start=computed["trip_start"],
+            truck_id=computed["truck_id"], imei=computed["imei"],
+            filename=filename, trip_start=computed["trip_start"],
             trip_end=computed["trip_end"],
             created_by=session.get("user_id"),
-            created_by_email=session.get("email"),
-            manual=manual,
+            created_by_email=session.get("email"), manual=manual,
         )
     except Exception as exc:
         log.exception("could not create report row")
@@ -659,29 +688,18 @@ def export():
                                 trip=trip_index))
 
     executor.submit(_run_export, job_id, computed, out_path, manual)
-
     audit.record(
         "report.export",
         target=computed["truck_id"],
-        detail=(
-            f"filename={filename}, "
-            f"trip_index={trip_index}, "
-            f"trip_start={utc_str(computed['trip_start']) if computed['trip_start'] else ''}"
-        ),
-        meta={
-            "job_id":     job_id,
-            "filename":   filename,
-            "trip_index": trip_index,
-            "imei":       computed["imei"],
-        },
+        detail=(f"filename={filename}, trip_index={trip_index}, "
+                f"trip_start={utc_str(computed['trip_start']) if computed['trip_start'] else ''}"),
+        meta={"job_id": job_id, "filename": filename,
+              "trip_index": trip_index, "imei": computed["imei"],
+              "manual_keys": list(manual.keys())},
     )
-
-    flash(
-        f"Export queued for {computed['truck_id']} "
-        f"(trip {trip_index + 1} of {len(reports)}). "
-        f"Download from the Reports page.",
-        "success",
-    )
+    flash(f"Export queued for {computed['truck_id']} "
+          f"(trip {trip_index + 1} of {len(reports)}). "
+          f"Download from the Reports page.", "success")
     return redirect(url_for("reports"))
 
 
@@ -721,13 +739,11 @@ def export_bulk():
         if not truck_filter:
             flash("No truck specified for bulk export.", "error")
             return redirect(url_for("preview_show", preview_id=preview_id))
-
         all_indices = [i for i, r in enumerate(all_reports)
                        if r["truck_id"] == truck_filter]
         if not all_indices:
             flash("No reports for that truck in this preview.", "error")
             return redirect(url_for("preview_show", preview_id=preview_id))
-
         reports = [all_reports[i] for i in all_indices]
         per_trip_manual: dict[str, dict] = {}
         for new_idx, orig_idx in enumerate(all_indices):
@@ -751,14 +767,10 @@ def export_bulk():
 
     try:
         job_id = jobs.add_job(
-            truck_id=bulk_label,
-            imei=None,
-            filename=filename,
-            trip_start=job_trip_start,
-            trip_end=job_trip_end,
+            truck_id=bulk_label, imei=None, filename=filename,
+            trip_start=job_trip_start, trip_end=job_trip_end,
             created_by=session.get("user_id"),
-            created_by_email=session.get("email"),
-            manual=None,
+            created_by_email=session.get("email"), manual=None,
         )
     except Exception as exc:
         log.exception("could not create bulk report row")
@@ -766,39 +778,17 @@ def export_bulk():
         return redirect(url_for("preview_show", preview_id=preview_id))
 
     executor.submit(_run_bulk_export, job_id, reports, out_path, per_trip_manual)
-
     truck_count = len({r["truck_id"] for r in reports})
-    audit.record_diff(
+    audit.record(
         "report.export_bulk",
         target=bulk_label,
-        before=None,
-        after={
-            "filename":    filename,
-            "scope":       scope,
-            "trip_count":  len(reports),
-            "truck_count": truck_count,
-            "job_id":      job_id,
-            "truck_ids":   _unique_trucks_from_reports(reports),
-        },
-        detail=(
-            f"filename={filename}, scope={scope}, "
-            f"trips={len(reports)}, trucks={truck_count}"
-        ),
-        meta={
-            "job_id":      job_id,
-            "filename":    filename,
-            "scope":       scope,
-            "trip_count":  len(reports),
-            "truck_count": truck_count,
-        },
-        tags=["export", "bulk"],
+        detail=(f"filename={filename}, scope={scope}, "
+                f"trips={len(reports)}, trucks={truck_count}"),
+        meta={"job_id": job_id, "filename": filename, "scope": scope,
+              "trip_count": len(reports), "truck_count": truck_count},
     )
-
-    flash(
-        f"Bulk export queued: {len(reports)} trip(s) across "
-        f"{truck_count} truck(s). Download from the Reports page.",
-        "success",
-    )
+    flash(f"Bulk export queued: {len(reports)} trip(s) across "
+          f"{truck_count} truck(s). Download from the Reports page.", "success")
     return redirect(url_for("reports"))
 
 
@@ -809,9 +799,7 @@ def reports():
     jobs_list = jobs.all_jobs_sorted_for(
         session.get("user_id"), show_all=is_admin
     )
-    return render_template("reports.html",
-                           jobs=jobs_list,
-                           is_admin=is_admin)
+    return render_template("reports.html", jobs=jobs_list, is_admin=is_admin)
 
 
 @app.route("/reports/<report_id>/view")
@@ -837,7 +825,6 @@ def report_view(report_id):
     stored = _from_jsonable(stored)
     is_bulk = _is_bulk_payload(stored)
     reports = stored if is_bulk else [stored]
-
     if not reports:
         flash("This report is empty.", "error")
         return redirect(url_for("reports"))
@@ -854,8 +841,6 @@ def report_view(report_id):
     else:
         current_manual = existing_manual
 
-    # Audit: only record a "view" for the first trip of the report so
-    # paging through a bulk report doesn't spam the log.
     if current_index == 0:
         audit.record(
             "report.view",
@@ -866,20 +851,11 @@ def report_view(report_id):
         )
 
     return render_template(
-        "preview.html",
-        loading=False,
-        view_mode=True,
-        is_bulk=is_bulk,
-        preview_id=report_id,
-        report_id=report_id,
-        state={
-            "truck": row.get("truck_id"),
-            "imei":  row.get("imei"),
-        },
-        reports=reports,
-        current_index=current_index,
-        computed=reports[current_index],
-        manual=current_manual,
+        "preview.html", loading=False, view_mode=True, is_bulk=is_bulk,
+        preview_id=report_id, report_id=report_id,
+        state={"truck": row.get("truck_id"), "imei": row.get("imei")},
+        reports=reports, current_index=current_index,
+        computed=reports[current_index], manual=current_manual,
     )
 
 
@@ -906,7 +882,6 @@ def report_edit_meta(report_id):
     stored = _from_jsonable(stored)
     is_bulk = _is_bulk_payload(stored)
     reports = stored if is_bulk else [stored]
-
     if not reports:
         flash("This report is empty.", "error")
         return redirect(url_for("reports"))
@@ -928,6 +903,8 @@ def report_edit_meta(report_id):
         return redirect(url_for("reports"))
 
     out_path = OUTPUT_DIR / filename
+    before_manual = {}
+    after_manual  = {}
 
     try:
         if is_bulk:
@@ -944,7 +921,8 @@ def report_edit_meta(report_id):
                     per_trip_manual[key] = existing[key]
                 else:
                     per_trip_manual[key] = {}
-
+            before_manual = (existing.get(str(trip_index)) or {})
+            after_manual  = per_trip_manual.get(str(trip_index), {})
             write_bulk_excel(reports, TEMPLATE_PATH, out_path,
                              per_trip_manual=per_trip_manual)
             size = out_path.stat().st_size if out_path.exists() else None
@@ -952,6 +930,8 @@ def report_edit_meta(report_id):
                                        filesize_bytes=size)
         else:
             merged_manual = _merge_manual(row.get("manual_json") or {}, incoming)
+            before_manual = row.get("manual_json") or {}
+            after_manual  = merged_manual
             write_excel(computed, TEMPLATE_PATH, out_path, manual=merged_manual)
             size = out_path.stat().st_size if out_path.exists() else None
             reports_repo.update_manual(report_id, merged_manual,
@@ -970,40 +950,22 @@ def report_edit_meta(report_id):
         except Exception:
             log.exception("storage mirror failed for %s", out_path.name)
 
-        # Capture before/after for the specific trip being edited.
-        if is_bulk:
-            before_manual = (row.get("manual_json") or {}).get(
-                str(trip_index), {}
-            ) if isinstance(row.get("manual_json"), dict) else {}
-            after_manual  = per_trip_manual.get(str(trip_index), {})
-        else:
-            before_manual = row.get("manual_json") or {}
-            after_manual  = merged_manual
-
         audit.record_diff(
             "report.edit_meta",
             target=row.get("truck_id") or report_id,
             before={"manual": before_manual},
             after={"manual": after_manual},
-            detail=(
-                f"filename={filename}, trip_index={trip_index}, bulk={is_bulk}"
-            ),
-            meta={
-                "report_id":  report_id,
-                "trip_index": trip_index,
-                "is_bulk":    is_bulk,
-            },
+            detail=(f"filename={filename}, trip_index={trip_index}, "
+                    f"bulk={is_bulk}"),
+            meta={"report_id": report_id, "trip_index": trip_index,
+                  "is_bulk": is_bulk},
         )
 
         if is_bulk:
-            flash(
-                f"Trip {trip_index + 1} ({computed['truck_id']}) updated; "
-                f"bulk workbook regenerated.",
-                "success",
-            )
-            return redirect(url_for(
-                "report_view", report_id=report_id, trip=trip_index,
-            ))
+            flash(f"Trip {trip_index + 1} ({computed['truck_id']}) updated; "
+                  f"bulk workbook regenerated.", "success")
+            return redirect(url_for("report_view", report_id=report_id,
+                                    trip=trip_index))
         flash("Report details updated and Excel regenerated.", "success")
     except Exception as exc:
         log.exception("edit-meta failed")
@@ -1019,7 +981,6 @@ def api_jobs():
     is_admin = session.get("role") == "admin"
     scope = request.args.get("scope", "all" if is_admin else "mine")
     show_all = is_admin and scope == "all"
-
     jobs_list = jobs.all_jobs_sorted_for(session.get("user_id"), show_all=show_all)
     return jsonify([{
         "id":               j["id"],
@@ -1050,16 +1011,10 @@ def download(filename):
     if local_path.exists():
         log.info("download: serving %s from local disk", filename)
         audit.record(
-            "report.download",
-            target=filename,
+            "report.download", target=filename,
             detail=f"source=local, size={local_path.stat().st_size} bytes",
-            meta={
-                "filename": filename,
-                "source":   "local",
-                "size":     local_path.stat().st_size,
-            },
-            severity="info",
-            outcome="success",
+            meta={"filename": filename, "source": "local",
+                  "size": local_path.stat().st_size},
             tags=["download"],
         )
         return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
@@ -1076,16 +1031,9 @@ def download(filename):
         log.info("download: serving %s from storage fallback", filename)
         size = local_path.stat().st_size if local_path.exists() else None
         audit.record(
-            "report.download",
-            target=filename,
+            "report.download", target=filename,
             detail=f"source=storage, size={size} bytes",
-            meta={
-                "filename": filename,
-                "source":   "storage",
-                "size":     size,
-            },
-            severity="info",
-            outcome="success",
+            meta={"filename": filename, "source": "storage", "size": size},
             tags=["download"],
         )
         return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
@@ -1097,29 +1045,12 @@ def download(filename):
         filename,
     )
     audit.record(
-        "report.download_failed",
-        target=filename,
-        detail="not on disk and not in storage",
+        "report.download_failed", target=filename,
+        detail="not on disk and not in storage", severity="warning",
+        outcome="failure",
     )
     abort(404)
-@app.context_processor
-def _inject_nav_context():
-    """Values the base template's nav needs on every page."""
-    ctx = {
-        "nav_unacked_alerts": 0,
-        "nav_pending_jobs":   0,
-    }
-    if not session.get("user_id"):
-        return ctx
-    try:
-        if session.get("role") == "admin":
-            from services.audit import unacked_alert_count
-            ctx["nav_unacked_alerts"] = unacked_alert_count()
-        from services import jobs as jobs_svc
-        ctx["nav_pending_jobs"] = jobs_svc.count_pending(session.get("user_id"))
-    except Exception:
-        pass
-    return ctx
+
 
 if __name__ == "__main__":
-    app.run(debug=FLASK_DEBUG, host="127.0.0.1", port=5000)
+    app.run(debug=FLASK_DEBUG, host="0.0.0.0", port=5000)

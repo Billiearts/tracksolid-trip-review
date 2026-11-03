@@ -70,11 +70,19 @@ def _read_sidecar(xlsx_path: Path) -> dict | None:
 
 def _disk_legacy_reports(known: set[str]) -> list[dict]:
     out = []
-    for p in sorted(OUTPUT_DIR.glob("*.xlsx"),
-                    key=lambda p: p.stat().st_mtime, reverse=True):
+    try:
+        paths = sorted(OUTPUT_DIR.glob("*.xlsx"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        return out
+    for p in paths:
         if p.name in known:
             continue
-        mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
         meta = _read_sidecar(p)
         if meta:
             truck = meta.get("truck_id") or "(unknown)"
@@ -100,7 +108,7 @@ def _disk_legacy_reports(known: set[str]) -> list[dict]:
             "trip_end":         trip_end,
             "created_by":       None,
             "created_by_email": None,
-            "filesize_bytes":   p.stat().st_size,
+            "filesize_bytes":   st.st_size,
             "from_disk":        True,
         })
     return out
@@ -119,6 +127,17 @@ def all_jobs_sorted_for(user_id: str | None, show_all: bool) -> list[dict]:
     return merged
 
 
+def count_pending(user_id: str | None) -> int:
+    """Number of queued/running jobs for a user (all jobs if user_id is None
+    AND show_all was implied — this helper is used by the nav context, so
+    non-admins only see their own)."""
+    try:
+        rows = reports_repo.list_for(user_id, show_all=False)
+        return sum(1 for r in rows if r.get("status") in ("queued", "running"))
+    except Exception:
+        return 0
+
+
 def get_report_owner(filename: str) -> str | None:
     row = reports_repo.get_by_filename(filename)
     if row is not None:
@@ -131,15 +150,3 @@ def get_report_owner(filename: str) -> str | None:
 
 def all_jobs_sorted() -> list[dict]:
     return all_jobs_sorted_for(user_id=None, show_all=True)
-
-def count_pending(user_id: str | None) -> int:
-    """Number of queued/running jobs for a user (all jobs for admins is
-    handled by passing user_id=None and relying on show_all)."""
-    try:
-        rows = reports_repo.list_for(user_id, show_all=(user_id is None))
-        return sum(
-            1 for r in rows
-            if r.get("status") in ("queued", "running")
-        )
-    except Exception:
-        return 0
