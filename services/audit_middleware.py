@@ -1,9 +1,16 @@
 """
 services/audit_middleware.py — Flask request/response hooks for audit.
 
-The middleware writes one `request.end` row per request *only when the
-request is interesting*: status >= 400, or duration >= AUDIT_SLOW_REQUEST_MS
-(default 5000 ms). Healthy fast requests produce no end row.
+Writes one `request.end` audit row per request *only when the request is
+interesting*: status >= 400, or duration >= AUDIT_SLOW_REQUEST_MS (default
+5000 ms). Healthy fast requests produce no end row.
+
+The previous version of this module called `audit.correlation_rows()` on
+every interesting request to count "related rows" for the detail string.
+That SELECT * against audit_log was ~150 ms per call and dominated the
+page-load latency. It is gone; the detail string no longer includes a
+count. Use `/admin/audit?request_id=<uuid>` if you need the correlated
+rows.
 """
 from __future__ import annotations
 
@@ -38,15 +45,6 @@ def _is_skip_endpoint(endpoint: str | None) -> bool:
     return endpoint.startswith("admin.audit")
 
 
-def _row_count_for_request(request_id: str | None) -> int:
-    if not request_id:
-        return 0
-    try:
-        return len(audit.correlation_rows(request_id))
-    except Exception:
-        return 0
-
-
 def _write_end_row(*, status_code: int, duration_ms: int,
                    error: str | None = None) -> None:
     try:
@@ -58,8 +56,6 @@ def _write_end_row(*, status_code: int, duration_ms: int,
             return
         if _is_skip_endpoint(endpoint):
             return
-
-        row_count = _row_count_for_request(request_id)
 
         severity = "info"
         if status_code >= 500:
@@ -80,8 +76,6 @@ def _write_end_row(*, status_code: int, duration_ms: int,
             f"→ {status_code}",
             f"in {duration_ms} ms",
         ]
-        if row_count:
-            bits.append(f"({row_count} related audit row(s))")
         if error:
             bits.append(f"error: {error[:300]}")
 

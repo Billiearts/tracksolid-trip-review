@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -32,9 +34,8 @@ from services.previews import (
 from services.ratelimit import status as ratelimit_status
 
 
-# Audit is loaded defensively so a broken audit module never prevents the
-# app from booting. When it works, `audit` is the real module; when it
-# doesn't, `audit` is a no-op stub that satisfies every call site below.
+# Defensive import of the audit module: a broken audit module must not
+# prevent the app from booting.
 try:
     from services import audit
     _AUDIT_OK = True
@@ -69,6 +70,14 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 log = logging.getLogger(__name__)
+
+
+# Silence the supabase/httpx per-request INFO spam. Set LOG_HTTPX=1
+# in the environment if you need to debug a specific supabase call.
+if os.environ.get("LOG_HTTPX") != "1":
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -375,6 +384,9 @@ def _run_bulk_export(job_id, reports, out_path, per_trip_manual):
 
 # --- nav context ----------------------------------------------------------
 
+_nav_alert_cache: dict = {"value": 0, "expires_at": 0.0}
+
+
 @app.context_processor
 def _inject_nav_context():
     ctx = {"nav_unacked_alerts": 0, "nav_pending_jobs": 0}
@@ -382,7 +394,11 @@ def _inject_nav_context():
         return ctx
     try:
         if session.get("role") == "super_admin":
-            ctx["nav_unacked_alerts"] = audit.unacked_alert_count()
+            now = time.time()
+            if now >= _nav_alert_cache["expires_at"]:
+                _nav_alert_cache["value"] = audit.unacked_alert_count()
+                _nav_alert_cache["expires_at"] = now + 10.0
+            ctx["nav_unacked_alerts"] = _nav_alert_cache["value"]
         ctx["nav_pending_jobs"] = jobs.count_pending(session.get("user_id"))
     except Exception:
         pass
@@ -596,7 +612,7 @@ def preview_show(preview_id):
         return redirect(url_for("index"))
     if (state.get("created_by")
             and state["created_by"] != session.get("user_id")
-            and session.get("role") != "admin"):
+            and session.get("role") not in ("admin", "super_admin")):
         abort(403)
 
     if state["status"] == "computing":
@@ -634,7 +650,7 @@ def api_preview(preview_id):
         abort(404)
     if (state.get("created_by")
             and state["created_by"] != session.get("user_id")
-            and session.get("role") != "admin"):
+            and session.get("role") not in ("admin", "super_admin")):
         abort(403)
     return jsonify({"status": state["status"], "error": state.get("error")})
 
@@ -654,7 +670,7 @@ def export():
         return redirect(url_for("index"))
     if (state.get("created_by")
             and state["created_by"] != session.get("user_id")
-            and session.get("role") != "admin"):
+            and session.get("role") not in ("admin", "super_admin")):
         abort(403)
 
     reports = state.get("reports") or []
@@ -715,7 +731,7 @@ def export_bulk():
         return redirect(url_for("index"))
     if (state.get("created_by")
             and state["created_by"] != session.get("user_id")
-            and session.get("role") != "admin"):
+            and session.get("role") not in ("admin", "super_admin")):
         abort(403)
 
     all_reports = state.get("reports") or []
@@ -795,7 +811,7 @@ def export_bulk():
 @app.route("/reports")
 @login_required
 def reports():
-    is_admin = session.get("role") == "admin"
+    is_admin = session.get("role") in ("admin", "super_admin")
     jobs_list = jobs.all_jobs_sorted_for(
         session.get("user_id"), show_all=is_admin
     )
@@ -813,7 +829,7 @@ def report_view(report_id):
     owner = row.get("created_by")
     if (owner
             and owner != session.get("user_id")
-            and session.get("role") != "admin"):
+            and session.get("role") not in ("admin", "super_admin")):
         abort(403)
 
     stored = row.get("computed_json")
@@ -870,7 +886,7 @@ def report_edit_meta(report_id):
     owner = row.get("created_by")
     if (owner
             and owner != session.get("user_id")
-            and session.get("role") != "admin"):
+            and session.get("role") not in ("admin", "super_admin")):
         abort(403)
 
     stored = row.get("computed_json")
@@ -978,7 +994,7 @@ def report_edit_meta(report_id):
 @app.route("/api/jobs")
 @login_required
 def api_jobs():
-    is_admin = session.get("role") == "admin"
+    is_admin = session.get("role") in ("admin", "super_admin")
     scope = request.args.get("scope", "all" if is_admin else "mine")
     show_all = is_admin and scope == "all"
     jobs_list = jobs.all_jobs_sorted_for(session.get("user_id"), show_all=show_all)
@@ -1003,7 +1019,7 @@ def download(filename):
     owner = jobs.get_report_owner(filename)
     if (owner
             and owner != session.get("user_id")
-            and session.get("role") != "admin"):
+            and session.get("role") not in ("admin", "super_admin")):
         abort(403)
 
     local_path = OUTPUT_DIR / filename

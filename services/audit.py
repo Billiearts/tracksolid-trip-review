@@ -1,21 +1,23 @@
 """
 services/audit.py — advanced audit trail.
 
-Public API (all safe to call from any request context; failures never
-propagate into the audited code path):
+Public API:
+    record(event, *, ...)                    -> str | None
+    record_diff(event, *, before, after, ...) -> str | None
+    begin_request()                          -> str
+    current_request_id()                     -> str | None
+    verify_chain(limit=10000)                -> dict
+    export_rows(...)                         -> (mimetype, body)
+    correlation_rows(request_id)             -> list[dict]
+    prune(...)                               -> dict
 
-    record(event, *, severity='info', outcome='success', ...) -> str | None
-    record_diff(event, *, before, after, ...)                -> str | None
-    begin_request() -> str
-    current_request_id() -> str | None
-    verify_chain(limit=10000) -> dict
-    export_rows(...) -> (mimetype, body)
-    correlation_rows(request_id) -> list[dict]
-    prune(...) -> dict
-
-The hash chain is monotonic thanks to `chain_seq` (a Postgres sequence).
-An advisory lock (`audit_chain_lock` RPC) serialises the
-read-compute-insert-update of the chain head across processes.
+Chain ordering:
+    Rows are ordered by `chain_seq` (a Postgres sequence, monotonic). The
+    hash of each row is sha256(prev_hash + canonical_json(row)). `prev_hash`
+    has a UNIQUE index (`audit_log_prev_hash_unique`), so two concurrent
+    writers cannot both chain off the same predecessor: one insert wins,
+    the other gets a unique violation and retries after re-reading the head.
+    No advisory locks, no RPCs, no external coordination.
 """
 from __future__ import annotations
 
@@ -54,6 +56,8 @@ REDACT_ALLOWLIST = frozenset({
 _MAX_STRING_LEN = 2000
 _MAX_META_BYTES = 32 * 1024
 _MAX_DETAIL_LEN = 2000
+
+_CHAIN_RETRY_ATTEMPTS = 3
 
 
 # ---------------------------------------------------------------------------
@@ -256,18 +260,37 @@ def _write_chain_head(new_hash: str, row_id: str | None) -> None:
         log.warning("audit chain head update failed: %s", exc)
 
 
-def _chain_lock() -> None:
-    try:
-        _client().rpc("audit_chain_lock", {}).execute()
-    except Exception as exc:
-        log.debug("audit_chain_lock RPC not available: %s", exc)
+def _insert_with_chain_retry(row: dict) -> tuple[str | None, str]:
+    """Insert `row` chained off the current head.
 
+    The `audit_log_prev_hash_unique` index means two concurrent writers
+    cannot both claim the same predecessor: one insert wins, the other gets
+    a unique violation and retries after re-reading the head. This is the
+    replacement for the old advisory-lock RPC.
 
-def _chain_unlock() -> None:
-    try:
-        _client().rpc("audit_chain_unlock", {}).execute()
-    except Exception:
-        pass
+    Returns (row_id, final_prev_hash).
+    """
+    last_exc: Exception | None = None
+    for _attempt in range(_CHAIN_RETRY_ATTEMPTS):
+        prev_hash = _read_chain_head()
+        row["prev_hash"] = prev_hash
+        row["hash"]      = _row_digest(row, prev_hash)
+        try:
+            resp = _client().table("audit_log").insert(row).execute()
+            inserted = (resp.data or [])
+            return (inserted[0]["id"] if inserted else None), prev_hash
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc).lower()
+            if ("duplicate key" in msg
+                    or "unique constraint" in msg
+                    or "23505" in msg):
+                # Another writer claimed this head. Retry.
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("audit insert: retries exhausted with no exception")
 
 
 # ---------------------------------------------------------------------------
@@ -326,15 +349,13 @@ def record(
             session.get("email") if has_request_context() else None
         )
 
-        rid = request_id
-        if rid is None:
-            rid = current_request_id()
+        rid = request_id if request_id is not None else current_request_id()
 
-        meta_r, meta_hit       = _redact_any(meta or {})
-        before_r, before_hit   = (_redact_any(before) if before is not None
-                                  else (None, False))
-        after_r,  after_hit    = (_redact_any(after) if after is not None
-                                  else (None, False))
+        meta_r, meta_hit     = _redact_any(meta or {})
+        before_r, before_hit = (_redact_any(before) if before is not None
+                                else (None, False))
+        after_r,  after_hit  = (_redact_any(after) if after is not None
+                                else (None, False))
         detail_r = _safe(detail, _MAX_DETAIL_LEN)
         if detail_r:
             for needle in REDACT_KEYS:
@@ -379,20 +400,8 @@ def record(
         row.setdefault("meta", {})
         row["created_at"] = datetime.now(timezone.utc).isoformat()
 
-        # --- serialise the chain read/compute/insert/update ---
-        _chain_lock()
-        try:
-            prev_hash = _read_chain_head()
-            row["prev_hash"] = prev_hash
-            row["hash"]      = _row_digest(row, prev_hash)
-
-            resp = _client().table("audit_log").insert(row).execute()
-            inserted = (resp.data or [])
-            row_id = inserted[0]["id"] if inserted else None
-
-            _write_chain_head(row["hash"], row_id)
-        finally:
-            _chain_unlock()
+        row_id, _prev = _insert_with_chain_retry(row)
+        _write_chain_head(row["hash"], row_id)
 
         try:
             _evaluate_alert_rules(row, row_id)
@@ -633,13 +642,13 @@ def list_events(*, page: int = 1, per_page: int = 100,
 
     q = client.table("audit_log").select("*").order("created_at", desc=True)
 
-    if event:        q = q.eq("event", event)
-    if actor_email:  q = q.ilike("actor_email", f"%{actor_email}%")
-    if actor_id:     q = q.eq("actor_id", actor_id)
-    if target:       q = q.ilike("target", f"%{target}%")
-    if severity:     q = q.eq("severity", severity)
-    if outcome:      q = q.eq("outcome", outcome)
-    if request_id:   q = q.eq("request_id", request_id)
+    if event:       q = q.eq("event", event)
+    if actor_email: q = q.ilike("actor_email", f"%{actor_email}%")
+    if actor_id:    q = q.eq("actor_id", actor_id)
+    if target:      q = q.ilike("target", f"%{target}%")
+    if severity:    q = q.eq("severity", severity)
+    if outcome:     q = q.eq("outcome", outcome)
+    if request_id:  q = q.eq("request_id", request_id)
     if days:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         q = q.gte("created_at", cutoff)
@@ -702,8 +711,39 @@ def distinct_severities() -> list[str]:
     return list(SEVERITY_LEVELS)
 
 
+def correlation_rows(request_id: str) -> list[dict]:
+    if not request_id:
+        return []
+    try:
+        resp = (_client().table("audit_log")
+                .select("*")
+                .eq("request_id", request_id)
+                .order("chain_seq", desc=False)
+                .limit(200)
+                .execute())
+        out = []
+        for r in (resp.data or []):
+            out.append({
+                "id":          r.get("id"),
+                "event":       r.get("event") or "",
+                "severity":    r.get("severity") or "info",
+                "outcome":     r.get("outcome") or "success",
+                "actor_email": r.get("actor_email") or "",
+                "target":      r.get("target") or "",
+                "detail":      r.get("detail") or "",
+                "meta":        r.get("meta") or {},
+                "diff":        r.get("diff_json") or {},
+                "created_at":  _parse_ts(r.get("created_at")),
+                "status_code": r.get("status_code"),
+                "duration_ms": r.get("duration_ms"),
+            })
+        return out
+    except Exception:
+        return []
+
+
 # ---------------------------------------------------------------------------
-# Alert read / ack API
+# Alerts
 # ---------------------------------------------------------------------------
 
 def list_alerts(*, page: int = 1, per_page: int = 50,
@@ -767,38 +807,7 @@ def acknowledge_alert(alert_id: str, *, user_id: str | None,
         )
     except Exception as exc:
         log.warning("acknowledge_alert failed: %s", exc)
-
-
-def correlation_rows(request_id: str) -> list[dict]:
-    if not request_id:
-        return []
-    try:
-        resp = (_client().table("audit_log")
-                .select("*")
-                .eq("request_id", request_id)
-                .order("chain_seq", desc=False)
-                .limit(200)
-                .execute())
-        out = []
-        for r in (resp.data or []):
-            out.append({
-                "id":          r.get("id"),
-                "event":       r.get("event") or "",
-                "severity":    r.get("severity") or "info",
-                "outcome":     r.get("outcome") or "success",
-                "actor_email": r.get("actor_email") or "",
-                "target":      r.get("target") or "",
-                "detail":      r.get("detail") or "",
-                "meta":        r.get("meta") or {},
-                "diff":        r.get("diff_json") or {},
-                "created_at":  _parse_ts(r.get("created_at")),
-                "status_code": r.get("status_code"),
-                "duration_ms": r.get("duration_ms"),
-            })
-        return out
-    except Exception:
-        return []
-    # ---------------------------------------------------------------------------
+        # ---------------------------------------------------------------------------
 # Retention / export
 # ---------------------------------------------------------------------------
 
