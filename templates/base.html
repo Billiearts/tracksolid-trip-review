@@ -697,7 +697,7 @@
           </a>
         {% endif %}
 
-        {% if session.get('role') == 'admin' %}
+        {% if session.get('role') in ('admin', 'super_admin') %}
           <a href="{{ url_for('admin.index') }}"
              class="topbar-link {{ 'active' if request.endpoint and request.endpoint.startswith('admin.') and request.endpoint not in ('admin.audit', 'admin.alerts') else '' }}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -760,7 +760,7 @@
                 {% if session.get('is_primary_super_admin') %} · primary{% endif %}
               </span>
             </div>
-            {% if session.get('role') in ('admin', 'super_admin') %}
+                        {% if session.get('role') in ('admin', 'super_admin') %}
               <a href="{{ url_for('admin.index') }}" role="menuitem">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
