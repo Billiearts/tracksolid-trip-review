@@ -6,13 +6,14 @@ import hashlib
 import json
 import threading
 import time
-
-import requests
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+import requests
+
 from config import APP_KEY, APP_SECRET, USER_ID, USER_PWD_MD5
-from services.ratelimit import note_rate_limited
+from services.ratelimit import note_rate_limited, is_rate_limited
 
 
 BASE_URL = "https://eu-open.tracksolidpro.com/route/rest"
@@ -57,6 +58,37 @@ def build_common_params(method: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Parallel fan-out helper
+# ---------------------------------------------------------------------------
+
+# Kept low on purpose. Tracksolid's daily quota is per-account; the parallel
+# fan-out in app.py already uses 4, so total concurrent calls during a
+# preview should stay <= 8 to avoid hitting 1006 under load.
+_HISTORY_WORKERS = 4
+
+
+def parallel_call(fn, items, *, workers: int = _HISTORY_WORKERS):
+    """Run `fn(item)` for each item in `items`, up to `workers` at a time.
+
+    Returns a list in input order. Short-circuits on RateLimitExceeded:
+    the exception is re-raised after the current batch finishes, so the
+    caller can decide whether to abandon or fall back to sequential.
+
+    The pre-flight `is_rate_limited()` check means a fan-out that starts
+    after the quota is already exhausted (or a sibling fan-out that
+    trips it) fails in milliseconds instead of firing every request and
+    timing each one out.
+    """
+    if not items:
+        return []
+    if is_rate_limited():
+        raise RateLimitExceeded("rate limited (short-circuit before fan-out)")
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(fn, items))
+
+
+# ---------------------------------------------------------------------------
 # Token cache
 # ---------------------------------------------------------------------------
 
@@ -64,6 +96,7 @@ _TOKEN_CACHE_FILE = Path(__file__).parent / ".token_cache.json"
 _TOKEN_SAFETY_MARGIN_SECONDS = 300
 
 _token_cache: dict = {"token": None, "expires_at": 0.0}
+_token_lock = threading.Lock()
 
 
 def _load_cached_token() -> tuple[str | None, float]:
@@ -117,20 +150,24 @@ def _fetch_new_token() -> str:
 
 
 def get_access_token() -> str:
-    now = time.time()
+    # The token fetch itself is not thread-safe (two threads fetching
+    # at the same time would each cost an API call). Lock around the
+    # whole read-check-fetch path.
+    with _token_lock:
+        now = time.time()
 
-    if _token_cache["token"] and now < _token_cache["expires_at"]:
-        return _token_cache["token"]
+        if _token_cache["token"] and now < _token_cache["expires_at"]:
+            return _token_cache["token"]
 
-    token, expires_at = _load_cached_token()
-    if token and now < expires_at:
-        _token_cache["token"] = token
-        _token_cache["expires_at"] = expires_at
-        remaining = int(expires_at - now)
-        print(f"[token] using cached token from disk ({remaining}s left)")
-        return token
+        token, expires_at = _load_cached_token()
+        if token and now < expires_at:
+            _token_cache["token"] = token
+            _token_cache["expires_at"] = expires_at
+            remaining = int(expires_at - now)
+            print(f"[token] using cached token from disk ({remaining}s left)")
+            return token
 
-    return _fetch_new_token()
+        return _fetch_new_token()
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +272,13 @@ def fetch_alarms(imei: str, begin_str: str, end_str: str,
 
 def fetch_alarms_chunked(imei: str, begin: datetime, end: datetime,
                          chunk_days: int = 7) -> list:
+    """Fetch alarms in 7-day chunks. Sequential by design — chunks for the
+    same IMEI hit the same account, and running 13 parallel calls for one
+    truck competes with the 4-way /trips fan-out for quota.
+
+    The per-chunk cache means two chunks that overlap with a /trips call
+    (same imei + range) reuse the cached result.
+    """
     from datetime import timedelta as _td
     all_alarms: list = []
     cursor = begin
@@ -258,6 +302,28 @@ def fetch_alarms_chunked(imei: str, begin: datetime, end: datetime,
 # ---------------------------------------------------------------------------
 # Parking / idling events — jimi.open.platform.report.parking
 # ---------------------------------------------------------------------------
+
+_parking_cache: dict = {}
+_parking_cache_lock = threading.Lock()
+_PARKING_CACHE_TTL = 900
+
+
+def _parking_cache_get(key):
+    with _parking_cache_lock:
+        entry = _parking_cache.get(key)
+        if entry is None:
+            return None
+        expires_at, rows = entry
+        if time.time() > expires_at:
+            _parking_cache.pop(key, None)
+            return None
+        return rows
+
+
+def _parking_cache_put(key, rows):
+    with _parking_cache_lock:
+        _parking_cache[key] = (time.time() + _PARKING_CACHE_TTL, rows)
+
 
 def _parse_parking_dt(s) -> datetime | None:
     """Parse a Tracksolid parking timestamp like '2022-12-10T01:05:33.000Z'."""
@@ -300,14 +366,51 @@ def _parking_total(response: dict) -> int | None:
         return None
 
 
+# Module-level so we don't re-try all six start_row/page_size variants on
+# every single call. The first successful variant wins; later calls start
+# from it. The cache resets on process restart, which is fine — worst case
+# the first call per process tries the variants again.
+_parking_accepted: dict | None = None
+_parking_accepted_lock = threading.Lock()
+
+
+def _parking_variants(base_params: dict):
+    """Try the last-known-good variant first, then the fixed fallback list."""
+    global _parking_accepted
+    with _parking_accepted_lock:
+        cached = _parking_accepted
+
+    if cached is not None:
+        yield {**base_params, **cached}
+    for variant in (
+        {"start_row": "1", "page_size": "100"},
+        {"start_row": "1", "page_size": "50"},
+        {"start_row": "0", "page_size": "100"},
+        {"start_row": "0", "page_size": "50"},
+        {"start_row": "1", "page_size": "10"},
+        {"start_row": "0", "page_size": "10"},
+    ):
+        if variant == cached:
+            continue
+        yield {**base_params, **variant}
+
+
 def fetch_parking(imei: str, begin: datetime, end: datetime,
                   acc_type: str = "off") -> list[dict]:
     """Fetch parking (acc_type='off') or idling (acc_type='on') events.
 
-    Tracksolid's parking endpoint is picky about `start_row` / `page_size`.
-    We try the conventional values (1-based row, 100-row page) first, and
-    fall back automatically if the API rejects them.
+    Cached per (imei, begin, end, acc_type) for 15 minutes. The
+    `_parking_accepted` module cache means the start_row/page_size variant
+    dance is paid once per process, not on every call — which alone was
+    costing 3-4 wasted HTTP round trips per fetch on some accounts.
     """
+    key = (imei, begin.strftime("%Y-%m-%d %H:%M:%S"),
+           end.strftime("%Y-%m-%d %H:%M:%S"), acc_type)
+    cached = _parking_cache_get(key)
+    if cached is not None:
+        print(f"[parking] cache hit {begin} → {end} ({len(cached)} rows)")
+        return cached
+
     base_params = {
         "account":    USER_ID,
         "imeis":      imei,
@@ -316,31 +419,26 @@ def fetch_parking(imei: str, begin: datetime, end: datetime,
         "acc_type":   acc_type,
     }
 
-    # Try in order of likelihood.
-    variants = [
-        {**base_params, "start_row": "1", "page_size": "100"},
-        {**base_params, "start_row": "1", "page_size": "50"},
-        {**base_params, "start_row": "0", "page_size": "100"},
-        {**base_params, "start_row": "0", "page_size": "50"},
-        {**base_params, "start_row": "1", "page_size": "10"},
-        {**base_params, "start_row": "0", "page_size": "10"},
-    ]
-
     first_response = None
     chosen = None
     last_error: Exception | None = None
 
-    for variant in variants:
+    for variant in _parking_variants(base_params):
         try:
             first_response = api_call("jimi.open.platform.report.parking", variant)
             chosen = variant
+            global _parking_accepted
+            with _parking_accepted_lock:
+                _parking_accepted = {
+                    "start_row": variant["start_row"],
+                    "page_size": variant["page_size"],
+                }
             print(f"[parking] accepted start_row={variant['start_row']} "
                   f"page_size={variant['page_size']}")
             break
         except RuntimeError as exc:
             last_error = exc
             msg = str(exc)
-            # Only retry on the parameter-validation error; bubble others up.
             if "code=1001" in msg or "Parameter validation" in msg:
                 continue
             raise
@@ -355,7 +453,6 @@ def fetch_parking(imei: str, begin: datetime, end: datetime,
     start_row = int(chosen["start_row"])
     page_size = int(chosen["page_size"])
 
-    # Fetch further pages if the API says there are more rows.
     page = 1
     while total is not None and len(all_rows) < total and page < 50:
         next_start = start_row + page * page_size
@@ -374,7 +471,9 @@ def fetch_parking(imei: str, begin: datetime, end: datetime,
             break
         page += 1
 
-    return [_normalise_parking_row(r) for r in all_rows]
+    rows = [_normalise_parking_row(r) for r in all_rows]
+    _parking_cache_put(key, rows)
+    return rows
 
 
 # ---------------------------------------------------------------------------

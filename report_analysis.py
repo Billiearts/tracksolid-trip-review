@@ -55,17 +55,25 @@ Pairing robustness (fix for phantom Waybill/Maintenance hours):
     3. Leftover open 'in's at the end of the stream are discarded.
     4. A guardrail drops any single station interval longer than the yard
        visit itself — those are definitionally bogus.
+
+History parallelism:
+  `build_history()` runs one `fetch_parking` + one `fetch_track` per past
+  trip. For a 3-month window that's ~30 trips × 2 calls = ~60 sequential
+  API calls, which used to dominate the preview time for a single truck.
+  We fan those out 4-way with `parallel_call`; a mid-run 1006 excludes
+  the affected trips from history but does not fail the whole preview.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from jimi import (
     api_call, fetch_alarms, fetch_alarms_chunked,
-    fetch_parking, RateLimitExceeded,
+    fetch_parking, parallel_call, RateLimitExceeded,
 )
 
 
@@ -117,6 +125,10 @@ YARD_WRAPPER_NAMES = frozenset({
 
 YARD_LOOKBACK = timedelta(hours=48)
 YARD_TRIP_TOLERANCE = timedelta(minutes=5)
+
+# Number of parallel workers for history fan-out. Kept low to avoid
+# competing with the /trips or /preview fan-outs for Tracksolid quota.
+_HISTORY_WORKERS = 4
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +273,41 @@ def find_trips(imei: str, begin: datetime, end: datetime) -> list[dict]:
 # Track fetch
 # ---------------------------------------------------------------------------
 
+_track_cache: dict = {}
+_track_cache_lock = __import__("threading").Lock()
+_TRACK_CACHE_TTL = 900
+
+
+def _track_cache_get(key):
+    with _track_cache_lock:
+        entry = _track_cache.get(key)
+        if entry is None:
+            return None
+        expires_at, points = entry
+        if __import__("time").time() > expires_at:
+            _track_cache.pop(key, None)
+            return None
+        return points
+
+
+def _track_cache_put(key, points):
+    with _track_cache_lock:
+        _track_cache[key] = (__import__("time").time() + _TRACK_CACHE_TTL, points)
+
+
 def fetch_track(imei: str, begin: datetime, end: datetime) -> list[dict]:
+    """Fetch track points, cached for 15 min per (imei, begin, end).
+
+    The cache matters because `build_history` re-fetches the track for the
+    same trip that `compute_report` already fetched for the "current" trip
+    — same imei, same range. Without the cache that's a duplicate API call
+    that counts against the daily quota.
+    """
+    key = (imei, utc_str(begin), utc_str(end))
+    cached = _track_cache_get(key)
+    if cached is not None:
+        return cached
+
     response = api_call("jimi.device.track.list", {
         "imei":       imei,
         "begin_time": utc_str(begin),
@@ -270,7 +316,9 @@ def fetch_track(imei: str, begin: datetime, end: datetime) -> list[dict]:
     result = response.get("result") or response.get("data") or []
     if isinstance(result, dict):
         result = result.get("list", [])
-    return result or []
+    points = result or []
+    _track_cache_put(key, points)
+    return points
 
 
 # ---------------------------------------------------------------------------
@@ -636,10 +684,47 @@ def _aggregate_yard(visits: list[dict]) -> dict | None:
     }
 
 
+def _fetch_one_history_trip(imei: str, t: dict):
+    """Fetch the parking + track for one historical trip.
+
+    Returns (trip, parking, track). Either of the latter can be None on
+    failure — the caller skips that trip's stop statistics but still uses
+    its alarms/behaviours. RateLimitExceeded is swallowed here because the
+    fan-out wraps the whole batch in a single try/except; swallowing it
+    per-trip lets the other trips in the batch succeed.
+    """
+    try:
+        parking = fetch_parking(imei, t["start"], t["end"])
+    except RateLimitExceeded as exc:
+        log.warning("history: parking rate-limited for %s: %s",
+                    t["start"], exc)
+        parking = None
+    except Exception as exc:
+        log.warning("history: parking fetch failed for %s: %s",
+                    t["start"], exc)
+        parking = None
+
+    try:
+        track = fetch_track(imei, t["start"], t["end"])
+    except RateLimitExceeded as exc:
+        log.warning("history: track rate-limited for %s: %s",
+                    t["start"], exc)
+        track = None
+    except Exception as exc:
+        log.warning("history: track fetch failed for %s: %s",
+                    t["start"], exc)
+        track = None
+
+    return t, parking, track
+
+
 def build_history(imei: str, reference: datetime, *,
                   alarms: list[dict] | None = None,
                   hist_begin: datetime | None = None,
                   hist_end: datetime | None = None) -> dict | None:
+    import time as _time
+    t0 = _time.monotonic()
+
     if hist_begin is None or hist_end is None:
         hist_begin, hist_end = history_window(reference)
     log.info("history window %s → %s", utc_str(hist_begin), utc_str(hist_end))
@@ -659,6 +744,22 @@ def build_history(imei: str, reference: datetime, *,
     trips = [t for t in trips if hist_begin <= t["start"] < hist_end]
     log.info("%d trip(s) starting in window", len(trips))
 
+    # ---- parallel fan-out: parking + track per historical trip ----
+    #
+    # With ~30 historical trips × 2 calls, sequential fetch took ~60 s
+    # of wall-clock time and dominated preview latency. Fanning out
+    # 4-way cuts that to ~15 s, and the per-call caches in jimi.py
+    # (parking) and this module (track) prevent duplicates when the
+    # "current" trip also appears in history.
+    t_fetch0 = _time.monotonic()
+    fetched = parallel_call(
+        lambda t: _fetch_one_history_trip(imei, t),
+        trips,
+        workers=_HISTORY_WORKERS,
+    )
+    log.info("history: fetched parking+track for %d trip(s) in %.1fs",
+             len(fetched), _time.monotonic() - t_fetch0)
+
     stop_counts:   list[int]   = []
     stop_totals_s: list[float] = []
     rest_breaks_s: list[float] = []
@@ -672,29 +773,11 @@ def build_history(imei: str, reference: datetime, *,
     yard_prep = _prep_yard(alarms)
     yard_visits: list[dict] = []
 
-    for t in trips:
+    for t, parking, track in fetched:
         trip_alarms = [
             a for a, tt in alarms_with_time
             if t["start"] <= tt <= t["end"]
         ]
-
-        try:
-            parking = fetch_parking(imei, t["start"], t["end"])
-        except RateLimitExceeded:
-            parking = None
-        except Exception as exc:
-            log.warning("history: parking fetch failed for %s: %s",
-                        t["start"], exc)
-            parking = None
-
-        try:
-            track = fetch_track(imei, t["start"], t["end"])
-        except RateLimitExceeded:
-            track = None
-        except Exception as exc:
-            log.warning("history: track fetch failed for %s: %s",
-                        t["start"], exc)
-            track = None
 
         if parking is None or track is None:
             log.info("history: skipping trip %s (parking/track unavailable)",
@@ -719,6 +802,8 @@ def build_history(imei: str, reference: datetime, *,
 
     def _avg(xs):
         return sum(xs) / len(xs) if xs else 0.0
+
+    log.info("history: built in %.1fs", _time.monotonic() - t0)
 
     return {
         "trip_count": len(trips),

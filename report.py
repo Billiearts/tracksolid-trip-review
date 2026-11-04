@@ -19,11 +19,18 @@ This module ties them together with `compute_report()` / `write_excel()` /
 
 ...and `app.py`'s lazy `from report import fill_sheet, _sanitise_sheet_name`
 inside `report_edit_meta()` continues to work.
+
+Stage timing:
+    `compute_report()` logs the wall-clock seconds spent in each stage:
+    alarms, track, parking, summarisation, history. That's the difference
+    between "the preview is slow" and "the history stage spent 90 s on
+    parking calls" — it's the difference between guessing and knowing.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -57,6 +64,9 @@ log = logging.getLogger(__name__)
 def compute_report(*, imei: str, truck_id: str, driver_name: str,
                    begin: datetime, end: datetime,
                    include_history: bool = True) -> dict:
+    t_start_wall = time.monotonic()
+    timings: dict[str, float] = {}
+
     if include_history:
         hist_begin, hist_end = history_window(begin)
         union_begin = min(begin, hist_begin)
@@ -66,6 +76,8 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
         union_begin = begin - YARD_LOOKBACK
         union_end   = end
 
+    # ---- stage 1: alarms ----
+    t0 = time.monotonic()
     log.info("[1/6] Fetching alarms for %s → %s ...",
              utc_str(union_begin), utc_str(union_end))
     try:
@@ -73,10 +85,10 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
         all_alarms = fetch_alarms_chunked(imei, union_begin, union_end)
     except RateLimitExceeded:
         raise
-    log.info("      %d alarms fetched", len(all_alarms))
+    timings["alarms"] = time.monotonic() - t0
+    log.info("      %d alarms fetched (%.1fs)",
+             len(all_alarms), timings["alarms"])
 
-    # Local imports keep the top of this file tidy and avoid name collisions
-    # in the re-export block above.
     from report_analysis import (
         _gbc_alarms_in_window, _trips_from_gbc_alarms, _alarm_time,
         fetch_track, summarise_stops, summarise_yard,
@@ -94,22 +106,31 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
     else:
         trip_start = trip_end = None
 
+    # ---- stage 2: track ----
+    t0 = time.monotonic()
     log.info("[2/6] Fetching track ...")
     try:
         track = fetch_track(imei, trip_start or begin,
                             trip_end or end) if trip_start else []
     except RateLimitExceeded:
         track = []
-    log.info("      %d track points", len(track))
+    timings["track"] = time.monotonic() - t0
+    log.info("      %d track points (%.1fs)",
+             len(track), timings["track"])
 
+    # ---- stage 3: parking ----
+    t0 = time.monotonic()
     log.info("[3/6] Fetching parking events ...")
     try:
         parking = fetch_parking(imei, trip_start or begin,
                                 trip_end or end) if trip_start else []
     except RateLimitExceeded:
         parking = []
-    log.info("      %d parking events", len(parking))
+    timings["parking"] = time.monotonic() - t0
+    log.info("      %d parking events (%.1fs)",
+             len(parking), timings["parking"])
 
+    # ---- stage 4: filter alarms ----
     log.info("[4/6] Filtering alarms for trip window ...")
     if trip_start and trip_end:
         alarms = [
@@ -121,10 +142,13 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
         alarms = []
     log.info("      %d alarms in trip", len(alarms))
 
+    # ---- stage 5: summarise ----
+    t0 = time.monotonic()
     log.info("[5/6] Summarising ...")
     stops  = summarise_stops(track, parking, trip_start, trip_end, debug=False)
     events = summarise_events(alarms)
     yard   = summarise_yard(all_alarms, trip_start)
+    timings["summarise"] = time.monotonic() - t0
     log.info("      stops >= %dm: %d  total %.2fh  (rests >= %dh: %d)",
              MIN_STOP_SECONDS // 60, stops["count"],
              stops["total_seconds"] / 3600,
@@ -139,9 +163,12 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
                      yard["operations"][key]["total_seconds"] / 3600)
     else:
         log.info("      yard visit: none before this trip")
+    log.info("      summarise stage took %.2fs", timings["summarise"])
 
+    # ---- stage 6: history (the expensive one) ----
     history = None
     if include_history and trip_start:
+        t0 = time.monotonic()
         log.info("[6/6] Building 3-month history (reusing fetched alarms) ...")
         try:
             history = build_history(
@@ -155,6 +182,22 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
             history = None
         except Exception as exc:
             log.warning("history failed: %s", exc)
+            history = None
+        timings["history"] = time.monotonic() - t0
+        log.info("      history stage took %.2fs", timings["history"])
+
+    timings["total"] = time.monotonic() - t_start_wall
+    log.info(
+        "compute_report(%s) timings: alarms=%.1fs track=%.1fs parking=%.1fs "
+        "summarise=%.1fs history=%.1fs total=%.1fs",
+        truck_id,
+        timings.get("alarms", 0),
+        timings.get("track", 0),
+        timings.get("parking", 0),
+        timings.get("summarise", 0),
+        timings.get("history", 0),
+        timings["total"],
+    )
 
     return {
         "truck_id":      truck_id,
