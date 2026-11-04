@@ -8,6 +8,12 @@ actually reads is derived from `audit_log` itself, so this script's job is
 purely to rewrite the rows so that the unique index on `prev_hash` can be
 re-created cleanly and `verify_chain()` returns OK.
 
+Also deletes any stale `audit.chain_mismatch` rows from the old
+`verify_chain()` behaviour (the writer that recorded them on every
+maintenance pass). Without that cleanup, the rebuild succeeds but the very
+next `verify_chain()` walk sees those rows and re-reports a mismatch on
+the row immediately preceding the first one it deleted.
+
 Run once against the real database, from the project root:
 
     python rebuild_audit_chain.py
@@ -44,10 +50,40 @@ def _diagnose(client) -> dict:
     }
 
 
+def _clear_stale_mismatch_rows(client) -> int:
+    """Delete any rows the OLD verify_chain() wrote.
+
+    The previous version of `services.audit.verify_chain` recorded an
+    `audit.chain_mismatch` row every time it found a break. Those rows
+    live inside the chain they were complaining about, so on the very
+    next verify pass they cause a new mismatch on the row *before* them.
+    The new `verify_chain` no longer writes them (only the explicit
+    admin verify does), so any `audit.chain_mismatch` rows still in the
+    table are stale debris that must be removed before the rebuild can
+    converge.
+    """
+    resp = (client.table("audit_log")
+            .select("id")
+            .eq("event", "audit.chain_mismatch")
+            .execute())
+    ids = [r["id"] for r in (resp.data or [])]
+    if not ids:
+        return 0
+    (client.table("audit_log")
+     .delete()
+     .in_("id", ids)
+     .execute())
+    return len(ids)
+
+
 def main() -> int:
     client = _client()
 
-    print("=== Before rebuild ===")
+    print("=== Clearing stale audit.chain_mismatch rows ===")
+    removed = _clear_stale_mismatch_rows(client)
+    print(f"  removed {removed} stale audit.chain_mismatch row(s)")
+
+    print("\n=== Before rebuild ===")
     before = _diagnose(client)
     print(f"  total rows:      {before['total_rows']}")
     print(f"  fork points:     {before['fork_heads']}")
@@ -72,10 +108,14 @@ def main() -> int:
 
         for r in rows:
             new_hash = _row_digest(r, prev)
-            (client.table("audit_log")
-             .update({"prev_hash": prev, "hash": new_hash})
-             .eq("id", r["id"])
-             .execute())
+            resp_upd = (client.table("audit_log")
+                        .update({"prev_hash": prev, "hash": new_hash})
+                        .eq("id", r["id"])
+                        .execute())
+            if not (resp_upd.data or []):
+                print(f"  !! UPDATE failed for row {r['id']} — no rows "
+                      f"affected. Check RLS / permissions on audit_log.")
+                return 1
             prev = new_hash
             total += 1
 

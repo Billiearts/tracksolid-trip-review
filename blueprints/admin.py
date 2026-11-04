@@ -75,7 +75,6 @@ def new_user():
 
         if role not in ("user", "admin", "super_admin"):
             role = "user"
-        # Non-primary callers can only choose user/admin.
         if role == "super_admin" and not _caller_is_primary():
             flash("Only the primary super admin can create a super admin.", "error")
             return redirect(url_for("admin.index"))
@@ -124,7 +123,6 @@ def edit_user(user_id):
     is_primary_row = bool(profile.get("is_primary_super_admin"))
     is_self        = (user_id == _caller_id())
 
-    # Non-primary callers cannot edit the primary row at all.
     if is_primary_row and not is_self:
         flash("This account is protected and cannot be edited.", "error")
         return redirect(url_for("admin.index"))
@@ -260,6 +258,8 @@ def change_role(user_id):
               "new_role": role},
     )
     return redirect(url_for("admin.index"))
+
+
 # ---------------------------------------------------------------------------
 # Audit trail — SUPER ADMIN ONLY
 # ---------------------------------------------------------------------------
@@ -315,7 +315,29 @@ def audit():
 @bp.route("/audit/verify")
 @super_admin_required
 def audit_verify():
+    """Explicit, user-triggered chain verification.
+
+    Unlike the automated maintenance loop, this DOES record an
+    `audit.chain_mismatch` row when the chain is broken — because the
+    admin clicked the button on purpose, and the resulting alert should
+    be visible in the alerts page until acknowledged. This is the only
+    code path that writes `audit.chain_mismatch`.
+    """
     result = audit_svc.verify_chain(limit=50000)
+    if not result.get("ok"):
+        # Record the mismatch explicitly from the admin action — this is
+        # the ONE place where a mismatch row is created. The maintenance
+        # loop no longer writes one, so a broken chain cannot re-fork
+        # itself on every worker restart.
+        audit_svc.record(
+            "audit.chain_mismatch",
+            severity="critical",
+            outcome="failure",
+            detail=(f"manual verify: chain broken at "
+                    f"{result.get('first_mismatch')} "
+                    f"(checked {result.get('checked')})"),
+            meta=result,
+        )
     audit_svc.record(
         "audit.verify",
         severity=("critical" if not result.get("ok") else "info"),

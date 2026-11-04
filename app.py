@@ -8,7 +8,7 @@ import logging
 import os
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from flask import (
@@ -31,7 +31,7 @@ from services import storage
 from services.previews import (
     store_preview, get_preview, mark_ready_reports, mark_failed,
 )
-from services.ratelimit import status as ratelimit_status
+from services.ratelimit import status as ratelimit_status, is_rate_limited
 
 
 # Defensive import of the audit module: a broken audit module must not
@@ -84,6 +84,41 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET
 
+
+# --- worker pools --------------------------------------------------------
+#
+# Three separate pools so a slow export can't starve a search (and vice
+# versa). Worker counts are env-overridable so you can tune after
+# observing Tracksolid's real rate-limit threshold without a redeploy:
+#
+#   TRIPS_FETCH_WORKERS     — parallel find_trips() calls in /trips.
+#                             Default 4. Bump to 8 once you confirm no
+#                             code=1006s at 4 during peak hours.
+#
+#   PREVIEW_COMPUTE_WORKERS — parallel compute_report() calls in /preview.
+#                             Default 3. Each compute_report makes 3-5
+#                             Tracksolid calls internally, so this
+#                             multiplies fast; keep it low unless /trips
+#                             parallelism has proven itself stable.
+
+def _int_env(name: str, default: int, lo: int, hi: int) -> int:
+    try:
+        v = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        v = default
+    return max(lo, min(hi, v))
+
+
+_TRIPS_WORKERS   = _int_env("TRIPS_FETCH_WORKERS",     4, 1, 16)
+_PREVIEW_WORKERS = _int_env("PREVIEW_COMPUTE_WORKERS", 3, 1, 8)
+
+_trips_pool   = ThreadPoolExecutor(max_workers=_TRIPS_WORKERS,
+                                   thread_name_prefix="trips-fetch")
+_preview_pool = ThreadPoolExecutor(max_workers=_PREVIEW_WORKERS,
+                                   thread_name_prefix="preview-compute")
+
+# Export job pool: unchanged size and purpose (background workbook writes,
+# not Tracksolid calls). Kept separate from the two pools above.
 executor = ThreadPoolExecutor(max_workers=2)
 
 MAX_TRUCKS          = 200
@@ -280,32 +315,77 @@ def _normalise_submitted_manual(raw: dict) -> dict:
     return out
 
 
+# --- parallel helpers -----------------------------------------------------
+
+def _safe_find_trips(imei: str,
+                     begin: datetime,
+                     end: datetime) -> list[dict]:
+    """find_trips() with a pre-flight rate-limit check.
+
+    The parallel fan-out fires up to `_TRIPS_WORKERS` calls concurrently.
+    Once the first 1006 lands, `is_rate_limited()` flips and every
+    subsequent call raises before hitting the API — so a rate-limited
+    search fails in a few seconds instead of grinding through the
+    remaining ~165 trucks and timing out on each one.
+
+    Re-raises RateLimitExceeded so the caller can cancel the fan-out.
+    """
+    if is_rate_limited():
+        raise RateLimitExceeded("rate limited (short-circuit before call)")
+    return find_trips(imei, begin, end)
+
+
+def _safe_compute_report(trip: dict, include_history: bool) -> dict:
+    """compute_report() with a pre-flight rate-limit check.
+
+    Same reasoning as _safe_find_trips. A single compute_report() makes
+    3-5 Tracksolid calls internally; without this guard, `_PREVIEW_WORKERS`
+    parallel futures would each fire 3-5 calls even after the API is
+    already exhausted, multiplying the timeout pain.
+    """
+    if is_rate_limited():
+        raise RateLimitExceeded("rate limited (short-circuit before call)")
+    t_start = datetime.strptime(
+        trip["start"], "%Y-%m-%d %H:%M:%S"
+    ).replace(tzinfo=timezone.utc)
+    t_end = datetime.strptime(
+        trip["end"], "%Y-%m-%d %H:%M:%S"
+    ).replace(tzinfo=timezone.utc)
+    return compute_report(
+        imei=trip["imei"],
+        truck_id=trip["truck"],
+        driver_name=trip.get("driver") or "",
+        begin=t_start, end=t_end,
+        include_history=include_history,
+    )
+
+
 # --- background workers ---------------------------------------------------
 
 def _run_preview(preview_id, trips, include_history):
+    """Compute every selected trip in parallel and mark the preview ready.
+
+    Uses `_preview_pool` (dedicated to compute_report, not exports) with
+    `map()` so the resulting list is in the same order as `trips` — the
+    preview page depends on that ordering for the trip selector.
+
+    On RateLimitExceeded from any future, we surface a clear error instead
+    of the previous behaviour (silent skip, then a 10-minute timeout on
+    every remaining trip). Any trips that finished before the limit hit
+    are discarded — a partial preview with holes in the middle would be
+    misleading, and the retry UX is the next PR, not this one.
+    """
     try:
-        reports = []
-        for trip in trips:
-            t_start = datetime.strptime(
-                trip["start"], "%Y-%m-%d %H:%M:%S"
-            ).replace(tzinfo=timezone.utc)
-            t_end = datetime.strptime(
-                trip["end"], "%Y-%m-%d %H:%M:%S"
-            ).replace(tzinfo=timezone.utc)
-            r = compute_report(
-                imei=trip["imei"],
-                truck_id=trip["truck"],
-                driver_name=trip.get("driver") or "",
-                begin=t_start, end=t_end,
-                include_history=include_history,
-            )
-            reports.append(r)
+        reports = list(_preview_pool.map(
+            lambda t: _safe_compute_report(t, include_history), trips,
+        ))
         mark_ready_reports(preview_id, reports)
     except RateLimitExceeded as exc:
         log.warning("preview hit rate limit: %s", exc)
         mark_failed(preview_id,
                     "Tracksolid Pro daily API limit reached. "
-                    "Your report could not be generated.")
+                    "Your report could not be generated. "
+                    "Please try again after the quota resets.")
     except Exception as exc:
         log.exception("preview failed")
         mark_failed(preview_id, f"{type(exc).__name__}: {exc}")
@@ -383,12 +463,6 @@ def _run_bulk_export(job_id, reports, out_path, per_trip_manual):
 
 
 # --- nav context ----------------------------------------------------------
-#
-# Every authenticated page render calls this. Both values are Supabase round
-# trips, so both are cached with a short TTL. Without the cache, every page
-# load paid two sequential Supabase queries before the template could render
-# — which is the dominant source of page-load latency on Render's free tier
-# (1 worker, 4 gthread slots).
 
 _nav_alert_cache: dict = {"value": 0, "expires_at": 0.0}
 _nav_jobs_cache:  dict = {"user_id": None, "value": 0, "expires_at": 0.0}
@@ -403,15 +477,12 @@ def _inject_nav_context():
     try:
         now = time.time()
 
-        # Alerts badge — only super-admins see it.
         if session.get("role") == "super_admin":
             if now >= _nav_alert_cache["expires_at"]:
                 _nav_alert_cache["value"] = audit.unacked_alert_count()
                 _nav_alert_cache["expires_at"] = now + _NAV_CACHE_TTL
             ctx["nav_unacked_alerts"] = _nav_alert_cache["value"]
 
-        # Pending jobs — cached per-user. A plain global cache would leak
-        # one user's pending-job count into another user's nav bar.
         uid = session.get("user_id")
         if (_nav_jobs_cache["user_id"] == uid
                 and now < _nav_jobs_cache["expires_at"]):
@@ -519,9 +590,10 @@ def trips_list():
         "search.trips",
         target=", ".join(t.get("name") or t["imei"] for t in trucks)[:200],
         detail=(f"trucks={len(trucks)}, begin={begin_s}, end={end_s}, "
-                f"include_history={include_history}"),
+                f"include_history={include_history}, "
+                f"workers={_TRIPS_WORKERS}"),
         meta={"truck_count": len(trucks), "include_history": include_history,
-              "begin": begin_s, "end": end_s},
+              "begin": begin_s, "end": end_s, "workers": _TRIPS_WORKERS},
     )
 
     resolved = []
@@ -541,37 +613,85 @@ def trips_list():
         flash("None of the selected trucks could be found.", "error")
         return redirect(url_for("index"))
 
-    groups = []
+    # ---- parallel fan-out over resolved devices -------------------------
+    #
+    # The previous implementation iterated sequentially and paid one full
+    # HTTP round trip per truck. With 169 trucks that's 45-120 s on a good
+    # day and 10+ minutes when Tracksolid is slow. Fanning out across
+    # _TRIPS_WORKERS threads turns that into ceil(N / workers) round trips
+    # of wall-clock time.
+    #
+    # On RateLimitExceeded from any future: cancel the remaining ones and
+    # bail out immediately with a flash. Do NOT wait for the in-flight
+    # futures — they'll all raise the same exception within ~30 s (their
+    # requests timeout), but the user shouldn't be blocked on that.
+    groups: list[dict] = []
     total  = 0
     rate_limited = False
-    for dev in resolved:
-        try:
-            trips = find_trips(dev["imei"], begin, end)
-        except RateLimitExceeded as exc:
-            log.warning("trip list hit rate limit: %s", exc)
-            rate_limited = True
-            break
-        except Exception as exc:
-            log.exception("trip list failed for %s", dev["imei"])
-            flash(f"Could not load trips for {dev['truck']}: {exc}", "error")
-            continue
-        if not trips:
-            continue
-        groups.append({
-            "imei":        dev["imei"],
-            "truck":       dev["truck"],
-            "driver_name": dev["driver_name"],
-            "trips":       trips,
-        })
-        total += len(trips)
+    fetch_errors: list[str] = []
+
+    future_to_dev = {
+        _trips_pool.submit(_safe_find_trips, dev["imei"], begin, end): dev
+        for dev in resolved
+    }
+
+    try:
+        for future in as_completed(future_to_dev):
+            dev = future_to_dev[future]
+            try:
+                trips = future.result()
+            except RateLimitExceeded as exc:
+                log.warning("find_trips rate limited for %s: %s",
+                            dev["imei"], exc)
+                rate_limited = True
+                break
+            except Exception as exc:
+                log.exception("find_trips failed for %s", dev["imei"])
+                fetch_errors.append(f"{dev['truck']}: {type(exc).__name__}")
+                continue
+
+            if not trips:
+                continue
+
+            groups.append({
+                "imei":        dev["imei"],
+                "truck":       dev["truck"],
+                "driver_name": dev["driver_name"],
+                "trips":       trips,
+            })
+            total += len(trips)
+    finally:
+        if rate_limited:
+            # Cancel anything still pending so we don't keep 165 threads
+            # hammering a rate-limited API in the background.
+            for f in future_to_dev:
+                if not f.done():
+                    f.cancel()
 
     if rate_limited:
-        flash("Tracksolid Pro daily API limit reached. Try again later.", "error")
+        flash("Tracksolid Pro daily API limit reached. Try again later.",
+              "error")
         return redirect(url_for("index"))
 
     if not groups:
-        flash("No trips found for any of the selected trucks in that window.", "error")
+        if fetch_errors:
+            preview = ", ".join(fetch_errors[:5])
+            more = f" (and {len(fetch_errors) - 5} more)" if len(fetch_errors) > 5 else ""
+            flash(
+                f"No trips found. Some trucks failed to load: {preview}{more}.",
+                "error",
+            )
+        else:
+            flash("No trips found for any of the selected trucks in that window.",
+                  "error")
         return redirect(url_for("index"))
+
+    # Preserve the user's selected-truck order in the rendered groups list
+    # (as_completed yields futures in completion order, which would make
+    # the page shuffle every search). Sort by the original `resolved`
+    # index.
+    order = {dev["imei"]: i for i, dev in enumerate(resolved)}
+    groups.sort(key=lambda g: order.get(g["imei"], 10**9))
 
     return render_template(
         "trips.html",
@@ -622,7 +742,23 @@ def preview_start():
         "created_by":      session.get("user_id"),
         "include_history": include_history,
     })
-    executor.submit(_run_preview, preview_id, selected, include_history)
+
+    audit.record(
+        "preview.start",
+        target=", ".join(sorted({s["truck"] for s in selected}))[:200],
+        detail=(f"trips={len(selected)}, "
+                f"include_history={include_history}, "
+                f"workers={_PREVIEW_WORKERS}"),
+        meta={"preview_id": preview_id,
+              "trip_count": len(selected),
+              "include_history": include_history,
+              "workers": _PREVIEW_WORKERS},
+    )
+
+    executor_preview = _preview_pool  # alias for readability below
+    # Fire and forget; the preview page polls /api/preview/<id>.
+    _preview_pool.submit(_run_preview, preview_id, selected, include_history)
+
     return redirect(url_for("preview_show", preview_id=preview_id))
 
 

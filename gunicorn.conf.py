@@ -67,6 +67,14 @@ def post_fork(server, worker):
         raise
 
     # Per-worker audit maintenance thread.
+    #
+    # Prune/verify timestamps are persisted in audit_chain_head.meta so a
+    # worker recycle (Render restarts the worker every max_requests
+    # requests) does NOT re-run maintenance on every boot. Without this,
+    # a worker that restarts every ~12 minutes calls verify_chain() every
+    # 12 minutes, and because verify_chain() writes an audit row on
+    # failure, it re-forks the chain on every restart — which is exactly
+    # the "chain broken at <row>" loop we saw in production.
     try:
         import threading
         import time
@@ -74,14 +82,44 @@ def post_fork(server, worker):
         def _audit_maintenance_loop():
             try:
                 from services import audit
+                from services.supabase_client import admin_client
             except Exception as exc:
                 server.log.error("audit maintenance: import failed: %s", exc)
                 return
 
-            last_prune  = 0.0
-            last_verify = 0.0
             PRUNE_INTERVAL  = 24 * 3600
             VERIFY_INTERVAL = 3600
+
+            def _read_meta(key: str, default: float = 0.0) -> float:
+                try:
+                    rows = (admin_client().table("audit_chain_head")
+                            .select("meta").eq("id", 1).limit(1)
+                            .execute().data or [])
+                    if not rows:
+                        return default
+                    meta = rows[0].get("meta") or {}
+                    return float(meta.get(key) or default)
+                except Exception:
+                    return default
+
+            def _write_meta(key: str) -> None:
+                try:
+                    rows = (admin_client().table("audit_chain_head")
+                            .select("meta").eq("id", 1).limit(1)
+                            .execute().data or [])
+                    meta = dict(rows[0].get("meta") or {}) if rows else {}
+                    meta[key] = time.time()
+                    admin_client().table("audit_chain_head").update({
+                        "meta": meta,
+                    }).eq("id", 1).execute()
+                except Exception as exc:
+                    server.log.debug(
+                        "audit maintenance: could not persist %s: %s",
+                        key, exc,
+                    )
+
+            last_prune  = _read_meta("last_prune")  or 0.0
+            last_verify = _read_meta("last_verify") or 0.0
 
             while True:
                 try:
@@ -93,6 +131,7 @@ def post_fork(server, worker):
                     if now - last_prune >= PRUNE_INTERVAL:
                         deleted = audit.prune()
                         server.log.info("audit prune: %s", deleted)
+                        _write_meta("last_prune")
                         last_prune = now
                 except Exception as exc:
                     server.log.warning("audit prune failed: %s", exc)
@@ -110,6 +149,7 @@ def post_fork(server, worker):
                                 "audit chain BROKEN at %s",
                                 result.get("first_mismatch"),
                             )
+                        _write_meta("last_verify")
                         last_verify = now
                 except Exception as exc:
                     server.log.warning("audit verify failed: %s", exc)

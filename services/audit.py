@@ -28,6 +28,17 @@ Chain head:
     writer to collide on `prev_hash`, and (after the retry loop exhausts)
     silently drops audit rows. See the "Chain head" docstring on
     `_read_chain_head` for details.
+
+Verify-loop noise:
+    `verify_chain()` does NOT record an `audit.chain_mismatch` row when it
+    detects a break. Recording that row would push the chain forward from
+    a broken state, which makes the break unrecoverable without a truncate
+    — and when the maintenance loop runs verify on every worker recycle,
+    it would re-fork the chain on every restart. The alert rule
+    `_alert_rule_hash_mismatch` (which fires on `audit.chain_mismatch`
+    rows) is still armed, but it now only fires when an explicit
+    `audit.chain_mismatch` row is created by the admin "Verify chain"
+    button (`admin.audit_verify`), not on every maintenance pass.
 """
 from __future__ import annotations
 
@@ -271,9 +282,6 @@ def _read_chain_head() -> str:
         rows = resp.data or []
         return rows[0]["hash"] if rows and rows[0].get("hash") else ("0" * 64)
     except Exception as exc:
-        # If we can't read the head, don't pretend we can chain — surface
-        # the failure to the caller so `record()` logs it loudly instead of
-        # inserting a row chained off an unknown predecessor.
         log.error("audit chain head read failed: %s", exc)
         raise
 
@@ -327,8 +335,6 @@ def _insert_with_chain_retry(row: dict) -> tuple[str | None, str]:
                     attempt + 1, _CHAIN_RETRY_ATTEMPTS, prev_hash[:16],
                 )
                 continue
-            # Anything else is a real error — don't loop, bubble it up so
-            # record() logs it at ERROR with full context.
             raise
     if last_exc is not None:
         raise last_exc
@@ -454,8 +460,6 @@ def record(
 
         return row_id
     except Exception as exc:
-        # Final failure after all retries (or a non-retryable error).
-        # Log at ERROR with the event name so it's visible in the deploy log.
         log.error(
             "audit.record(%s) FAILED: %s",
             event, exc,
@@ -596,6 +600,17 @@ def _write_alert(*, rule: str, severity: str, message: str,
 # ---------------------------------------------------------------------------
 # Chain verification — order by chain_seq (monotonic), not created_at
 # ---------------------------------------------------------------------------
+#
+# IMPORTANT: verify_chain does NOT write an `audit.chain_mismatch` row.
+#
+# Writing one pushed the chain forward from a broken state, so every verify
+# pass after the first breach made the chain one row longer and one row
+# deeper into the breach — impossible to repair without a truncate. When
+# the maintenance loop calls verify on every worker recycle, this turned
+# into a self-sustaining fork loop. The break is reported via the return
+# value; recording is left to explicit user action
+# (admin.audit_verify) so a genuine mismatch can be acknowledged once, on
+# purpose, and then repaired by the admin.
 
 def verify_chain(limit: int = 10000) -> dict:
     try:
@@ -643,22 +658,13 @@ def verify_chain(limit: int = 10000) -> dict:
             if len(rows) < page_size:
                 break
 
-        result = {
+        return {
             "ok": first_mismatch is None,
             "checked": checked,
             "first_mismatch": first_mismatch,
             "expected": first_expected,
             "actual":   first_actual,
         }
-        if first_mismatch:
-            record(
-                "audit.chain_mismatch",
-                severity="critical",
-                outcome="failure",
-                detail=f"chain broken at row {first_mismatch}",
-                meta={"checked": checked, "row_id": first_mismatch},
-            )
-        return result
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 

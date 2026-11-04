@@ -8,6 +8,11 @@ resets its daily counter.
 `last_clear` is set when the flag transitions from True to False so the
 frontend can detect "just cleared" and drop the banner immediately
 instead of waiting for the next 10-second poll.
+
+`is_rate_limited()` is a cheap, non-mutating read used by the parallel
+fan-out in app.py to short-circuit work as soon as the first 1006 lands.
+It deliberately does NOT run the auto-clear logic — that happens in
+`status()`, which is what the front-end polls.
 """
 from __future__ import annotations
 
@@ -38,6 +43,18 @@ def clear() -> None:
             _state["last_clear"] = datetime.now(timezone.utc)
         _state["limited_at"] = None
         _state["message"] = ""
+
+
+def is_rate_limited() -> bool:
+    """Cheap, non-mutating read: is the daily quota currently exhausted?
+
+    Used by parallel fan-out loops (`/trips`, `/preview`) to bail out the
+    moment a 1006 lands, instead of letting every remaining future fire
+    and time out. Does NOT auto-clear at midnight — that side effect
+    belongs to `status()`, which the front-end polls.
+    """
+    with _lock:
+        return _state["limited_at"] is not None
 
 
 def status() -> dict:
