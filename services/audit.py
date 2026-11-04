@@ -18,6 +18,16 @@ Chain ordering:
     writers cannot both chain off the same predecessor: one insert wins,
     the other gets a unique violation and retries after re-reading the head.
     No advisory locks, no RPCs, no external coordination.
+
+Chain head:
+    `_read_chain_head()` reads the current head directly from `audit_log`
+    (ordered by `chain_seq` DESC). The `audit_chain_head` table is kept for
+    backward compatibility and diagnostics, but it is not authoritative —
+    deriving the head from `audit_log` eliminates the class of bugs where a
+    failed head update leaves the cached pointer stale, causes the next
+    writer to collide on `prev_hash`, and (after the retry loop exhausts)
+    silently drops audit rows. See the "Chain head" docstring on
+    `_read_chain_head` for details.
 """
 from __future__ import annotations
 
@@ -57,7 +67,7 @@ _MAX_STRING_LEN = 2000
 _MAX_META_BYTES = 32 * 1024
 _MAX_DETAIL_LEN = 2000
 
-_CHAIN_RETRY_ATTEMPTS = 3
+_CHAIN_RETRY_ATTEMPTS = 5
 
 
 # ---------------------------------------------------------------------------
@@ -237,19 +247,44 @@ def _row_digest(row: dict, prev_hash: str) -> str:
 
 
 def _read_chain_head() -> str:
+    """Return the hash of the most recently chained row.
+
+    We derive this from `audit_log` (ordered by `chain_seq` DESC) instead of
+    reading a cached `audit_chain_head` row. The previous design had a fatal
+    failure mode: `_write_chain_head()` could fail *after* the `audit_log`
+    insert succeeded, leaving the cached head pointing at a `prev_hash` that
+    was already taken. The next writer would collide on the unique index,
+    retry 3× against the same stale head, then give up — silently dropping
+    every audit event from that point on.
+
+    Deriving the head from the table it actually belongs to makes that
+    impossible: the head is always the real last row, no cache to drift.
+    The `audit_chain_head` table is now purely informational (kept for
+    `rebuild_audit_chain.py` and any external dashboard that reads it).
+    """
     try:
-        resp = (_client().table("audit_chain_head")
-                .select("last_hash")
-                .eq("id", 1)
+        resp = (_client().table("audit_log")
+                .select("hash")
+                .order("chain_seq", desc=True)
                 .limit(1)
                 .execute())
         rows = resp.data or []
-        return rows[0]["last_hash"] if rows else ("0" * 64)
-    except Exception:
-        return "0" * 64
+        return rows[0]["hash"] if rows and rows[0].get("hash") else ("0" * 64)
+    except Exception as exc:
+        # If we can't read the head, don't pretend we can chain — surface
+        # the failure to the caller so `record()` logs it loudly instead of
+        # inserting a row chained off an unknown predecessor.
+        log.error("audit chain head read failed: %s", exc)
+        raise
 
 
 def _write_chain_head(new_hash: str, row_id: str | None) -> None:
+    """Best-effort update of the informational `audit_chain_head` table.
+
+    This is NOT on the correctness path — `_read_chain_head()` derives the
+    head from `audit_log` directly. A failure here is logged but does not
+    affect the chain.
+    """
     try:
         _client().table("audit_chain_head").update({
             "last_hash":  new_hash,
@@ -257,7 +292,7 @@ def _write_chain_head(new_hash: str, row_id: str | None) -> None:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", 1).execute()
     except Exception as exc:
-        log.warning("audit chain head update failed: %s", exc)
+        log.debug("audit chain head mirror update failed (non-fatal): %s", exc)
 
 
 def _insert_with_chain_retry(row: dict) -> tuple[str | None, str]:
@@ -265,13 +300,14 @@ def _insert_with_chain_retry(row: dict) -> tuple[str | None, str]:
 
     The `audit_log_prev_hash_unique` index means two concurrent writers
     cannot both claim the same predecessor: one insert wins, the other gets
-    a unique violation and retries after re-reading the head. This is the
-    replacement for the old advisory-lock RPC.
+    a unique violation and retries after re-reading the head. Because
+    `_read_chain_head()` reads from `audit_log` itself, every retry sees the
+    *current* head — no stale cache to loop against.
 
     Returns (row_id, final_prev_hash).
     """
     last_exc: Exception | None = None
-    for _attempt in range(_CHAIN_RETRY_ATTEMPTS):
+    for attempt in range(_CHAIN_RETRY_ATTEMPTS):
         prev_hash = _read_chain_head()
         row["prev_hash"] = prev_hash
         row["hash"]      = _row_digest(row, prev_hash)
@@ -282,11 +318,17 @@ def _insert_with_chain_retry(row: dict) -> tuple[str | None, str]:
         except Exception as exc:
             last_exc = exc
             msg = str(exc).lower()
-            if ("duplicate key" in msg
-                    or "unique constraint" in msg
-                    or "23505" in msg):
-                # Another writer claimed this head. Retry.
+            is_dup = ("duplicate key" in msg
+                      or "unique constraint" in msg
+                      or "23505" in msg)
+            if is_dup:
+                log.debug(
+                    "audit chain collision on attempt %d/%d (prev_hash=%s); retrying",
+                    attempt + 1, _CHAIN_RETRY_ATTEMPTS, prev_hash[:16],
+                )
                 continue
+            # Anything else is a real error — don't loop, bubble it up so
+            # record() logs it at ERROR with full context.
             raise
     if last_exc is not None:
         raise last_exc
@@ -310,6 +352,8 @@ def _compute_diff(before: dict | None, after: dict | None) -> dict | None:
         if b != a:
             out[k] = {"before": b, "after": a}
     return out or None
+
+
 # ---------------------------------------------------------------------------
 # Writer
 # ---------------------------------------------------------------------------
@@ -410,7 +454,13 @@ def record(
 
         return row_id
     except Exception as exc:
-        log.warning("audit.record(%s) failed: %s", event, exc)
+        # Final failure after all retries (or a non-retryable error).
+        # Log at ERROR with the event name so it's visible in the deploy log.
+        log.error(
+            "audit.record(%s) FAILED: %s",
+            event, exc,
+            exc_info=not isinstance(exc, (KeyError, ValueError)),
+        )
         return None
 
 
@@ -541,7 +591,9 @@ def _write_alert(*, rule: str, severity: str, message: str,
         }).execute()
     except Exception as exc:
         log.warning("audit alert insert failed (%s): %s", rule, exc)
-        # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # Chain verification — order by chain_seq (monotonic), not created_at
 # ---------------------------------------------------------------------------
 
@@ -807,7 +859,9 @@ def acknowledge_alert(alert_id: str, *, user_id: str | None,
         )
     except Exception as exc:
         log.warning("acknowledge_alert failed: %s", exc)
-        # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # Retention / export
 # ---------------------------------------------------------------------------
 

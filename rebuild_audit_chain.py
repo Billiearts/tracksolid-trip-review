@@ -3,7 +3,10 @@ rebuild_audit_chain.py — one-off repair for a forked audit chain.
 
 Walks every row of `audit_log` in `chain_seq` order (monotonic), recomputes
 `prev_hash` and `hash` for each row from the canonical genesis, and updates
-the chain head.
+the informational `audit_chain_head` table. The chain head that `record()`
+actually reads is derived from `audit_log` itself, so this script's job is
+purely to rewrite the rows so that the unique index on `prev_hash` can be
+re-created cleanly and `verify_chain()` returns OK.
 
 Run once against the real database, from the project root:
 
@@ -15,7 +18,7 @@ import sys
 from datetime import datetime, timezone
 
 from services.supabase_client import admin_client
-from services.audit import _row_digest, _client
+from services.audit import _row_digest, _client, verify_chain
 
 
 GENESIS = "0" * 64
@@ -79,15 +82,27 @@ def main() -> int:
         page += 1
         print(f"  ... {total} rows rewritten")
 
-    # Update the chain head to the last row's hash.
-    (client.table("audit_chain_head").update({
-        "last_hash":  prev,
-        "last_id":    None,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }).eq("id", 1).execute())
+    # Update the informational chain-head table.
+    try:
+        (client.table("audit_chain_head").update({
+            "last_hash":  prev,
+            "last_id":    None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", 1).execute())
+    except Exception as exc:
+        print(f"  (warning) audit_chain_head mirror update failed: {exc}")
 
     print(f"\n=== Done. {total} rows rewritten. ===")
     print(f"  new chain head: {prev}")
+
+    print("\n=== Verifying with verify_chain() ===")
+    result = verify_chain(limit=total + 1000)
+    if result.get("ok"):
+        print(f"  OK — {result.get('checked', 0)} rows verified.")
+    else:
+        print(f"  FAILED — mismatch at {result.get('first_mismatch')}: "
+              f"{result.get('error') or ''}")
+        return 1
 
     print("\n=== After rebuild ===")
     after = _diagnose(client)
@@ -96,7 +111,7 @@ def main() -> int:
     print(f"  extra fork rows: {after['fork_instances']}")
 
     if after["fork_heads"] == 0 and after["fork_instances"] == 0:
-        print("\nOK — chain is clean. You can now create the unique index.")
+        print("\nOK — chain is clean. You can now (re-)create the unique index.")
         return 0
     print("\nWARN — forks still present. Do NOT create the unique index yet.")
     return 1
