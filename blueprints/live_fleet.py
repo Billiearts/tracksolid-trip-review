@@ -2,7 +2,11 @@
 blueprints/live_fleet.py — live Awaso↔Takoradi corridor view.
 
 Access to the map is gated by the 'live_fleet_view' extra_role.
-Editing fences and pausing/resuming the scan require the base 'admin' role.
+Editing fences and pausing/resuming the scan require an admin-level role —
+either the base 'admin' role or the 'super_admin' role. A super-admin is
+strictly more privileged than an admin; gating on `role == "admin"` alone
+was a bug that hid the edit button from the super-admin and returned 403
+on every fence mutation they attempted.
 
 Scanning is GLOBAL:
   - Any visitor (admin or non-admin) triggers a normal live scan unless
@@ -36,6 +40,7 @@ from services.live_fleet import (
     is_scanning, set_scanning, paused_since,
     heartbeat, viewer_count, forget_session as _forget_viewer,
 )
+from services.supabase_client import admin_client
 
 
 log = logging.getLogger(__name__)
@@ -59,7 +64,15 @@ def _rate_ok(session_id: str) -> bool:
 
 
 def _is_admin() -> bool:
-    return session.get("role") == "admin"
+    """Admin-level access: 'admin' OR 'super_admin'.
+
+    `super_admin` is strictly more privileged than `admin` in this app —
+    the primary super-admin is the only account that can grant/revoke
+    super_admin, change any role, etc. Gating fence edits on `role ==
+    'admin'` alone silently locked the super-admin out of the editor and
+    of every DELETE. Accept both.
+    """
+    return session.get("role") in ("admin", "super_admin")
 
 
 def _scan_allowed_for_this_session() -> bool:
@@ -67,11 +80,18 @@ def _scan_allowed_for_this_session() -> bool:
     return is_scanning()
 
 
-def _safe_url(endpoint: str) -> str:
+def _safe_url(endpoint: str, **values) -> str:
+    """url_for() with a guard so a missing endpoint can't crash render.
+
+    Accepts **values so callers can supply path parameters such as
+    `row_id="__ID__"` for endpoints whose rule is `/api/fences/<row_id>`.
+    The front-end replaces the literal `__ID__` placeholder before issuing
+    the request.
+    """
     try:
-        return url_for(endpoint)
+        return url_for(endpoint, **values)
     except Exception as exc:
-        log.warning("live_fleet: url_for(%r) failed: %s", endpoint, exc)
+        log.warning("live_fleet: url_for(%r, %r) failed: %s", endpoint, values, exc)
         return ""
 
 
@@ -86,6 +106,9 @@ def index():
         api_probe_url=_safe_url("live_fleet.api_probe"),
         api_seed_url=_safe_url("live_fleet.api_seed_defaults"),
         api_save_fences_url=_safe_url("live_fleet.api_save_fences"),
+        api_delete_fence_url=_safe_url(
+            "live_fleet.api_delete_fence", row_id="__ID__"
+        ),
         api_heartbeat_url=_safe_url("live_fleet.api_heartbeat"),
     )
 

@@ -154,6 +154,15 @@
       background: #f0f2f5; color: #333; border: 1px solid #d7dbe0;
     }
     .fence-editor-foot button.secondary:hover { background: #e2e6eb; }
+    .fence-editor-foot button.danger {
+      background: #fde7e7; color: #a02525; border: 1px solid #e2b3b3;
+      margin-right: auto;
+    }
+    .fence-editor-foot button.danger:hover { background: #fbcaca; }
+    .fence-editor-foot button.danger:disabled {
+      background: #f5f5f5; color: #999; border-color: #e2e6ea;
+      cursor: not-allowed;
+    }
 
     .fence-list {
       list-style: none; margin: 0 0 0.75rem; padding: 0;
@@ -532,6 +541,10 @@
       <div class="fence-editor-foot">
         <button type="button" class="secondary" id="fence-editor-cancel">Cancel</button>
         <button type="button" id="fence-editor-save">Save all</button>
+        <button type="button" class="danger" id="fence-delete-btn" hidden
+                title="Delete this fence from the database">
+          Delete fence
+        </button>
       </div>
     </div>
     {% endif %}
@@ -555,6 +568,7 @@
     window.__API_PROBE__    = {{ (api_probe_url or '') | tojson }};
     window.__API_SEED__     = {{ (api_seed_url or '') | tojson }};
     window.__API_SAVE_FENCES__ = {{ (api_save_fences_url or '') | tojson }};
+    window.__API_DELETE_FENCE__ = {{ (api_delete_fence_url or '') | tojson }};
     window.__API_HEARTBEAT__   = {{ (api_heartbeat_url or '') | tojson }};
   </script>
   <script>
@@ -583,6 +597,7 @@
       const API_PROBE      = window.__API_PROBE__ || '';
       const API_SEED       = window.__API_SEED__ || '';
       const API_SAVE_FENCES= window.__API_SAVE_FENCES__ || '';
+      const API_DELETE_FENCE = window.__API_DELETE_FENCE__ || '';
       const API_HEARTBEAT  = window.__API_HEARTBEAT__ || '';
       const IS_ADMIN       = !!window.__IS_ADMIN__;
 
@@ -621,6 +636,7 @@
       const editorClose = document.getElementById('fence-editor-close');
       const editorCancel= document.getElementById('fence-editor-cancel');
       const editorSave  = document.getElementById('fence-editor-save');
+      const deleteBtn   = document.getElementById('fence-delete-btn');
       const fenceListEl = document.getElementById('fence-list');
       const newPolyBtn  = document.getElementById('fence-new-polygon');
       const newCircleBtn= document.getElementById('fence-new-circle');
@@ -1305,15 +1321,27 @@
       }
 
       function loadFencesIntoEditor(corridor, yards) {
-        editFences = [];
+        // Preserve the user's unsaved edits if the editor is already open
+        // and the incoming snapshot hasn't changed for those fences.
+        const dirtyUids = editFences
+          .filter(function (f) { return f._dirty || f._isNew; })
+          .map(function (f) { return f.uid; });
+
+        const dirtyByName = {};
+        editFences.forEach(function (f) {
+          if (f._dirty || f._isNew) dirtyByName[f.name] = f;
+        });
+
+        const next = [];
         (corridor || []).forEach(function (f) {
           if (f.shape === 'none') return;
-          editFences.push(cloneFence(f));
+          next.push(dirtyByName[f.name] || cloneFence(f));
         });
         (yards || []).forEach(function (f) {
           if (f.shape === 'none') return;
-          editFences.push(cloneFence(f));
+          next.push(dirtyByName[f.name] || cloneFence(f));
         });
+        editFences = next;
       }
 
       function fencePayload(f) {
@@ -1582,11 +1610,22 @@
         renderDirtyBadge();
       }
 
+      function updateDeleteButton() {
+        if (!deleteBtn) return;
+        const f = editFences.find(function (x) { return x.uid === selectedUid; });
+        if (!f || !f.id) {
+          deleteBtn.hidden = true;
+        } else {
+          deleteBtn.hidden = false;
+        }
+      }
+
       function selectFence(uid) {
         selectedUid = uid;
         const f = editFences.find(function (x) { return x.uid === uid; });
         if (!f) {
           editBlock.hidden = true;
+          if (deleteBtn) deleteBtn.hidden = true;
           redrawEditorFences();
           renderFenceList();
           return;
@@ -1603,9 +1642,61 @@
           editRad.value = f.radius_km != null ? f.radius_km.toFixed(3) : '';
         }
         editStatus.textContent = f.id ? ('DB id: ' + f.id) : 'New (not yet saved)';
+        updateDeleteButton();
         redrawEditorFences();
         renderFenceList();
       }
+
+      async function deleteSelectedFence() {
+        if (!API_DELETE_FENCE) {
+          alert('Server is missing the fence-delete endpoint (restart Flask).');
+          return;
+        }
+        const f = editFences.find(function (x) { return x.uid === selectedUid; });
+        if (!f || !f.id) {
+          alert('Select a saved fence first.');
+          return;
+        }
+        if (!confirm('Delete fence "' + (f.name || f.label || f.id) + '"?\n\n' +
+                     'This removes it from the database. Trucks already inside it ' +
+                     'will still show their last-known fence until the next scan.')) {
+          return;
+        }
+        deleteBtn.disabled = true;
+        const prevLabel = deleteBtn.textContent;
+        deleteBtn.textContent = 'Deleting…';
+        try {
+          const url = API_DELETE_FENCE.replace('__ID__', encodeURIComponent(f.id));
+          const r = await fetch(url, {
+            method: 'DELETE',
+            credentials: 'same-origin',
+          });
+          let j = {};
+          try { j = await r.json(); } catch (e) { /* non-JSON body */ }
+          if (!r.ok) {
+            alert('Delete failed: ' + (j.error || r.status));
+            return;
+          }
+          // Remove from local editor state and refresh map layers.
+          editFences = editFences.filter(function (x) { return x.uid !== f.uid; });
+          selectedUid = null;
+          editBlock.hidden = true;
+          deleteBtn.hidden = true;
+          lastCorridor = j.corridor || lastCorridor;
+          lastYards    = j.yards    || lastYards;
+          drawFences(lastCorridor, lastYards);
+          redrawEditorFences();
+          renderFenceList();
+          setStatus('Fence deleted.', null);
+        } catch (e) {
+          alert('Delete request failed: ' + e);
+        } finally {
+          deleteBtn.disabled = false;
+          deleteBtn.textContent = prevLabel;
+        }
+      }
+
+      if (deleteBtn) deleteBtn.addEventListener('click', deleteSelectedFence);
 
       function openEditor() {
         if (editorOpen) return;
@@ -1616,6 +1707,7 @@
         loadFencesIntoEditor(lastCorridor, lastYards);
         selectedUid = null;
         editBlock.hidden = true;
+        if (deleteBtn) deleteBtn.hidden = true;
         renderFenceList();
         redrawEditorFences();
       }
@@ -1696,6 +1788,7 @@
           renderFenceList();
           editBlock.hidden = true;
           selectedUid = null;
+          if (deleteBtn) deleteBtn.hidden = true;
           hideBanner();
         } catch (e) {
           alert('Save failed: ' + e);
@@ -1767,6 +1860,7 @@
           : 'Click map to set the centre, then click again to set the radius.';
         selectedUid = null;
         editBlock.hidden = true;
+        if (deleteBtn) deleteBtn.hidden = true;
         redrawEditorFences();
         renderFenceList();
         draftPreview.clearLayers();
