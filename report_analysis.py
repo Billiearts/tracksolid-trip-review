@@ -722,19 +722,33 @@ def build_history(imei: str, reference: datetime, *,
                   alarms: list[dict] | None = None,
                   hist_begin: datetime | None = None,
                   hist_end: datetime | None = None) -> dict | None:
+    """Build 3-month history. Now expects `alarms` to be provided.
+
+    The alarms are computed **once per preview** in `_run_preview` and
+    passed in for every trip, so the 3-month alarm window is only fetched
+    once even when the user previews 4+ trips. The `alarms is None` branch
+    is retained for the CLI (`run_report.py`) and for direct calls from
+    outside the preview pipeline, but in the Flask app it never fires.
+
+    See `report_analysis`'s module docstring for the parallel fan-out
+    that drives the per-trip parking+track fetch.
+    """
     import time as _time
     t0 = _time.monotonic()
 
     if hist_begin is None or hist_end is None:
         hist_begin, hist_end = history_window(reference)
-    log.info("history window %s → %s", utc_str(hist_begin), utc_str(hist_end))
 
     if alarms is None:
+        # CLI / standalone path — fetch once.
         try:
             alarms = fetch_alarms_chunked(imei, hist_begin, hist_end)
         except RateLimitExceeded as exc:
             log.warning("history skipped — rate limit hit: %s", exc)
             return None
+
+    log.info("history window %s → %s (reusing %d alarms)",
+             utc_str(hist_begin), utc_str(hist_end), len(alarms))
 
     alarms_with_time = [(a, _alarm_time(a)) for a in alarms]
     alarms_with_time = [(a, t) for a, t in alarms_with_time if t is not None]
@@ -745,12 +759,6 @@ def build_history(imei: str, reference: datetime, *,
     log.info("%d trip(s) starting in window", len(trips))
 
     # ---- parallel fan-out: parking + track per historical trip ----
-    #
-    # With ~30 historical trips × 2 calls, sequential fetch took ~60 s
-    # of wall-clock time and dominated preview latency. Fanning out
-    # 4-way cuts that to ~15 s, and the per-call caches in jimi.py
-    # (parking) and this module (track) prevent duplicates when the
-    # "current" trip also appears in history.
     t_fetch0 = _time.monotonic()
     fetched = parallel_call(
         lambda t: _fetch_one_history_trip(imei, t),

@@ -72,8 +72,6 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# Silence the supabase/httpx per-request INFO spam. Set LOG_HTTPX=1
-# in the environment if you need to debug a specific supabase call.
 if os.environ.get("LOG_HTTPX") != "1":
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -86,20 +84,6 @@ app.secret_key = FLASK_SECRET
 
 
 # --- worker pools --------------------------------------------------------
-#
-# Three separate pools so a slow export can't starve a search (and vice
-# versa). Worker counts are env-overridable so you can tune after
-# observing Tracksolid's real rate-limit threshold without a redeploy:
-#
-#   TRIPS_FETCH_WORKERS     — parallel find_trips() calls in /trips.
-#                             Default 4. Bump to 8 once you confirm no
-#                             code=1006s at 4 during peak hours.
-#
-#   PREVIEW_COMPUTE_WORKERS — parallel compute_report() calls in /preview.
-#                             Default 3. Each compute_report makes 3-5
-#                             Tracksolid calls internally, so this
-#                             multiplies fast; keep it low unless /trips
-#                             parallelism has proven itself stable.
 
 def _int_env(name: str, default: int, lo: int, hi: int) -> int:
     try:
@@ -117,8 +101,6 @@ _trips_pool   = ThreadPoolExecutor(max_workers=_TRIPS_WORKERS,
 _preview_pool = ThreadPoolExecutor(max_workers=_PREVIEW_WORKERS,
                                    thread_name_prefix="preview-compute")
 
-# Export job pool: unchanged size and purpose (background workbook writes,
-# not Tracksolid calls). Kept separate from the two pools above.
 executor = ThreadPoolExecutor(max_workers=2)
 
 MAX_TRUCKS          = 200
@@ -320,29 +302,14 @@ def _normalise_submitted_manual(raw: dict) -> dict:
 def _safe_find_trips(imei: str,
                      begin: datetime,
                      end: datetime) -> list[dict]:
-    """find_trips() with a pre-flight rate-limit check.
-
-    The parallel fan-out fires up to `_TRIPS_WORKERS` calls concurrently.
-    Once the first 1006 lands, `is_rate_limited()` flips and every
-    subsequent call raises before hitting the API — so a rate-limited
-    search fails in a few seconds instead of grinding through the
-    remaining ~165 trucks and timing out on each one.
-
-    Re-raises RateLimitExceeded so the caller can cancel the fan-out.
-    """
     if is_rate_limited():
         raise RateLimitExceeded("rate limited (short-circuit before call)")
     return find_trips(imei, begin, end)
 
 
-def _safe_compute_report(trip: dict, include_history: bool) -> dict:
-    """compute_report() with a pre-flight rate-limit check.
-
-    Same reasoning as _safe_find_trips. A single compute_report() makes
-    3-5 Tracksolid calls internally; without this guard, `_PREVIEW_WORKERS`
-    parallel futures would each fire 3-5 calls even after the API is
-    already exhausted, multiplying the timeout pain.
-    """
+def _safe_compute_report(trip: dict,
+                         include_history: bool,
+                         alarms: list[dict] | None = None) -> dict:
     if is_rate_limited():
         raise RateLimitExceeded("rate limited (short-circuit before call)")
     t_start = datetime.strptime(
@@ -357,27 +324,106 @@ def _safe_compute_report(trip: dict, include_history: bool) -> dict:
         driver_name=trip.get("driver") or "",
         begin=t_start, end=t_end,
         include_history=include_history,
+        alarms=alarms,
     )
+
+
+def _prefetch_alarms_for_preview(trips: list[dict],
+                                 include_history: bool) -> dict[str, list[dict]]:
+    """Fetch the union-of-search-and-history alarms for every IMEI in the
+    preview, once, in parallel across IMEIs.
+
+    The first `compute_report` in the batch would otherwise fetch these
+    alone, serially, and every other trip would wait behind it for cache
+    hits. Doing it here means the slow step happens once, in parallel
+    with nothing else, and every `compute_report` gets a cache hit
+    immediately.
+    """
+    from jimi import fetch_alarms_chunked
+    from report_analysis import history_window, YARD_LOOKBACK
+
+    if not trips:
+        return {}
+
+    per_imei_bounds: dict[str, tuple[datetime, datetime]] = {}
+    for t in trips:
+        imei = t["imei"]
+        t_start = datetime.strptime(
+            t["start"], "%Y-%m-%d %H:%M:%S"
+        ).replace(tzinfo=timezone.utc)
+        t_end = datetime.strptime(
+            t["end"], "%Y-%m-%d %H:%M:%S"
+        ).replace(tzinfo=timezone.utc)
+        if imei not in per_imei_bounds:
+            per_imei_bounds[imei] = (t_start, t_end)
+        else:
+            b, e = per_imei_bounds[imei]
+            per_imei_bounds[imei] = (min(b, t_start), max(e, t_end))
+
+    expanded: dict[str, tuple[datetime, datetime]] = {}
+    for imei, (b, e) in per_imei_bounds.items():
+        if include_history:
+            hist_begin, hist_end = history_window(b)
+            expanded[imei] = (min(b, hist_begin), max(e, hist_end))
+        else:
+            expanded[imei] = (b - YARD_LOOKBACK, e)
+
+    def _fetch_one(imei: str) -> tuple[str, list[dict]]:
+        b, e = expanded[imei]
+        try:
+            return imei, fetch_alarms_chunked(imei, b, e)
+        except RateLimitExceeded:
+            raise
+        except Exception as exc:
+            log.warning("preview: alarm prefetch failed for %s: %s",
+                        imei, exc)
+            return imei, []
+
+    if is_rate_limited():
+        raise RateLimitExceeded("rate limited (before alarm prefetch)")
+
+    # Fan out across IMEIs. Each IMEI's `fetch_alarms_chunked` already
+    # fans out its own 13 chunks 4-way, so with a 4-IMEI preview this is
+    # 16 concurrent alarm requests at peak. Tracksolid's per-account
+    # quota tolerates this because the calls are grouped by IMEI (same
+    # cache key structure), but if you start seeing 1006s, drop
+    # PREVIEW_COMPUTE_WORKERS to 2.
+    with ThreadPoolExecutor(max_workers=_PREVIEW_WORKERS,
+                            thread_name_prefix="preview-alarms") as pool:
+        results = list(pool.map(_fetch_one, list(expanded.keys())))
+
+    return dict(results)
 
 
 # --- background workers ---------------------------------------------------
 
 def _run_preview(preview_id, trips, include_history):
-    """Compute every selected trip in parallel and mark the preview ready.
+    """Compute every selected trip in parallel.
 
-    Uses `_preview_pool` (dedicated to compute_report, not exports) with
-    `map()` so the resulting list is in the same order as `trips` — the
-    preview page depends on that ordering for the trip selector.
+    Two fan-outs happen here:
 
-    On RateLimitExceeded from any future, we surface a clear error instead
-    of the previous behaviour (silent skip, then a 10-minute timeout on
-    every remaining trip). Any trips that finished before the limit hit
-    are discarded — a partial preview with holes in the middle would be
-    misleading, and the retry UX is the next PR, not this one.
+    1. `_prefetch_alarms_for_preview` fetches the union of the search
+       window and the history window for every IMEI, in parallel across
+       IMEIs. This is the slowest single step in a preview with history
+       on; doing it once saves ~10s per additional trip in the preview.
+
+    2. `_preview_pool.map` runs the actual `compute_report` per trip.
+       Each one reuses the prefetched alarms (via `alarms=`) so it only
+       pays for parking + track + build_history.
     """
     try:
+        try:
+            shared_alarms = _prefetch_alarms_for_preview(trips, include_history)
+        except RateLimitExceeded as exc:
+            log.warning("preview alarm prefetch hit rate limit: %s", exc)
+            shared_alarms = {}
+
         reports = list(_preview_pool.map(
-            lambda t: _safe_compute_report(t, include_history), trips,
+            lambda t: _safe_compute_report(
+                t, include_history,
+                alarms=shared_alarms.get(t["imei"]) or None,
+            ),
+            trips,
         ))
         mark_ready_reports(preview_id, reports)
     except RateLimitExceeded as exc:
@@ -613,18 +659,6 @@ def trips_list():
         flash("None of the selected trucks could be found.", "error")
         return redirect(url_for("index"))
 
-    # ---- parallel fan-out over resolved devices -------------------------
-    #
-    # The previous implementation iterated sequentially and paid one full
-    # HTTP round trip per truck. With 169 trucks that's 45-120 s on a good
-    # day and 10+ minutes when Tracksolid is slow. Fanning out across
-    # _TRIPS_WORKERS threads turns that into ceil(N / workers) round trips
-    # of wall-clock time.
-    #
-    # On RateLimitExceeded from any future: cancel the remaining ones and
-    # bail out immediately with a flash. Do NOT wait for the in-flight
-    # futures — they'll all raise the same exception within ~30 s (their
-    # requests timeout), but the user shouldn't be blocked on that.
     groups: list[dict] = []
     total  = 0
     rate_limited = False
@@ -662,8 +696,6 @@ def trips_list():
             total += len(trips)
     finally:
         if rate_limited:
-            # Cancel anything still pending so we don't keep 165 threads
-            # hammering a rate-limited API in the background.
             for f in future_to_dev:
                 if not f.done():
                     f.cancel()
@@ -686,10 +718,6 @@ def trips_list():
                   "error")
         return redirect(url_for("index"))
 
-    # Preserve the user's selected-truck order in the rendered groups list
-    # (as_completed yields futures in completion order, which would make
-    # the page shuffle every search). Sort by the original `resolved`
-    # index.
     order = {dev["imei"]: i for i, dev in enumerate(resolved)}
     groups.sort(key=lambda g: order.get(g["imei"], 10**9))
 
@@ -755,8 +783,6 @@ def preview_start():
               "workers": _PREVIEW_WORKERS},
     )
 
-    executor_preview = _preview_pool  # alias for readability below
-    # Fire and forget; the preview page polls /api/preview/<id>.
     _preview_pool.submit(_run_preview, preview_id, selected, include_history)
 
     return redirect(url_for("preview_show", preview_id=preview_id))

@@ -272,31 +272,54 @@ def fetch_alarms(imei: str, begin_str: str, end_str: str,
 
 def fetch_alarms_chunked(imei: str, begin: datetime, end: datetime,
                          chunk_days: int = 7) -> list:
-    """Fetch alarms in 7-day chunks. Sequential by design — chunks for the
-    same IMEI hit the same account, and running 13 parallel calls for one
-    truck competes with the 4-way /trips fan-out for quota.
+    """Fetch alarms in 7-day chunks, parallelised across chunks.
 
-    The per-chunk cache means two chunks that overlap with a /trips call
-    (same imei + range) reuse the cached result.
+    For a 3-month window this is ~13 chunks; sequentially they cost ~20s
+    of wall clock, which used to dominate preview time for the first trip
+    of every preview (all subsequent trips hit the alarm cache, but only
+    if their ranges align exactly). Running them 4-way drops it to ~5s,
+    and the per-chunk cache in `fetch_alarms` still prevents a *second*
+    trip from re-fetching anything already retrieved.
     """
     from datetime import timedelta as _td
-    all_alarms: list = []
+
+    # Build the chunk boundaries up-front so `parallel_call` can fan them
+    # out evenly. The cache hit/miss decision is per-chunk, not per-range,
+    # so a partial cache still saves the chunks that were already loaded.
+    chunks: list[tuple[str, str]] = []
     cursor = begin
     while cursor < end:
         chunk_end = min(cursor + _td(days=chunk_days), end)
-        try:
-            batch = fetch_alarms(
-                imei,
-                cursor.strftime("%Y-%m-%d %H:%M:%S"),
-                chunk_end.strftime("%Y-%m-%d %H:%M:%S"),
-            )
-            all_alarms.extend(batch)
-        except RateLimitExceeded:
-            raise
-        except Exception as exc:
-            print(f"[alarms] chunk failed: {exc}")
+        chunks.append((
+            cursor.strftime("%Y-%m-%d %H:%M:%S"),
+            chunk_end.strftime("%Y-%m-%d %H:%M:%S"),
+        ))
         cursor = chunk_end + _td(seconds=1)
-    return all_alarms
+
+    if not chunks:
+        return []
+
+    def _one(chunk: tuple[str, str]) -> list:
+        b, e = chunk
+        return fetch_alarms(imei, b, e)
+
+    try:
+        batches = parallel_call(_one, chunks, workers=4)
+    except RateLimitExceeded:
+        raise
+    except Exception as exc:
+        print(f"[alarms] parallel chunk fetch failed: {exc}")
+        # Fall back to sequential — better a slow result than none.
+        batches = []
+        for chunk in chunks:
+            try:
+                batches.append(fetch_alarms(imei, chunk[0], chunk[1]))
+            except RateLimitExceeded:
+                raise
+            except Exception as exc2:
+                print(f"[alarms] chunk failed: {exc2}")
+
+    return [a for batch in batches for a in batch]
 
 
 # ---------------------------------------------------------------------------

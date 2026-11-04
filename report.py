@@ -20,6 +20,15 @@ This module ties them together with `compute_report()` / `write_excel()` /
 ...and `app.py`'s lazy `from report import fill_sheet, _sanitise_sheet_name`
 inside `report_edit_meta()` continues to work.
 
+Shared alarms:
+    `compute_report(alarms=...)` lets the preview pipeline fetch the union
+    of the search window and the 3-month history once per IMEI (in
+    `_prefetch_alarms_for_preview`) and pass it into every trip in the
+    preview. When the caller supplies alarms, `compute_report` skips its
+    own `fetch_alarms_chunked` and uses the supplied list directly. The
+    standalone path (`run_report.py`, `build_report()` with no alarms)
+    falls back to fetching, so nothing external breaks.
+
 Stage timing:
     `compute_report()` logs the wall-clock seconds spent in each stage:
     alarms, track, parking, summarisation, history. That's the difference
@@ -63,7 +72,23 @@ log = logging.getLogger(__name__)
 
 def compute_report(*, imei: str, truck_id: str, driver_name: str,
                    begin: datetime, end: datetime,
-                   include_history: bool = True) -> dict:
+                   include_history: bool = True,
+                   alarms: list[dict] | None = None) -> dict:
+    """Compute the full report for one truck, one trip window.
+
+    Parameters
+    ----------
+    alarms:
+        Optional pre-fetched alarm list. When provided, `compute_report`
+        uses this instead of calling `fetch_alarms_chunked` — which is
+        how `_run_preview` shares one alarm fetch across every trip in a
+        multi-trip preview. The list must cover the union of the search
+        window and (if `include_history`) the history window; the caller
+        (`_prefetch_alarms_for_preview`) is responsible for ensuring that.
+
+        If `None`, this function fetches its own alarms (the standalone
+        behaviour used by `run_report.py` and by direct callers).
+    """
     t_start_wall = time.monotonic()
     timings: dict[str, float] = {}
 
@@ -77,17 +102,28 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
         union_end   = end
 
     # ---- stage 1: alarms ----
-    t0 = time.monotonic()
-    log.info("[1/6] Fetching alarms for %s → %s ...",
-             utc_str(union_begin), utc_str(union_end))
-    try:
-        from jimi import fetch_alarms_chunked
-        all_alarms = fetch_alarms_chunked(imei, union_begin, union_end)
-    except RateLimitExceeded:
-        raise
-    timings["alarms"] = time.monotonic() - t0
-    log.info("      %d alarms fetched (%.1fs)",
-             len(all_alarms), timings["alarms"])
+    #
+    # Prefer the caller-supplied list. This is the single biggest saving
+    # in a multi-trip preview with history on: the 3-month alarm window
+    # is fetched once per IMEI by the prefetcher, then reused by every
+    # trip on that IMEI. Without it, each `compute_report` re-fetches
+    # ~13 chunks over the network.
+    if alarms is not None:
+        all_alarms = alarms
+        timings["alarms"] = 0.0
+        log.info("[1/6] Reusing %d prefetched alarms", len(all_alarms))
+    else:
+        t0 = time.monotonic()
+        log.info("[1/6] Fetching alarms for %s → %s ...",
+                 utc_str(union_begin), utc_str(union_end))
+        try:
+            from jimi import fetch_alarms_chunked
+            all_alarms = fetch_alarms_chunked(imei, union_begin, union_end)
+        except RateLimitExceeded:
+            raise
+        timings["alarms"] = time.monotonic() - t0
+        log.info("      %d alarms fetched (%.1fs)",
+                 len(all_alarms), timings["alarms"])
 
     from report_analysis import (
         _gbc_alarms_in_window, _trips_from_gbc_alarms, _alarm_time,
@@ -133,20 +169,20 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
     # ---- stage 4: filter alarms ----
     log.info("[4/6] Filtering alarms for trip window ...")
     if trip_start and trip_end:
-        alarms = [
+        alarms_for_trip = [
             a for a in all_alarms
             if (tt := _alarm_time(a)) is not None
             and trip_start <= tt <= trip_end
         ]
     else:
-        alarms = []
-    log.info("      %d alarms in trip", len(alarms))
+        alarms_for_trip = []
+    log.info("      %d alarms in trip", len(alarms_for_trip))
 
     # ---- stage 5: summarise ----
     t0 = time.monotonic()
     log.info("[5/6] Summarising ...")
     stops  = summarise_stops(track, parking, trip_start, trip_end, debug=False)
-    events = summarise_events(alarms)
+    events = summarise_events(alarms_for_trip)
     yard   = summarise_yard(all_alarms, trip_start)
     timings["summarise"] = time.monotonic() - t0
     log.info("      stops >= %dm: %d  total %.2fh  (rests >= %dh: %d)",
@@ -165,11 +201,11 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
         log.info("      yard visit: none before this trip")
     log.info("      summarise stage took %.2fs", timings["summarise"])
 
-    # ---- stage 6: history (the expensive one) ----
+    # ---- stage 6: history (reuses the alarms we already have) ----
     history = None
     if include_history and trip_start:
         t0 = time.monotonic()
-        log.info("[6/6] Building 3-month history (reusing fetched alarms) ...")
+        log.info("[6/6] Building 3-month history ...")
         try:
             history = build_history(
                 imei, trip_start,
@@ -212,7 +248,7 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
         "yard":          yard,
         "history":       history,
         "trips":         trips,
-        "alarm_count":   len(alarms),
+        "alarm_count":   len(alarms_for_trip),
         "parking_count": len(parking),
         "track_count":   len(track),
         "generated_at":  datetime.now(timezone.utc),
@@ -281,10 +317,19 @@ def build_report(*, imei: str, truck_id: str, driver_name: str,
                  begin: datetime, end: datetime,
                  template_path: Path, output_path: Path,
                  include_history: bool = True,
-                 manual: dict | None = None) -> dict:
+                 manual: dict | None = None,
+                 alarms: list[dict] | None = None) -> dict:
+    """Build a full single-trip report (compute + write Excel).
+
+    `alarms` is forwarded to `compute_report` for callers that already
+    have the alarm list (e.g. batch tooling). `run_report.py` and the
+    Flask `_run_preview` both call with `alarms=None` or a shared list,
+    respectively.
+    """
     computed = compute_report(
         imei=imei, truck_id=truck_id, driver_name=driver_name,
         begin=begin, end=end, include_history=include_history,
+        alarms=alarms,
     )
     write_excel(computed, template_path, output_path, manual=manual)
     return computed
