@@ -11,6 +11,12 @@ That SELECT * against audit_log was ~150 ms per call and dominated the
 page-load latency. It is gone; the detail string no longer includes a
 count. Use `/admin/audit?request_id=<uuid>` if you need the correlated
 rows.
+
+Polling endpoints (`/api/status`, `/api/jobs`, `/live/api/fleet`,
+`/live/api/heartbeat`) are excluded entirely. Without this exclusion, a
+slow poll (which is now itself caused by worker contention) would write an
+audit row, which makes the next poll slower, which writes another row —
+a feedback loop that only manifests once the worker is already saturated.
 """
 from __future__ import annotations
 
@@ -30,10 +36,19 @@ _SLOW_MS = int(os.environ.get("AUDIT_SLOW_REQUEST_MS", "5000"))
 _ENABLE_END_ROWS = os.environ.get("AUDIT_ENABLE_END_ROWS", "1") != "0"
 
 
+# Flask endpoint names (not URLs). Polling endpoints are excluded outright:
+# they are high-frequency, low-value, and — crucially — writing an audit
+# row for them adds Supabase round trips that make the *next* poll slower,
+# which is exactly the wrong feedback loop on a 4-thread gthread worker.
 _SKIP_ENDPOINTS = frozenset({
     "static",
     "favicon",
     "healthz",
+    "api_status",                    # GET /api/status — polled per tab
+    "api_jobs",                      # GET /api/jobs — polled by /reports
+    "api_preview",                   # GET /api/preview/<id> — polled
+    "live_fleet.api_fleet",          # GET /live/api/fleet — polled
+    "live_fleet.api_heartbeat",      # POST /live/api/heartbeat — polled
 })
 
 

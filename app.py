@@ -383,8 +383,16 @@ def _run_bulk_export(job_id, reports, out_path, per_trip_manual):
 
 
 # --- nav context ----------------------------------------------------------
+#
+# Every authenticated page render calls this. Both values are Supabase round
+# trips, so both are cached with a short TTL. Without the cache, every page
+# load paid two sequential Supabase queries before the template could render
+# — which is the dominant source of page-load latency on Render's free tier
+# (1 worker, 4 gthread slots).
 
 _nav_alert_cache: dict = {"value": 0, "expires_at": 0.0}
+_nav_jobs_cache:  dict = {"user_id": None, "value": 0, "expires_at": 0.0}
+_NAV_CACHE_TTL = 10.0
 
 
 @app.context_processor
@@ -393,13 +401,26 @@ def _inject_nav_context():
     if not session.get("user_id"):
         return ctx
     try:
+        now = time.time()
+
+        # Alerts badge — only super-admins see it.
         if session.get("role") == "super_admin":
-            now = time.time()
             if now >= _nav_alert_cache["expires_at"]:
                 _nav_alert_cache["value"] = audit.unacked_alert_count()
-                _nav_alert_cache["expires_at"] = now + 10.0
+                _nav_alert_cache["expires_at"] = now + _NAV_CACHE_TTL
             ctx["nav_unacked_alerts"] = _nav_alert_cache["value"]
-        ctx["nav_pending_jobs"] = jobs.count_pending(session.get("user_id"))
+
+        # Pending jobs — cached per-user. A plain global cache would leak
+        # one user's pending-job count into another user's nav bar.
+        uid = session.get("user_id")
+        if (_nav_jobs_cache["user_id"] == uid
+                and now < _nav_jobs_cache["expires_at"]):
+            ctx["nav_pending_jobs"] = _nav_jobs_cache["value"]
+        else:
+            ctx["nav_pending_jobs"] = jobs.count_pending(uid)
+            _nav_jobs_cache["user_id"] = uid
+            _nav_jobs_cache["value"] = ctx["nav_pending_jobs"]
+            _nav_jobs_cache["expires_at"] = now + _NAV_CACHE_TTL
     except Exception:
         pass
     return ctx
@@ -465,6 +486,8 @@ def api_devices():
         })
     out.sort(key=lambda x: x["name"].lower())
     return jsonify({"devices": out})
+
+
 @app.route("/trips", methods=["POST"])
 @login_required
 def trips_list():

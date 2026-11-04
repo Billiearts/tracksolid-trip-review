@@ -893,6 +893,14 @@
     })();
 
     // ---------------- rate-limit banner ----------------
+    //
+    // The banner is informational only. Polling every 10 s per tab was
+    // competing with real page loads for the single gthread worker on
+    // Render's free tier — especially on the live page, where every open
+    // tab was already polling /live/api/fleet and /live/api/heartbeat. 30 s
+    // is more than fresh enough for a banner; the modal is shown once per
+    // rate-limit event anyway (via sessionStorage), so the interval change
+    // does not delay the user-visible warning.
     (function () {
       const banner     = document.getElementById('ratelimit-banner');
       const bannerText = document.getElementById('ratelimit-banner-text');
@@ -902,6 +910,7 @@
       if (!banner || !modal) return;
 
       const DISMISS_KEY = 'ratelimit-banner-dismissed-at';
+      const POLL_MS = 30000;
 
       function isDismissed(limitedAt) {
         return limitedAt && sessionStorage.getItem(DISMISS_KEY) === limitedAt;
@@ -954,7 +963,7 @@
         } catch (e) { /* ignore */ }
       }
       poll();
-      setInterval(poll, 10000);
+      setInterval(poll, POLL_MS);
     })();
   </script>
   {% block scripts %}{% endblock %}
