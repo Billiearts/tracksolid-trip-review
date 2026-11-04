@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+
+{% block body_class %}wide{% endblock %}
+
+{% block heading %}Preview — {{ job.total_items }} trips{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; gap: 0.5rem; flex-wrap: wrap;">
+    <h2 style="font-size: 1.1rem; margin: 0;">
+      Preview job
+      <span class="meta-note" style="font-size: 0.8rem; color: #666;">
+        {{ job.created_by_email or '—' }} · {{ job.created_at.strftime('%Y-%m-%d %H:%M') if job.created_at else '' }}
+      </span>
+    </h2>
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+      {% if job.status in ('queued', 'running') %}
+        <form method="post" action="{{ url_for('preview_job_cancel', job_id=job.id) }}"
+              onsubmit="return confirm('Cancel this preview? Completed trips are kept.');"
+              style="display:inline;">
+          <button type="submit" style="background:#a02525;">Cancel</button>
+        </form>
+      {% endif %}
+      {% if job.failed_items > 0 %}
+        <form method="post" action="{{ url_for('preview_job_retry', job_id=job.id) }}" style="display:inline;">
+          <button type="submit" style="background:#8a5a00;">Retry {{ job.failed_items }} failed</button>
+        </form>
+      {% endif %}
+      {% if can_export %}
+        <form method="post" action="{{ url_for('export_job_start') }}" style="display:inline;">
+          <input type="hidden" name="preview_job_id" value="{{ job.id }}">
+          <button type="submit" style="background:#2b8a3e;">Export all {{ done }} trips →</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div style="margin-bottom: 1rem;">
+    <div style="height: 12px; background:#e2e6ea; border-radius: 6px; overflow: hidden;">
+      <div id="job-progress-bar" style="height: 100%; width: {{ pct }}%; background:#2b8a3e; transition: width 0.3s;"></div>
+    </div>
+    <div style="display: flex; justify-content: space-between; margin-top: 0.35rem; font-size: 0.82rem; color:#666;">
+      <span>
+        <strong id="count-done">{{ done }}</strong> / {{ total }} done
+        {% if failed %}<span style="color:#a02525;">· <span id="count-failed">{{ failed }}</span> failed</span>{% endif %}
+      </span>
+      <span id="job-status-line">
+        {% if job.status == 'queued' %}Queued…
+        {% elif job.status == 'running' %}Running…
+        {% elif job.status == 'done' %}✓ Complete
+        {% elif job.status == 'failed' %}✗ Failed: {{ job.error or 'unknown' }}
+        {% elif job.status == 'cancelled' %}Cancelled
+        {% endif %}
+      </span>
+    </div>
+  </div>
+
+  <div class="filter-bar" style="margin-bottom: 0.75rem;">
+    <div class="field-inline">
+      <label>Filter</label>
+      <select id="item-filter">
+        <option value="">All</option>
+        <option value="done">Done</option>
+        <option value="running">Running</option>
+        <option value="queued">Queued</option>
+        <option value="failed">Failed</option>
+      </select>
+    </div>
+    <div class="field-inline">
+      <label>Search</label>
+      <input type="text" id="item-search" placeholder="truck or IMEI">
+    </div>
+  </div>
+
+  <div class="table-scroll">
+    <table class="jobs-table">
+      <thead>
+        <tr>
+          <th>Truck</th>
+          <th>Trip start</th>
+          <th>Trip end</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="items-tbody">
+        {% for it in items %}
+          <tr data-truck="{{ it.truck_id|lower }}" data-imei="{{ it.imei }}"
+              data-status="{{ it.status }}">
+            <td>{{ it.truck_id }}</td>
+            <td>{{ it.trip_start[:16].replace('T', ' ') if it.trip_start else '' }}</td>
+            <td>{{ it.trip_end[:16].replace('T', ' ') if it.trip_end else '' }}</td>
+            <td>
+              <span class="status status-{{ 'done' if it.status == 'done' else ('running' if it.status == 'running' else ('failed' if it.status == 'failed' else 'queued')) }}">
+                {{ it.status }}
+              </span>
+            </td>
+            <td style="text-align: right;">
+              {% if it.status == 'done' %}
+                <a class="btn-edit" href="{{ url_for('preview_job_trip', job_id=job.id, item_id=it.id) }}">View</a>
+              {% elif it.status == 'failed' %}
+                <span class="muted" style="font-size: 0.75rem;" title="{{ it.error }}">failed</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+(function () {
+  const jobId = {{ job.id|tojson }};
+  const isFinished = {{ 'true' if is_finished else 'false' }};
+  if (isFinished) return;
+
+  const POLL_MS = 3000;
+  const tbody = document.getElementById('items-tbody');
+  const countDone = document.getElementById('count-done');
+  const countFailed = document.getElementById('count-failed');
+  const bar = document.getElementById('job-progress-bar');
+  const statusLine = document.getElementById('job-status-line');
+  const filterSelect = document.getElementById('item-filter');
+  const searchInput = document.getElementById('item-search');
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+
+  function applyFilters() {
+    const f = filterSelect.value;
+    const q = searchInput.value.trim().toLowerCase();
+    tbody.querySelectorAll('tr[data-truck]').forEach(tr => {
+      const status = tr.getAttribute('data-status');
+      const truck = tr.getAttribute('data-truck');
+      const imei = tr.getAttribute('data-imei');
+      const okStatus = !f || status === f;
+      const okSearch = !q || truck.includes(q) || imei.includes(q);
+      tr.style.display = (okStatus && okSearch) ? '' : 'none';
+    });
+  }
+
+  filterSelect.addEventListener('change', applyFilters);
+  searchInput.addEventListener('input', applyFilters);
+
+  async function poll() {
+    try {
+      const r = await fetch("{{ url_for('api_preview_job', job_id=job.id) }}");
+      if (!r.ok) return;
+      const j = await r.json();
+      const job = j.job;
+      const items = j.items || [];
+
+      countDone.textContent = job.done_items;
+      if (countFailed) countFailed.textContent = job.failed_items;
+      const pct = job.total_items
+        ? Math.floor(100 * (job.done_items + job.failed_items) / job.total_items)
+        : 100;
+      bar.style.width = pct + '%';
+
+      if (job.status === 'done') {
+        statusLine.textContent = '✓ Complete';
+        setTimeout(() => location.reload(), 500);
+        return;
+      }
+      if (job.status === 'failed') {
+        statusLine.textContent = '✗ Failed: ' + (job.error || 'unknown');
+        return;
+      }
+      if (job.status === 'cancelled') {
+        statusLine.textContent = 'Cancelled';
+        return;
+      }
+
+      // Rebuild the tbody from the new items.
+      tbody.innerHTML = items.map(it => {
+        const statusClass = it.status === 'done' ? 'done'
+                          : it.status === 'running' ? 'running'
+                          : it.status === 'failed' ? 'failed'
+                          : 'queued';
+        const action = it.status === 'done'
+          ? '<a class="btn-edit" href="/preview/job/' + encodeURIComponent(job.id) +
+            '/trip/' + encodeURIComponent(it.id) + '">View</a>'
+          : it.status === 'failed'
+          ? '<span class="muted" style="font-size:0.75rem;" title="' +
+            esc(it.error || '') + '">failed</span>'
+          : '';
+        return '<tr data-truck="' + esc(it.truck_id.toLowerCase()) + '" ' +
+               'data-imei="' + esc(it.imei) + '" ' +
+               'data-status="' + esc(it.status) + '">' +
+               '<td>' + esc(it.truck_id) + '</td>' +
+               '<td>' + esc((it.trip_start || '').slice(0,16).replace('T',' ')) + '</td>' +
+               '<td>' + esc((it.trip_end   || '').slice(0,16).replace('T',' ')) + '</td>' +
+               '<td><span class="status status-' + statusClass + '">' + esc(it.status) + '</span></td>' +
+               '<td style="text-align:right;">' + action + '</td>' +
+               '</tr>';
+      }).join('');
+      applyFilters();
+
+      setTimeout(poll, POLL_MS);
+    } catch (e) {
+      setTimeout(poll, POLL_MS * 2);
+    }
+  }
+  setTimeout(poll, POLL_MS);
+})();
+</script>
+{% endblock %}

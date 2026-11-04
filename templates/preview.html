@@ -73,46 +73,24 @@
             </p>
           {% endif %}
         </div>
+
         {% if not view_mode %}
           <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
             <button type="submit" form="export-form">Export this trip</button>
-            {% if reports | length > 1 %}
-              <button type="submit" form="export-bulk-all-form"
-                      style="background: #2b8a3e;">Export all {{ reports | length }} trips</button>
-            {% endif %}
-            {% if unique_trucks | length > 1 and same_truck_count > 1 %}
-              <button type="submit" form="export-bulk-truck-form"
-                      style="background: #1e5f9e;">
-                Export all trips for {{ c.truck_id }} ({{ same_truck_count }})
-              </button>
+
+            {# "Export all" lives on the preview job page. Link to it
+               rather than duplicating the bulk form here. #}
+            {% if job_id and reports | length > 1 %}
+              <a class="btn-edit"
+                 style="background:#2b8a3e;color:#fff;border-color:#2b8a3e;text-decoration:none;"
+                 href="{{ url_for('preview_job_show', job_id=job_id) }}">
+                View all {{ reports | length }} trips →
+              </a>
             {% endif %}
           </div>
         {% endif %}
       </div>
     </div>
-
-    {# ---------- Bulk export forms ---------- #}
-    {% if not view_mode %}
-      {% if reports | length > 1 %}
-        <form id="export-bulk-all-form" method="post"
-              action="{{ url_for('export_bulk') }}"
-              data-loading-overlay="Building multi-truck workbook… this can take a while."
-              style="display: none;">
-          <input type="hidden" name="preview_id" value="{{ preview_id }}">
-          <input type="hidden" name="scope" value="all">
-        </form>
-      {% endif %}
-      {% if unique_trucks | length > 1 and same_truck_count > 1 %}
-        <form id="export-bulk-truck-form" method="post"
-              action="{{ url_for('export_bulk') }}"
-              data-loading-overlay="Building workbook for {{ c.truck_id }}…"
-              style="display: none;">
-          <input type="hidden" name="preview_id" value="{{ preview_id }}">
-          <input type="hidden" name="scope" value="truck">
-          <input type="hidden" name="truck" value="{{ c.truck_id }}">
-        </form>
-      {% endif %}
-    {% endif %}
 
     {# ---------- Trip selector ---------- #}
     {% if reports | length > 1 %}
@@ -121,8 +99,7 @@
           Trip {{ current_index + 1 }} of {{ reports | length }}
           {% if view_mode %} — pick a trip to view / edit{% endif %}
         </label>
-        {% set base_url = url_for('report_view', report_id=report_id) if view_mode
-                          else url_for('preview_show', preview_id=preview_id) %}
+        {% set back_url = url_for('preview_job_show', job_id=job_id) if job_id else url_for('reports') %}
         <select id="trip-select" data-base-url="{{ base_url }}"
                 onchange="if(window.__saveCurrentTripMeta){window.__saveCurrentTripMeta();}window.location.href=this.dataset.baseUrl + '?trip=' + this.value;">
           {% for r in reports %}
@@ -189,7 +166,6 @@
                      placeholder="e.g. 0, 1, None">
             </div>
 
-            {# Signature drawing pad #}
             <div class="field signature-field">
               <label>Driver's Signature</label>
               {% if m.signature %}
@@ -242,8 +218,9 @@
 
           <form id="export-form"
                 action="{{ url_for('export') }}" method="post">
-            <input type="hidden" name="preview_id" value="{{ preview_id }}">
+            <input type="hidden" name="preview_id" value="{{ preview_id or '' }}">
             <input type="hidden" name="trip_index" value="{{ current_index }}">
+            <input type="hidden" name="preview_job_id" value="{{ job_id or '' }}">
 
             <div class="field">
               <label for="meta_driver_name">Driver's Name</label>
@@ -671,7 +648,7 @@
       </p>
     {% else %}
       <p style="text-align: center; color: #666; font-size: 0.9rem;">
-        <a href="{{ url_for('reports') }}">← Back to reports</a>
+        <a href="{{ back_url }}">← Back</a>
       </p>
     {% endif %}
   {% endif %}
@@ -793,8 +770,6 @@
           canvas.focus();
         });
 
-        // Expose a restore function so the localStorage layer can redraw
-        // a previously saved signature after a page reload.
         window.__signatureRestore = function (dataUrl) {
           if (!dataUrl || !dataUrl.startsWith('data:image/')) return;
           const img = new Image();
@@ -810,22 +785,17 @@
       })();
 
       {% if not view_mode %}
-      // -------------------------------------------------------------------
-      // Preview mode: auto-save every trip's optional metadata to
-      // localStorage so switching trips (or trucks) never loses input.
-      // -------------------------------------------------------------------
       (function () {
         const form = document.getElementById('export-form');
         if (!form) return;
 
-        const PREVIEW_KEY = 'trip-preview-meta-' + '{{ preview_id }}';
+        const PREVIEW_KEY = 'trip-preview-meta-' + '{{ preview_id or job_id or "job" }}';
         const CURRENT_TRIP = {{ current_index }};
 
         let store = {};
         try { store = JSON.parse(localStorage.getItem(PREVIEW_KEY) || '{}'); }
         catch (e) { store = {}; }
 
-        // --- restore current trip's saved data ---
         (function restoreCurrent() {
           const saved = store[String(CURRENT_TRIP)] || {};
           Object.keys(saved).forEach(function (name) {
@@ -844,7 +814,6 @@
           }
         })();
 
-        // --- debounced "auto-saved" indicator ---
         let indicatorTimer = null;
         function flashSaved() {
           const el = document.getElementById('auto-save-indicator');
@@ -864,45 +833,22 @@
           catch (e) { console.warn('Could not save trip metadata:', e); }
           flashSaved();
         }
-        // The trip-select's inline onchange calls this before navigating.
         window.__saveCurrentTripMeta = saveCurrent;
 
-        // Auto-save on any field change.
         form.querySelectorAll('input[name^="meta_"]').forEach(function (input) {
           input.addEventListener('input', saveCurrent);
           input.addEventListener('change', saveCurrent);
         });
 
-        // Auto-save after each signature stroke. endStroke() (registered by
-        // the signature-pad IIFE above) runs first and updates the hidden
-        // field, so saveCurrent() sees the fresh data URL.
         const canvas = document.getElementById('signature-canvas');
         if (canvas) {
           canvas.addEventListener('pointerup', saveCurrent);
         }
 
-        // Clear button: reset() empties the hidden field, then saveCurrent()
-        // persists the cleared state.
         const clearBtn = document.getElementById('signature-clear');
         if (clearBtn) {
           clearBtn.addEventListener('click', saveCurrent);
         }
-
-        // Bulk exports: inject every saved trip's metadata into the form so
-        // the server can persist signatures/manual fields for all trips, not
-        // just the one currently displayed.
-        document.querySelectorAll('form[id^="export-bulk-"]').forEach(function (bulkForm) {
-          bulkForm.addEventListener('submit', function () {
-            saveCurrent();   // make sure the current trip is included
-            const existing = bulkForm.querySelector('input[name="per_trip_manual"]');
-            if (existing) existing.remove();
-            const hidden = document.createElement('input');
-            hidden.type = 'hidden';
-            hidden.name = 'per_trip_manual';
-            hidden.value = JSON.stringify(store);
-            bulkForm.appendChild(hidden);
-          });
-        });
       })();
       {% endif %}
     </script>

@@ -66,15 +66,7 @@ def post_fork(server, worker):
             pass
         raise
 
-    # Per-worker audit maintenance thread.
-    #
-    # Prune/verify timestamps are persisted in audit_chain_head.meta so a
-    # worker recycle (Render restarts the worker every max_requests
-    # requests) does NOT re-run maintenance on every boot. Without this,
-    # a worker that restarts every ~12 minutes calls verify_chain() every
-    # 12 minutes, and because verify_chain() writes an audit row on
-    # failure, it re-forks the chain on every restart — which is exactly
-    # the "chain broken at <row>" loop we saw in production.
+   
     try:
         import threading
         import time
@@ -166,3 +158,11 @@ def post_fork(server, worker):
     except Exception as exc:
         server.log.warning("worker %s: could not start audit maintenance: %s",
                            worker.pid, exc)
+        # Start the job worker in this worker process.
+    try:
+        from services import job_worker
+        job_worker.start()
+        server.log.info("worker %s: job worker started", worker.pid)
+    except Exception as exc:
+        server.log.error("worker %s: could not start job worker: %s",
+                         worker.pid, exc, exc_info=True)

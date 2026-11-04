@@ -32,10 +32,11 @@ from services.previews import (
     store_preview, get_preview, mark_ready_reports, mark_failed,
 )
 from services.ratelimit import status as ratelimit_status, is_rate_limited
+from services import report_jobs
+from services import job_worker
+from report_analysis import YARD_LOOKBACK, history_window
+from services.supabase_client import admin_client
 
-
-# Defensive import of the audit module: a broken audit module must not
-# prevent the app from booting.
 try:
     from services import audit
     _AUDIT_OK = True
@@ -83,8 +84,6 @@ app = Flask(__name__)
 app.secret_key = FLASK_SECRET
 
 
-# --- worker pools --------------------------------------------------------
-
 def _int_env(name: str, default: int, lo: int, hi: int) -> int:
     try:
         v = int(os.environ.get(name, str(default)))
@@ -107,7 +106,6 @@ MAX_TRUCKS          = 200
 MAX_TRIPS_PER_TRUCK = 5
 
 
-# --- blueprints -----------------------------------------------------------
 from blueprints.auth       import bp as auth_bp
 from blueprints.admin      import bp as admin_bp
 from blueprints.live_fleet import bp as live_fleet_bp
@@ -117,7 +115,6 @@ app.register_blueprint(admin_bp)
 app.register_blueprint(live_fleet_bp)
 
 
-# --- audit middleware -----------------------------------------------------
 try:
     from services.audit_middleware import register_audit_middleware
     register_audit_middleware(app)
@@ -125,7 +122,6 @@ except Exception as exc:
     log.error("audit middleware not registered (continuing without it): %s", exc)
 
 
-# --- startup maintenance --------------------------------------------------
 try:
     swept = jobs.sweep_stale()
     if swept:
@@ -140,8 +136,6 @@ try:
 except Exception as exc:
     log.warning("session purge failed: %s", exc)
 
-
-# --- helpers --------------------------------------------------------------
 
 def _to_jsonable(obj):
     if isinstance(obj, datetime):
@@ -234,6 +228,8 @@ def _unique_trucks_from_reports(reports: list[dict]) -> list[str]:
     out = []
     seen = set()
     for r in reports:
+        if not isinstance(r, dict):
+            continue
         tid = r.get("truck_id") or ""
         if tid and tid not in seen:
             seen.add(tid)
@@ -297,19 +293,78 @@ def _normalise_submitted_manual(raw: dict) -> dict:
     return out
 
 
-# --- parallel helpers -----------------------------------------------------
+def _preview_job_id_from_form() -> str | None:
+    raw = (request.form.get("preview_job_id") or "").strip()
+    return raw or None
 
-def _safe_find_trips(imei: str,
-                     begin: datetime,
-                     end: datetime) -> list[dict]:
+
+def _resolve_export_context():
+    preview_id       = (request.form.get("preview_id") or "").strip()
+    preview_job_id   = _preview_job_id_from_form()
+    trip_index_raw   = request.form.get("trip_index", "0")
+    try:
+        trip_index = int(trip_index_raw)
+    except (ValueError, TypeError):
+        trip_index = 0
+
+    def _load_job(job_id: str):
+        job = report_jobs.get_job(job_id)
+        if not job:
+            return None, None
+        if (job["created_by"]
+                and job["created_by"] != session.get("user_id")
+                and session.get("role") not in ("admin", "super_admin")):
+            abort(403)
+        items = [
+            it for it in report_jobs.get_job_items(job_id,
+                                                    statuses=["done"])
+            if it.get("computed")
+        ]
+        return job, items
+
+    if preview_job_id:
+        job, items = _load_job(preview_job_id)
+        if job is None:
+            raise ValueError("Preview job not found.")
+        if not items:
+            raise ValueError("No completed trips to export yet.")
+        if trip_index < 0 or trip_index >= len(items):
+            raise ValueError("Invalid trip selection.")
+        reports = [it["computed"] for it in items]
+        return reports[trip_index], reports, trip_index, preview_job_id, None
+
+    if preview_id:
+        job, items = _load_job(preview_id)
+        if job is not None:
+            if not items:
+                raise ValueError("No completed trips to export yet.")
+            if trip_index < 0 or trip_index >= len(items):
+                raise ValueError("Invalid trip selection.")
+            reports = [it["computed"] for it in items]
+            return reports[trip_index], reports, trip_index, preview_id, None
+
+    if not preview_id:
+        raise ValueError("Preview not ready or expired. Please search again.")
+    state = get_preview(preview_id)
+    if not state or state["status"] != "ready":
+        raise ValueError("Preview not ready or expired. Please search again.")
+    if (state.get("created_by")
+            and state["created_by"] != session.get("user_id")
+            and session.get("role") not in ("admin", "super_admin")):
+        abort(403)
+    reports = state.get("reports") or []
+    if trip_index < 0 or trip_index >= len(reports):
+        raise ValueError("Invalid trip selection.")
+    return reports[trip_index], reports, trip_index, None, preview_id
+
+
+def _safe_find_trips(imei, begin, end):
     if is_rate_limited():
         raise RateLimitExceeded("rate limited (short-circuit before call)")
     return find_trips(imei, begin, end)
 
 
-def _safe_compute_report(trip: dict,
-                         include_history: bool,
-                         alarms: list[dict] | None = None) -> dict:
+def _safe_compute_report(trip, include_history, alarms=None):
     if is_rate_limited():
         raise RateLimitExceeded("rate limited (short-circuit before call)")
     t_start = datetime.strptime(
@@ -328,24 +383,13 @@ def _safe_compute_report(trip: dict,
     )
 
 
-def _prefetch_alarms_for_preview(trips: list[dict],
-                                 include_history: bool) -> dict[str, list[dict]]:
-    """Fetch the union-of-search-and-history alarms for every IMEI in the
-    preview, once, in parallel across IMEIs.
-
-    The first `compute_report` in the batch would otherwise fetch these
-    alone, serially, and every other trip would wait behind it for cache
-    hits. Doing it here means the slow step happens once, in parallel
-    with nothing else, and every `compute_report` gets a cache hit
-    immediately.
-    """
+def _prefetch_alarms_for_preview_lazy(trips, include_history, *, max_workers=4):
     from jimi import fetch_alarms_chunked
-    from report_analysis import history_window, YARD_LOOKBACK
 
     if not trips:
-        return {}
+        return {}, {}
 
-    per_imei_bounds: dict[str, tuple[datetime, datetime]] = {}
+    per_imei_bounds = {}
     for t in trips:
         imei = t["imei"]
         t_start = datetime.strptime(
@@ -360,7 +404,7 @@ def _prefetch_alarms_for_preview(trips: list[dict],
             b, e = per_imei_bounds[imei]
             per_imei_bounds[imei] = (min(b, t_start), max(e, t_end))
 
-    expanded: dict[str, tuple[datetime, datetime]] = {}
+    expanded = {}
     for imei, (b, e) in per_imei_bounds.items():
         if include_history:
             hist_begin, hist_end = history_window(b)
@@ -368,73 +412,48 @@ def _prefetch_alarms_for_preview(trips: list[dict],
         else:
             expanded[imei] = (b - YARD_LOOKBACK, e)
 
-    def _fetch_one(imei: str) -> tuple[str, list[dict]]:
+    def _fetch_one(imei):
         b, e = expanded[imei]
         try:
             return imei, fetch_alarms_chunked(imei, b, e)
         except RateLimitExceeded:
             raise
         except Exception as exc:
-            log.warning("preview: alarm prefetch failed for %s: %s",
-                        imei, exc)
+            log.warning("preview: alarm prefetch failed for %s: %s", imei, exc)
             return imei, []
 
     if is_rate_limited():
         raise RateLimitExceeded("rate limited (before alarm prefetch)")
 
-    # Fan out across IMEIs. Each IMEI's `fetch_alarms_chunked` already
-    # fans out its own 13 chunks 4-way, so with a 4-IMEI preview this is
-    # 16 concurrent alarm requests at peak. Tracksolid's per-account
-    # quota tolerates this because the calls are grouped by IMEI (same
-    # cache key structure), but if you start seeing 1006s, drop
-    # PREVIEW_COMPUTE_WORKERS to 2.
-    with ThreadPoolExecutor(max_workers=_PREVIEW_WORKERS,
+    with ThreadPoolExecutor(max_workers=max_workers,
                             thread_name_prefix="preview-alarms") as pool:
         results = list(pool.map(_fetch_one, list(expanded.keys())))
 
-    return dict(results)
+    return dict(results), expanded
 
 
-# --- background workers ---------------------------------------------------
-
-def _run_preview(preview_id, trips, include_history):
-    """Compute every selected trip in parallel.
-
-    Two fan-outs happen here:
-
-    1. `_prefetch_alarms_for_preview` fetches the union of the search
-       window and the history window for every IMEI, in parallel across
-       IMEIs. This is the slowest single step in a preview with history
-       on; doing it once saves ~10s per additional trip in the preview.
-
-    2. `_preview_pool.map` runs the actual `compute_report` per trip.
-       Each one reuses the prefetched alarms (via `alarms=`) so it only
-       pays for parking + track + build_history.
-    """
+def _run_preview_single(preview_id, trip, include_history):
     try:
-        try:
-            shared_alarms = _prefetch_alarms_for_preview(trips, include_history)
-        except RateLimitExceeded as exc:
-            log.warning("preview alarm prefetch hit rate limit: %s", exc)
-            shared_alarms = {}
-
-        reports = list(_preview_pool.map(
-            lambda t: _safe_compute_report(
-                t, include_history,
-                alarms=shared_alarms.get(t["imei"]) or None,
-            ),
-            trips,
-        ))
-        mark_ready_reports(preview_id, reports)
+        t_start = datetime.strptime(
+            trip["start"], "%Y-%m-%d %H:%M:%S"
+        ).replace(tzinfo=timezone.utc)
+        t_end = datetime.strptime(
+            trip["end"], "%Y-%m-%d %H:%M:%S"
+        ).replace(tzinfo=timezone.utc)
+        computed = compute_report(
+            imei=trip["imei"],
+            truck_id=trip["truck"],
+            driver_name=trip.get("driver") or "",
+            begin=t_start, end=t_end,
+            include_history=include_history,
+        )
+        mark_ready_reports(preview_id, [computed])
     except RateLimitExceeded as exc:
-        log.warning("preview hit rate limit: %s", exc)
-        mark_failed(preview_id,
-                    "Tracksolid Pro daily API limit reached. "
-                    "Your report could not be generated. "
-                    "Please try again after the quota resets.")
+        log.warning("1-trip preview hit rate limit: %s", exc)
+        mark_preview_failed(preview_id, "Tracksolid Pro daily API limit reached.")
     except Exception as exc:
-        log.exception("preview failed")
-        mark_failed(preview_id, f"{type(exc).__name__}: {exc}")
+        log.exception("1-trip preview failed")
+        mark_preview_failed(preview_id, f"{type(exc).__name__}: {exc}")
 
 
 def _run_export(job_id, computed, out_path, manual):
@@ -508,10 +527,8 @@ def _run_bulk_export(job_id, reports, out_path, per_trip_manual):
         log.exception("could not save computed/manual for bulk %s", job_id)
 
 
-# --- nav context ----------------------------------------------------------
-
-_nav_alert_cache: dict = {"value": 0, "expires_at": 0.0}
-_nav_jobs_cache:  dict = {"user_id": None, "value": 0, "expires_at": 0.0}
+_nav_alert_cache = {"value": 0, "expires_at": 0.0}
+_nav_jobs_cache  = {"user_id": None, "value": 0, "expires_at": 0.0}
 _NAV_CACHE_TTL = 10.0
 
 
@@ -547,9 +564,8 @@ def _inject_nav_context():
 
 @app.route("/favicon.ico")
 def favicon():
-    return send_from_directory(
-        app.static_folder, "gbc_logo.png", mimetype="image/png",
-    )
+    return send_from_directory(app.static_folder, "gbc_logo.png",
+                               mimetype="image/png")
 
 
 @app.route("/healthz")
@@ -701,18 +717,15 @@ def trips_list():
                     f.cancel()
 
     if rate_limited:
-        flash("Tracksolid Pro daily API limit reached. Try again later.",
-              "error")
+        flash("Tracksolid Pro daily API limit reached. Try again later.", "error")
         return redirect(url_for("index"))
 
     if not groups:
         if fetch_errors:
             preview = ", ".join(fetch_errors[:5])
             more = f" (and {len(fetch_errors) - 5} more)" if len(fetch_errors) > 5 else ""
-            flash(
-                f"No trips found. Some trucks failed to load: {preview}{more}.",
-                "error",
-            )
+            flash(f"No trips found. Some trucks failed to load: {preview}{more}.",
+                  "error")
         else:
             flash("No trips found for any of the selected trucks in that window.",
                   "error")
@@ -757,35 +770,193 @@ def preview_start():
                 flash("Invalid trip selection.", "error")
                 return redirect(url_for("index"))
 
-    preview_id = uuid.uuid4().hex[:12]
-    store_preview(preview_id, {
-        "status":          "computing",
-        "queued_at":       datetime.now(timezone.utc),
-        "truck":           ", ".join(sorted({s["truck"] for s in selected}))[:120],
-        "imei":            selected[0]["imei"],
-        "driver_name":     "",
-        "trips":           selected,
-        "reports":         None,
-        "error":           None,
-        "created_by":      session.get("user_id"),
-        "include_history": include_history,
-    })
-
     audit.record(
         "preview.start",
         target=", ".join(sorted({s["truck"] for s in selected}))[:200],
-        detail=(f"trips={len(selected)}, "
-                f"include_history={include_history}, "
-                f"workers={_PREVIEW_WORKERS}"),
-        meta={"preview_id": preview_id,
-              "trip_count": len(selected),
-              "include_history": include_history,
-              "workers": _PREVIEW_WORKERS},
+        detail=(f"trips={len(selected)}, include_history={include_history}, "
+                f"mode={'sync' if len(selected) == 1 else 'job'}"),
+        meta={"trip_count": len(selected),
+              "include_history": include_history},
     )
 
-    _preview_pool.submit(_run_preview, preview_id, selected, include_history)
+    if len(selected) == 1:
+        trip = selected[0]
+        preview_id = uuid.uuid4().hex[:12]
+        store_preview(preview_id, {
+            "status":          "computing",
+            "queued_at":       datetime.now(timezone.utc),
+            "truck":           trip["truck"],
+            "imei":            trip["imei"],
+            "driver_name":     trip.get("driver") or "",
+            "trips":           selected,
+            "reports":         None,
+            "error":           None,
+            "created_by":      session.get("user_id"),
+            "include_history": include_history,
+        })
+        _preview_pool.submit(_run_preview_single,
+                             preview_id, trip, include_history)
+        return redirect(url_for("preview_show", preview_id=preview_id))
 
-    return redirect(url_for("preview_show", preview_id=preview_id))
+    job_id = report_jobs.create_preview_job(
+        trips=[{
+            "imei":   s["imei"],
+            "truck":  s["truck"],
+            "driver": s.get("driver") or "",
+            "start":  s["start"],
+            "end":    s["end"],
+        } for s in selected],
+        include_history=include_history,
+        created_by=session.get("user_id"),
+        created_by_email=session.get("email"),
+    )
+    return redirect(url_for("preview_job_show", job_id=job_id))
+
+
+@app.route("/preview/job/<job_id>")
+@login_required
+def preview_job_show(job_id):
+    job = report_jobs.get_job(job_id)
+    if not job:
+        flash("Preview job not found.", "error")
+        return redirect(url_for("index"))
+    if (job["created_by"]
+            and job["created_by"] != session.get("user_id")
+            and session.get("role") not in ("admin", "super_admin")):
+        abort(403)
+
+    items = report_jobs.get_job_items(job_id)
+
+    total = job["total_items"]
+    done = job["done_items"]
+    failed = job["failed_items"]
+    pending = total - done - failed
+    pct = int(100 * (done + failed) / total) if total else 100
+
+    return render_template(
+        "preview_job.html",
+        job=job,
+        items=items,
+        total=total, done=done, failed=failed, pending=pending, pct=pct,
+        is_finished=(job["status"] in ("done", "failed", "cancelled")),
+        can_export=(job["status"] == "done" and done > 0),
+    )
+
+
+@app.route("/api/preview/job/<job_id>")
+@login_required
+def api_preview_job(job_id):
+    job = report_jobs.get_job(job_id)
+    if not job:
+        abort(404)
+    if (job["created_by"]
+            and job["created_by"] != session.get("user_id")
+            and session.get("role") not in ("admin", "super_admin")):
+        abort(403)
+
+    items = report_jobs.get_job_items(job_id)
+    return jsonify({
+        "job":  job,
+        "items": [{
+            "id":         it["id"],
+            "truck_id":   it["truck_id"],
+            "imei":       it["imei"],
+            "trip_start": it["trip_start"],
+            "trip_end":   it["trip_end"],
+            "status":     it["status"],
+            "error":      it["error"],
+        } for it in items],
+    })
+
+
+@app.route("/preview/job/<job_id>/trip/<item_id>")
+@login_required
+def preview_job_trip(job_id, item_id):
+    job = report_jobs.get_job(job_id)
+    if not job:
+        flash("Preview job not found.", "error")
+        return redirect(url_for("index"))
+    if (job["created_by"]
+            and job["created_by"] != session.get("user_id")
+            and session.get("role") not in ("admin", "super_admin")):
+        abort(403)
+
+    item = report_jobs.get_job_item(job_id, item_id)
+    if not item or not item.get("computed"):
+        flash("Trip not ready yet.", "error")
+        return redirect(url_for("preview_job_show", job_id=job_id))
+
+    all_done = [
+        it for it in report_jobs.get_job_items(job_id, statuses=["done"])
+        if it.get("computed")
+    ]
+    reports = [it["computed"] for it in all_done]
+    try:
+        current_index = next(
+            i for i, it in enumerate(all_done) if it["id"] == item_id
+        )
+    except StopIteration:
+        reports = [item["computed"]]
+        current_index = 0
+
+    return render_template(
+        "preview.html",
+        loading=False, view_mode=False, is_bulk=(len(reports) > 1),
+        preview_id=None,
+        state={"truck": item["truck_id"], "imei": item["imei"]},
+        reports=reports,
+        current_index=current_index,
+        computed=reports[current_index],
+        manual={},
+        report_id=None,
+        job_id=job_id,
+        item_id=item_id,
+    )
+
+
+@app.route("/preview/job/<job_id>/cancel", methods=["POST"])
+@login_required
+def preview_job_cancel(job_id):
+    job = report_jobs.get_job(job_id)
+    if not job:
+        flash("Preview job not found.", "error")
+        return redirect(url_for("index"))
+    if (job["created_by"]
+            and job["created_by"] != session.get("user_id")
+            and session.get("role") not in ("admin", "super_admin")):
+        abort(403)
+    if job["status"] in ("done", "failed", "cancelled"):
+        flash("Job already finished.", "info")
+        return redirect(url_for("preview_job_show", job_id=job_id))
+
+    report_jobs.mark_job_cancelled(job_id)
+    audit.record("preview.cancel", target=job_id,
+                 detail=f"cancelled with {job['done_items']}/{job['total_items']} done")
+    flash("Preview cancelled.", "success")
+    return redirect(url_for("preview_job_show", job_id=job_id))
+
+
+@app.route("/preview/job/<job_id>/retry", methods=["POST"])
+@login_required
+def preview_job_retry(job_id):
+    job = report_jobs.get_job(job_id)
+    if not job:
+        flash("Preview job not found.", "error")
+        return redirect(url_for("index"))
+    if (job["created_by"]
+            and job["created_by"] != session.get("user_id")
+            and session.get("role") not in ("admin", "super_admin")):
+        abort(403)
+
+    retried = report_jobs.requeue_failed_items(job_id)
+    if not retried:
+        flash("No failed trips to retry.", "info")
+        return redirect(url_for("preview_job_show", job_id=job_id))
+
+    audit.record("preview.retry", target=job_id,
+                 detail=f"retrying {retried} failed items")
+    flash(f"Retrying {retried} failed trip(s).", "success")
+    return redirect(url_for("preview_job_show", job_id=job_id))
 
 
 @app.route("/preview/<preview_id>")
@@ -843,26 +1014,16 @@ def api_preview(preview_id):
 @app.route("/export", methods=["POST"])
 @login_required
 def export():
-    preview_id = request.form.get("preview_id", "").strip()
     try:
-        trip_index = int(request.form.get("trip_index", "0"))
-    except (ValueError, TypeError):
-        trip_index = 0
-
-    state = get_preview(preview_id)
-    if not state or state["status"] != "ready":
-        flash("Preview not ready or expired. Please search again.", "error")
+        computed, reports, trip_index, preview_job_id, preview_id = (
+            _resolve_export_context()
+        )
+    except ValueError as exc:
+        flash(str(exc), "error")
+        if request.form.get("preview_job_id"):
+            return redirect(url_for("preview_job_show",
+                                    job_id=request.form["preview_job_id"]))
         return redirect(url_for("index"))
-    if (state.get("created_by")
-            and state["created_by"] != session.get("user_id")
-            and session.get("role") not in ("admin", "super_admin")):
-        abort(403)
-
-    reports = state.get("reports") or []
-    if trip_index < 0 or trip_index >= len(reports):
-        flash("Invalid trip selection.", "error")
-        return redirect(url_for("preview_show", preview_id=preview_id))
-    computed = reports[trip_index]
 
     manual = _collect_manual_from_form()
 
@@ -885,8 +1046,22 @@ def export():
     except Exception as exc:
         log.exception("could not create report row")
         flash(f"Could not queue export: {exc}", "error")
-        return redirect(url_for("preview_show", preview_id=preview_id,
-                                trip=trip_index))
+        if preview_job_id:
+            return redirect(url_for("preview_job_show",
+                                    job_id=preview_job_id))
+        if preview_id:
+            return redirect(url_for("preview_show", preview_id=preview_id,
+                                    trip=trip_index))
+        return redirect(url_for("index"))
+
+    if preview_job_id:
+        try:
+            admin_client().table("reports").update({
+                "error": preview_job_id,
+            }).eq("id", job_id).execute()
+        except Exception:
+            log.exception("could not stash preview_job_id on report %s",
+                          job_id)
 
     executor.submit(_run_export, job_id, computed, out_path, manual)
     audit.record(
@@ -896,101 +1071,120 @@ def export():
                 f"trip_start={utc_str(computed['trip_start']) if computed['trip_start'] else ''}"),
         meta={"job_id": job_id, "filename": filename,
               "trip_index": trip_index, "imei": computed["imei"],
-              "manual_keys": list(manual.keys())},
+              "manual_keys": list(manual.keys()),
+              "preview_job_id": preview_job_id},
     )
     flash(f"Export queued for {computed['truck_id']} "
           f"(trip {trip_index + 1} of {len(reports)}). "
           f"Download from the Reports page.", "success")
+
+    if preview_job_id:
+        return redirect(url_for("preview_job_show", job_id=preview_job_id))
     return redirect(url_for("reports"))
 
 
-@app.route("/export-bulk", methods=["POST"])
+@app.route("/export/job", methods=["POST"])
 @login_required
-def export_bulk():
-    preview_id = request.form.get("preview_id", "").strip()
-    scope      = (request.form.get("scope") or "all").strip()
-
-    state = get_preview(preview_id)
-    if not state or state["status"] != "ready":
-        flash("Preview not ready or expired. Please search again.", "error")
+def export_job_start():
+    preview_job_id = (request.form.get("preview_job_id") or "").strip()
+    preview_job = report_jobs.get_job(preview_job_id)
+    if not preview_job or preview_job["kind"] != "preview":
+        flash("Preview job not found.", "error")
         return redirect(url_for("index"))
-    if (state.get("created_by")
-            and state["created_by"] != session.get("user_id")
+    if (preview_job["created_by"]
+            and preview_job["created_by"] != session.get("user_id")
             and session.get("role") not in ("admin", "super_admin")):
         abort(403)
+    if preview_job["status"] != "done":
+        flash("Preview is not finished yet.", "error")
+        return redirect(url_for("preview_job_show", job_id=preview_job_id))
 
-    all_reports = state.get("reports") or []
-    if not all_reports:
-        flash("Preview has no data.", "error")
-        return redirect(url_for("preview_show", preview_id=preview_id))
+    done_items = report_jobs.get_job_items(preview_job_id, statuses=["done"])
+    done_items = [it for it in done_items if it.get("computed")]
 
-    submitted_manual: dict[str, dict] = {}
-    per_trip_manual_raw = request.form.get("per_trip_manual") or "{}"
-    try:
-        parsed = json.loads(per_trip_manual_raw)
-        if isinstance(parsed, dict):
-            for k, v in parsed.items():
-                if isinstance(v, dict):
-                    submitted_manual[str(k)] = _normalise_submitted_manual(v)
-    except (ValueError, TypeError):
-        log.warning("export_bulk: could not parse per_trip_manual")
+    if not done_items:
+        flash("No completed trips to export. Try retrying the failed "
+              "items, or run the preview again.", "error")
+        return redirect(url_for("preview_job_show", job_id=preview_job_id))
 
-    if scope == "truck":
-        truck_filter = (request.form.get("truck") or "").strip()
-        if not truck_filter:
-            flash("No truck specified for bulk export.", "error")
-            return redirect(url_for("preview_show", preview_id=preview_id))
-        all_indices = [i for i, r in enumerate(all_reports)
-                       if r["truck_id"] == truck_filter]
-        if not all_indices:
-            flash("No reports for that truck in this preview.", "error")
-            return redirect(url_for("preview_show", preview_id=preview_id))
-        reports = [all_reports[i] for i in all_indices]
-        per_trip_manual: dict[str, dict] = {}
-        for new_idx, orig_idx in enumerate(all_indices):
-            if str(orig_idx) in submitted_manual:
-                per_trip_manual[str(new_idx)] = submitted_manual[str(orig_idx)]
-    else:
-        reports = list(all_reports)
-        per_trip_manual = submitted_manual
-
-    bulk_label = _bulk_truck_label(reports)
-    safe_label = _bulk_safe_filename_label(reports)
+    done_reports = [it["computed"] for it in done_items]
+    bulk_label = _bulk_truck_label(done_reports)
+    safe_label = _bulk_safe_filename_label(done_reports)
     run_stamp  = datetime.now(timezone.utc).strftime("%H%M%S")
     today      = datetime.now(timezone.utc).date()
     filename   = f"Trip Review - {safe_label} - {today} - {run_stamp}.xlsx"
-    out_path   = OUTPUT_DIR / filename
 
-    starts = [r["trip_start"] for r in reports if r.get("trip_start")]
-    ends   = [r["trip_end"]   for r in reports if r.get("trip_end")]
+    def _as_dt(s):
+        if not s:
+            return None
+        if isinstance(s, datetime):
+            return s
+        try:
+            return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    starts = [d for d in (_as_dt(it["trip_start"]) for it in done_items) if d]
+    ends   = [d for d in (_as_dt(it["trip_end"])   for it in done_items) if d]
     job_trip_start = min(starts) if starts else None
     job_trip_end   = max(ends)   if ends   else None
 
     try:
-        job_id = jobs.add_job(
+        reports_row_id = jobs.add_job(
             truck_id=bulk_label, imei=None, filename=filename,
             trip_start=job_trip_start, trip_end=job_trip_end,
             created_by=session.get("user_id"),
-            created_by_email=session.get("email"), manual=None,
+            created_by_email=session.get("email"),
+            manual={"preview_job_id": preview_job_id},
         )
     except Exception as exc:
-        log.exception("could not create bulk report row")
+        log.exception("could not create reports row for export")
         flash(f"Could not queue bulk export: {exc}", "error")
-        return redirect(url_for("preview_show", preview_id=preview_id))
+        return redirect(url_for("preview_job_show", job_id=preview_job_id))
 
-    executor.submit(_run_bulk_export, job_id, reports, out_path, per_trip_manual)
-    truck_count = len({r["truck_id"] for r in reports})
-    audit.record(
-        "report.export_bulk",
-        target=bulk_label,
-        detail=(f"filename={filename}, scope={scope}, "
-                f"trips={len(reports)}, trucks={truck_count}"),
-        meta={"job_id": job_id, "filename": filename, "scope": scope,
-              "trip_count": len(reports), "truck_count": truck_count},
+    client = admin_client()
+    client.table("reports").update({
+        "error": preview_job_id,
+    }).eq("id", reports_row_id).execute()
+
+    export_job_id = report_jobs.create_export_job(
+        preview_job_id=preview_job_id,
+        reports_row_id=reports_row_id,
+        created_by=session.get("user_id"),
+        created_by_email=session.get("email"),
     )
-    flash(f"Bulk export queued: {len(reports)} trip(s) across "
-          f"{truck_count} truck(s). Download from the Reports page.", "success")
-    return redirect(url_for("reports"))
+
+    audit.record("export.job.start", target=preview_job_id,
+                 detail=f"export job {export_job_id}, "
+                        f"{len(done_items)} trips, filename={filename}")
+    return redirect(url_for("export_job_show", job_id=export_job_id))
+
+
+@app.route("/export/job/<job_id>")
+@login_required
+def export_job_show(job_id):
+    job = report_jobs.get_job(job_id)
+    if not job or job["kind"] != "export":
+        flash("Export job not found.", "error")
+        return redirect(url_for("index"))
+    if (job["created_by"]
+            and job["created_by"] != session.get("user_id")
+            and session.get("role") not in ("admin", "super_admin")):
+        abort(403)
+    return render_template("export_job.html", job=job)
+
+
+@app.route("/api/export/job/<job_id>")
+@login_required
+def api_export_job(job_id):
+    job = report_jobs.get_job(job_id)
+    if not job:
+        abort(404)
+    if (job["created_by"]
+            and job["created_by"] != session.get("user_id")
+            and session.get("role") not in ("admin", "super_admin")):
+        abort(403)
+    return jsonify({"job": job})
 
 
 @app.route("/reports")
@@ -1003,22 +1197,39 @@ def reports():
     return render_template("reports.html", jobs=jobs_list, is_admin=is_admin)
 
 
-@app.route("/reports/<report_id>/view")
-@login_required
-def report_view(report_id):
+# --- report detail views --------------------------------------------------
+
+def _load_report_or_404(report_id):
     row = reports_repo.get_full(report_id)
     if not row:
         flash("Report not found.", "error")
-        return redirect(url_for("reports"))
-
+        return None
     owner = row.get("created_by")
     if (owner
             and owner != session.get("user_id")
             and session.get("role") not in ("admin", "super_admin")):
         abort(403)
+    return row
+
+
+@app.route("/reports/<report_id>/view")
+@login_required
+def report_view(report_id):
+    """Single-trip report detail, or the per-trip page of a bulk report
+    (when ?trip=N is present). For a bulk report with no ?trip=N, this
+    redirects to the bulk index page (/reports/<id>/bulk)."""
+    row = _load_report_or_404(report_id)
+    if row is None:
+        return redirect(url_for("reports"))
 
     stored = row.get("computed_json")
     if not stored:
+        # Old bulk rows written before computed_json was persisted.
+        # Fall back to the preview job if it still exists.
+        preview_job_id = (row.get("error") or "").strip()
+        if preview_job_id and report_jobs.get_job(preview_job_id):
+            return redirect(url_for("preview_job_show",
+                                    job_id=preview_job_id))
         flash("This report has no stored detail — regenerate it to view.",
               "error")
         return redirect(url_for("reports"))
@@ -1029,6 +1240,12 @@ def report_view(report_id):
     if not reports:
         flash("This report is empty.", "error")
         return redirect(url_for("reports"))
+
+    # If this is a bulk report and the caller didn't ask for a specific
+    # trip, show the bulk index (table + search + filter) instead of a
+    # single-trip detail page.
+    if is_bulk and "trip" not in request.args:
+        return redirect(url_for("report_bulk_view", report_id=report_id))
 
     try:
         current_index = int(request.args.get("trip", 0))
@@ -1057,6 +1274,61 @@ def report_view(report_id):
         state={"truck": row.get("truck_id"), "imei": row.get("imei")},
         reports=reports, current_index=current_index,
         computed=reports[current_index], manual=current_manual,
+    )
+
+
+@app.route("/reports/<report_id>/bulk")
+@login_required
+def report_bulk_view(report_id):
+    """Bulk report index: every trip in the workbook listed in a table,
+    with search + status filter. Each row links to the per-trip detail
+    (/reports/<id>/view?trip=N)."""
+    row = _load_report_or_404(report_id)
+    if row is None:
+        return redirect(url_for("reports"))
+
+    stored = row.get("computed_json")
+    if not stored:
+        flash("This report has no stored detail — regenerate it to view.",
+              "error")
+        return redirect(url_for("reports"))
+
+    stored = _from_jsonable(stored)
+    if not _is_bulk_payload(stored):
+        # Single-trip report — redirect to the normal detail view.
+        return redirect(url_for("report_view", report_id=report_id))
+
+    reports = stored or []
+    if not reports:
+        flash("This report is empty.", "error")
+        return redirect(url_for("reports"))
+
+    items = []
+    for i, r in enumerate(reports):
+        items.append({
+            "index":      i,
+            "truck_id":   r.get("truck_id") or "",
+            "imei":       r.get("imei") or "",
+            "trip_start": r.get("trip_start"),
+            "trip_end":   r.get("trip_end"),
+        })
+
+    trucks = sorted({it["truck_id"] for it in items if it["truck_id"]})
+
+    if report_id:
+        audit.record(
+            "report.bulk_view",
+            target=row.get("truck_id") or report_id,
+            detail=f"filename={row.get('filename')}, trips={len(items)}",
+            meta={"report_id": report_id, "trips": len(items)},
+        )
+
+    return render_template(
+        "report_bulk.html",
+        row=row,
+        report_id=report_id,
+        items=items,
+        trucks=trucks,
     )
 
 
@@ -1165,13 +1437,16 @@ def report_edit_meta(report_id):
         if is_bulk:
             flash(f"Trip {trip_index + 1} ({computed['truck_id']}) updated; "
                   f"bulk workbook regenerated.", "success")
-            return redirect(url_for("report_view", report_id=report_id,
-                                    trip=trip_index))
+            # Send the user back to the bulk index so they can pick the
+            # next trip to edit.
+            return redirect(url_for("report_bulk_view",
+                                    report_id=report_id))
         flash("Report details updated and Excel regenerated.", "success")
     except Exception as exc:
         log.exception("edit-meta failed")
         flash(f"Could not update report: {exc}", "error")
-        return redirect(url_for("report_view", report_id=report_id))
+        return redirect(url_for("report_view", report_id=report_id,
+                                trip=trip_index))
 
     return redirect(url_for("reports"))
 
@@ -1252,6 +1527,11 @@ def download(filename):
     )
     abort(404)
 
+
+try:
+    job_worker.start()
+except Exception as exc:
+    log.error("could not start job worker: %s", exc)
 
 if __name__ == "__main__":
     app.run(debug=FLASK_DEBUG, host="0.0.0.0", port=5000)

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block heading %}Building workbook{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h2 style="font-size: 1.1rem; margin: 0 0 1rem;">
+    Building workbook — {{ job.total_items }} sheet{{ 's' if job.total_items != 1 else '' }}
+  </h2>
+  {% if job.status in ('queued', 'running') %}
+    <p class="muted">Generating the Excel file. This takes about 60–90 seconds for 400 sheets.</p>
+    <div class="spinner" style="margin: 2rem auto;"></div>
+    <p class="muted" style="text-align:center;" id="status-line">Working…</p>
+  {% elif job.status == 'done' %}
+    <p style="color:#256b2a;">✓ Workbook ready</p>
+    <p><a class="btn-download" href="{{ url_for('reports') }}">Go to Reports to download</a></p>
+  {% elif job.status == 'failed' %}
+    <p style="color:#a02525;">✗ Export failed: {{ job.error or 'unknown' }}</p>
+  {% endif %}
+</div>
+
+{% if job.status in ('queued', 'running') %}
+<script>
+(function () {
+  const jobId = {{ job.id|tojson }};
+  async function poll() {
+    try {
+      const r = await fetch("{{ url_for('api_export_job', job_id=job.id) }}");
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j.job.status === 'done' || j.job.status === 'failed') {
+        location.reload();
+        return;
+      }
+    } catch (e) {}
+    setTimeout(poll, 3000);
+  }
+  setTimeout(poll, 3000);
+})();
+</script>
+{% endif %}
+{% endblock %}

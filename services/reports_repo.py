@@ -21,11 +21,27 @@ def _parse_ts(s) -> datetime | None:
         return None
     if isinstance(s, datetime):
         return s if s.tzinfo else s.replace(tzinfo=timezone.utc)
-    s2 = s.replace("Z", "+00:00")
     try:
-        return datetime.fromisoformat(s2)
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _to_iso(value) -> str | None:
+    """Normalise datetime | str | None to an ISO 8601 string for Postgres.
+
+    `export_job_start` passes `min(it["trip_start"] for it in done_items)`
+    — but `it["trip_start"]` is a string (straight out of the DB row), so
+    the old `trip_start.isoformat() if trip_start else None` raised
+    `'str' object has no attribute 'isoformat'`. Accept both.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    return str(value)
 
 
 def _row_to_dict(row: dict) -> dict:
@@ -53,7 +69,7 @@ def _row_to_dict(row: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def insert_queued(*, filename: str, truck_id: str, imei: str | None,
-                  trip_start: datetime | None, trip_end: datetime | None,
+                  trip_start, trip_end,
                   created_by: str | None, created_by_email: str | None,
                   manual: dict | None = None) -> str:
     client = admin_client()
@@ -62,8 +78,8 @@ def insert_queued(*, filename: str, truck_id: str, imei: str | None,
         "truck_id":         truck_id,
         "imei":             imei,
         "status":           "queued",
-        "trip_start":       trip_start.isoformat() if trip_start else None,
-        "trip_end":         trip_end.isoformat()   if trip_end   else None,
+        "trip_start":       _to_iso(trip_start),
+        "trip_end":         _to_iso(trip_end),
         "created_by":       created_by,
         "created_by_email": created_by_email,
         "manual_json":      manual or {},
@@ -115,11 +131,6 @@ def save_computed(report_id: str, data) -> None:
 
 def update_manual(report_id: str, manual,
                   filesize_bytes: int | None = None) -> None:
-    """Update the manual metadata (and optionally file size) on a report.
-
-    `manual` is a dict for single-trip reports, or a dict keyed by str(trip_index)
-    for bulk reports.
-    """
     client = admin_client()
     payload = {"manual_json": manual or {}}
     if filesize_bytes is not None:
@@ -162,7 +173,6 @@ def get_by_filename(filename: str) -> dict | None:
 
 
 def get_full(report_id: str) -> dict | None:
-    """Fetch a raw report row including computed_json and manual_json."""
     client = admin_client()
     try:
         resp = (
