@@ -18,6 +18,10 @@ from services.auth import (
     PRIMARY_SUPER_ADMIN_EMAIL,
 )
 from services import audit as audit_svc
+from services.ratelimit import (
+    status as ratelimit_status, reset as ratelimit_reset,
+    QUOTA_TOTAL_PER_DAY, QUOTA_LOCATION_PER_DAY, LOCATION_METHOD,
+)
 
 
 log = logging.getLogger(__name__)
@@ -261,6 +265,58 @@ def change_role(user_id):
 
 
 # ---------------------------------------------------------------------------
+# Usage — super-admin only
+# ---------------------------------------------------------------------------
+
+@bp.route("/usage")
+@super_admin_required
+def usage():
+    """Full Tracksolid quota page: current window, per-method counters,
+    reset time, and a manual reset button."""
+    s = ratelimit_status()
+    calls = s.get("calls", {})
+    by_method = calls.get("by_method", {}) or {}
+
+    # Sort methods by call count descending for the table.
+    method_rows = sorted(
+        (
+            {"method": m, "count": c}
+            for m, c in by_method.items()
+        ),
+        key=lambda r: r["count"],
+        reverse=True,
+    )
+
+    return render_template(
+        "admin/usage.html",
+        status=s,
+        method_rows=method_rows,
+        quota_total=QUOTA_TOTAL_PER_DAY,
+        quota_location=QUOTA_LOCATION_PER_DAY,
+        location_method=LOCATION_METHOD,
+    )
+
+
+@bp.route("/usage/reset", methods=["POST"])
+@super_admin_required
+def usage_reset():
+    """Zero the counters. Does NOT clear the rate-limit flag — if we're
+    actually rate limited, clearing it lets the next call fail again,
+    which is fine, but a manual reset of the counters is useful right
+    after deploy or when you've just proved quota has refreshed."""
+    before = ratelimit_status().get("calls", {}).get("total", 0)
+    ratelimit_reset()
+    audit_svc.record(
+        "admin.usage_reset",
+        severity="notice",
+        detail=f"cleared usage counters (was {before})",
+        meta={"calls_before": before},
+    )
+    flash("Usage counters cleared.", "success")
+    return redirect(url_for("admin.usage"))
+
+
+# ---------------------------------------------------------------------------
 # Audit trail — SUPER ADMIN ONLY
 # ---------------------------------------------------------------------------
 
@@ -315,20 +371,8 @@ def audit():
 @bp.route("/audit/verify")
 @super_admin_required
 def audit_verify():
-    """Explicit, user-triggered chain verification.
-
-    Unlike the automated maintenance loop, this DOES record an
-    `audit.chain_mismatch` row when the chain is broken — because the
-    admin clicked the button on purpose, and the resulting alert should
-    be visible in the alerts page until acknowledged. This is the only
-    code path that writes `audit.chain_mismatch`.
-    """
     result = audit_svc.verify_chain(limit=50000)
     if not result.get("ok"):
-        # Record the mismatch explicitly from the admin action — this is
-        # the ONE place where a mismatch row is created. The maintenance
-        # loop no longer writes one, so a broken chain cannot re-fork
-        # itself on every worker restart.
         audit_svc.record(
             "audit.chain_mismatch",
             severity="critical",

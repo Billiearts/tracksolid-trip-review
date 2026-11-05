@@ -3,35 +3,17 @@ services/job_worker.py — single daemon thread that processes report jobs.
 
 Design:
 
-  * One worker thread per gunicorn worker. On Render's free tier that's
-    one thread (WEB_CONCURRENCY=1). If you scale to 2 gunicorn workers,
-    you get 2 job threads — Option B, "aggressive". Each thread claims
-    one job at a time via `claim_next_queued_job()`, so 2 gunicorn
-    workers = 2 concurrent jobs.
+  * One worker thread per gunicorn worker. Each thread claims one job at
+    a time via `claim_next_queued_job()`.
 
   * Within a claimed job, the worker fans out `JOB_WORKERS` parallel
-    `compute_report` calls (default 16 — "aggressive" per your call).
-    Total concurrent Tracksolid calls = JOB_WORKERS × PREVIEW_WORKERS
-    where PREVIEW_WORKERS is the internal history-fan-out inside
-    compute_report. With both at 16 that's 256 in flight, which is too
-    much. So the actual default is:
-
-        JOB_WORKERS=16          (trips computed in parallel per job)
-        HISTORY_WORKERS=4       (past trips per trip, inside build_history)
-
-    Peak = 16 trips × 4 history calls = 64 concurrent Tracksolid calls.
-    That's aggressive but not insane; if you see 1006s, drop JOB_WORKERS
-    to 8 via env var.
+    `compute_report` calls (default 4, tuned for Windows + Flask debug
+    under the developer machine; override with JOB_WORKERS=16 on Linux).
 
   * On startup, `requeue_stale_running()` un-sticks any `running` items
-    whose worker died. So a deploy mid-job doesn't lose progress.
+    whose worker died.
 
-  * Every 30 s the job's `heartbeat_at` is bumped. If the process dies
-    without updating it, the next worker (or next request) treats the
-    job as crashed and calls `requeue_stale_running()`.
-
-The worker is started by `gunicorn.conf.py` → `post_fork`. It's also
-started by `app.py` at import time for local dev (`flask run`).
+  * Every 30 s the job's `heartbeat_at` is bumped.
 """
 from __future__ import annotations
 
@@ -54,10 +36,6 @@ from services.previews import (
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
 def _int_env(name: str, default: int, lo: int, hi: int) -> int:
     try:
         v = int(os.environ.get(name, str(default)))
@@ -66,35 +44,23 @@ def _int_env(name: str, default: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
 
 
-# How many trips to compute in parallel within one job. Aggressive default;
-# override with JOB_WORKERS=8 if you see 1006s.
-JOB_WORKERS = _int_env("JOB_WORKERS", 16, 1, 32)
-
-# How often the worker polls the DB for new queued jobs when idle.
-POLL_INTERVAL_SEC = 5
-
-# How often to bump the job's heartbeat while working.
+# 4 is the safe default on Windows (thread-local Supabase client removes
+# the WinError 10035 issue, but 16 threads still saturate a dev machine).
+# Override on Linux with JOB_WORKERS=16 in .env.
+JOB_WORKERS          = _int_env("JOB_WORKERS", 4, 1, 32)
+POLL_INTERVAL_SEC    = 5
 HEARTBEAT_INTERVAL_SEC = 30
 
-
-# ---------------------------------------------------------------------------
-# State
-# ---------------------------------------------------------------------------
 
 _worker_thread: threading.Thread | None = None
 _stop_event = threading.Event()
 
-
-# ---------------------------------------------------------------------------
-# Per-item compute (called from the JOB_WORKERS pool)
-# ---------------------------------------------------------------------------
 
 def _compute_item(item: dict,
                   include_history: bool,
                   prefetched_alarms: dict[str, list[dict]],
                   prefetch_bounds: dict[str, tuple[datetime, datetime]],
                   ) -> dict:
-    """Compute one trip. Returns {item_id, status, computed, error}."""
     item_id = item["id"]
     imei    = item["imei"]
     trip_start = datetime.fromisoformat(
@@ -130,10 +96,6 @@ def _compute_item(item: dict,
         return {"item_id": item_id, "status": "failed", "error": str(exc)}
 
 
-# ---------------------------------------------------------------------------
-# Preview job
-# ---------------------------------------------------------------------------
-
 def _run_preview_job(job: dict) -> None:
     job_id = job["id"]
     include_history = job["include_history"]
@@ -141,7 +103,7 @@ def _run_preview_job(job: dict) -> None:
     log.info("worker: preview job %s starting (%d items)",
              job_id, job["total_items"])
 
-    BATCH = JOB_WORKERS * 2   # fetch 2x workers at a time, so the pool stays busy
+    BATCH = JOB_WORKERS * 2
 
     heartbeat_lock = threading.Lock()
     last_heartbeat = {"t": 0.0}
@@ -268,22 +230,7 @@ def _run_preview_job(job: dict) -> None:
                  job_id, done, failed)
 
 
-# ---------------------------------------------------------------------------
-# Export job
-# ---------------------------------------------------------------------------
-
 def _run_export_job(job: dict) -> None:
-    """Build one workbook from a completed preview job.
-
-    The `reports` row referenced by job['reports_row_id'] was created by
-    the /export/job route before this job was queued, with status='queued'.
-    On success:
-      * the file is written and uploaded,
-      * `computed_json` and `manual_json` are persisted on that row so
-        the /reports/<id>/view page has data to render (previously this
-        was skipped, which is why bulk reports showed "no stored detail"),
-      * the row is marked 'done'.
-    """
     from pathlib import Path
     from config import TEMPLATE_PATH, OUTPUT_DIR
     from report import write_bulk_excel
@@ -304,8 +251,6 @@ def _run_export_job(job: dict) -> None:
         report_jobs.mark_job_failed(job_id, "reports row not found")
         return
 
-    # The preview job that this export refers to is stored in `error` as
-    # a workaround — see app.py's /export/job route.
     try:
         preview_job_id = (row.get("error") or "").strip()
         if not preview_job_id:
@@ -321,9 +266,6 @@ def _run_export_job(job: dict) -> None:
         report_jobs.mark_job_failed(job_id, "preview has no completed items")
         return
 
-    # Reconstruct the reports list that write_bulk_excel expects. Skip
-    # any item whose computed_json is NULL (pre-dates the serialisation
-    # fix); including it would crash the template fill.
     reports = [
         it["computed"] for it in preview_items
         if it.get("computed")
@@ -355,10 +297,6 @@ def _run_export_job(job: dict) -> None:
     except Exception:
         log.exception("bulk export upload raised for %s", out_path.name)
 
-    # Persist the computed reports so /reports/<id>/view can render the
-    # bulk report. This mirrors what _run_bulk_export in app.py does for
-    # the synchronous bulk path. Skipping this is what made "View" on a
-    # finished bulk export show "This report has no stored detail".
     try:
         reports_repo.save_computed(
             reports_row_id, _to_jsonable(list(reports))
@@ -376,10 +314,6 @@ def _run_export_job(job: dict) -> None:
     log.info("worker: export job %s done (%d trips, %d bytes)",
              job_id, len(reports), size or 0)
 
-
-# ---------------------------------------------------------------------------
-# Main loop
-# ---------------------------------------------------------------------------
 
 def _run_loop():
     log.info("job worker: started (JOB_WORKERS=%d)", JOB_WORKERS)
@@ -425,12 +359,7 @@ def _run_loop():
     log.info("job worker: stopped")
 
 
-# ---------------------------------------------------------------------------
-# Lifecycle
-# ---------------------------------------------------------------------------
-
 def start() -> None:
-    """Start the worker thread. Idempotent."""
     global _worker_thread
     if _worker_thread is not None and _worker_thread.is_alive():
         return
@@ -444,5 +373,4 @@ def start() -> None:
 
 
 def stop() -> None:
-    """Signal the worker to stop at the next checkpoint."""
     _stop_event.set()

@@ -587,9 +587,36 @@ def index():
     return render_template("index.html")
 
 
-@app.route("/api/status")
-def api_status():
-    return jsonify(ratelimit_status())
+@app.route("/api/usage")
+@login_required
+def api_usage():
+    """Detailed usage view. Available to any signed-in user so anyone can
+    check whether they're burning through the quota, but the /admin/usage
+    page (where the reset button lives) is super-admin-only."""
+    s = ratelimit_status()
+    # Add a friendly summary that the nav / usage page can render directly.
+    calls = s.get("calls", {})
+    total = calls.get("total", 0)
+    location = calls.get("location_calls", 0)
+    quota = calls.get("quota_total", 8640)
+    quota_loc = calls.get("quota_location", 86400)
+
+    def level(percent: float) -> str:
+        if percent >= 90:
+            return "critical"
+        if percent >= 75:
+            return "warning"
+        return "ok"
+
+    s["summary"] = {
+        "level_total":    level(calls.get("percent_total", 0)),
+        "level_location": level(calls.get("percent_location", 0)),
+        "message": (
+            f"{total:,} of {quota:,} calls used"
+            + (f" ({location:,}/{quota_loc:,} location)" if location else "")
+        ),
+    }
+    return jsonify(s)
 
 
 @app.route("/api/devices")
@@ -1533,5 +1560,28 @@ try:
 except Exception as exc:
     log.error("could not start job worker: %s", exc)
 
+# ---------------------------------------------------------------------------
+# Worker startup
+# ---------------------------------------------------------------------------
+#
+# On Windows + Flask debug mode, `WERKZEUG_RUN_MAIN=true` marks the
+# reloader child (the process that actually serves requests). Without
+# this check, the parent also starts the worker, giving 2× threads
+# against the shared Supabase client — which is what was causing the
+# `WinError 10035` socket errors. Under gunicorn (wsgi:app) there is
+# only one process, so start unconditionally.
+
+def _start_worker():
+    try:
+        job_worker.start()
+        log.info("job worker thread started")
+    except Exception as exc:
+        log.error("could not start job worker: %s", exc)
+
+
 if __name__ == "__main__":
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not FLASK_DEBUG:
+        _start_worker()
     app.run(debug=FLASK_DEBUG, host="0.0.0.0", port=5000)
+else:
+    _start_worker()

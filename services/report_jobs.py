@@ -452,16 +452,10 @@ def requeue_failed_items(job_id: str) -> int:
 def claim_next_queued_job() -> dict | None:
     """Atomically claim the oldest queued job.
 
-    Returns the job dict, or None if there are no queued jobs.
-
-    "Atomic" here means: UPDATE report_jobs SET status='running' WHERE
-    id=(SELECT ... FOR UPDATE SKIP LOCKED) RETURNING *. Supabase's REST
-    client doesn't expose FOR UPDATE SKIP LOCKED, so we do the
-    equivalent with a conditional UPDATE:
-      1. SELECT the oldest queued job.
-      2. UPDATE it to status='running' WHERE id=X AND status='queued'.
-      3. If the UPDATE returned a row, we won; if not, another worker
-         claimed it first — try again.
+    Retries up to 3 times on transient WinError 10035 socket errors, which
+    can still happen even with the thread-local Supabase client when
+    several threads burst the API simultaneously. Other errors fall
+    straight through.
     """
     client = admin_client()
     for _attempt in range(3):
@@ -473,6 +467,12 @@ def claim_next_queued_job() -> dict | None:
                     .limit(1)
                     .execute())
         except Exception as exc:
+            msg = str(exc)
+            if ("WinError 10035" in msg
+                    or "would block" in msg
+                    or "ConnectionResetError" in msg):
+                time.sleep(0.5)
+                continue
             log.warning("claim_next_queued_job: select failed: %s", exc)
             return None
         rows = resp.data or []
@@ -494,7 +494,6 @@ def claim_next_queued_job() -> dict | None:
             return None
         if upd.data:
             return _row_to_job(upd.data[0])
-        # Someone else claimed it — try the next.
     return None
 
 

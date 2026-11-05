@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block body_class %}wide{% endblock %}
+{% block heading %}Admin — Tracksolid API usage{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; gap: 0.75rem; flex-wrap: wrap;">
+      <h2 style="font-size: 1.1rem; margin: 0;">Tracksolid API usage</h2>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <a class="btn-edit" href="{{ url_for('admin.index') }}">← Users</a>
+        <a class="btn-edit" href="{{ url_for('admin.audit') }}">Audit trail →</a>
+        <form method="post" action="{{ url_for('admin.usage_reset') }}"
+              onsubmit="return confirm('Zero the usage counters? This does not touch Tracksolid.');"
+              style="display:inline;">
+          <button type="submit" class="btn-edit">Reset counters</button>
+        </form>
+      </div>
+    </div>
+
+    {% if status.rate_limited %}
+      <div class="flash error" style="margin-bottom: 1rem;">
+        <strong>Rate limit currently active.</strong>
+        Set at {{ status.limited_at }}. Resets at {{ status.resets_at }}.
+        {% if status.message %} — {{ status.message }}{% endif %}
+      </div>
+    {% endif %}
+
+    <table class="preview-table">
+      <thead>
+        <tr><th>Quota</th><th>Used</th><th>Remaining</th><th>%</th></tr>
+      </thead>
+      <tbody>
+        {% set calls = status.calls %}
+        {% set total_pct = calls.percent_total %}
+        {% set loc_pct = calls.percent_location %}
+        <tr>
+          <td>All calls</td>
+          <td>{{ calls.total }} / {{ quota_total }}</td>
+          <td>{{ quota_total - calls.total if calls.total < quota_total else 0 }}</td>
+          <td>
+            <span class="status {{ 'status-failed' if total_pct >= 90 else ('status-running' if total_pct >= 75 else 'status-done') }}">
+              {{ '%.1f' | format(total_pct) }}%
+            </span>
+          </td>
+        </tr>
+        <tr>
+          <td>Location calls
+              <span class="muted" style="font-size: 0.78rem;">
+                ({{ location_method }})
+              </span>
+          </td>
+          <td>{{ calls.location_calls }} / {{ quota_location }}</td>
+          <td>{{ quota_location - calls.location_calls if calls.location_calls < quota_location else 0 }}</td>
+          <td>
+            <span class="status {{ 'status-failed' if loc_pct >= 90 else ('status-running' if loc_pct >= 75 else 'status-done') }}">
+              {{ '%.1f' | format(loc_pct) }}%
+            </span>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3 style="margin-top: 1.5rem; font-size: 0.95rem; color: #444;">
+      Window
+    </h3>
+    <table class="preview-table">
+      <tbody>
+        <tr>
+          <td style="width: 180px;">Window started at</td>
+          <td>{{ status.window_started_at or '— (no calls yet)' }}</td>
+        </tr>
+        <tr>
+          <td>Resets at</td>
+          <td>{{ status.resets_at or '— (starts after first call)' }}</td>
+        </tr>
+        <tr>
+          <td>Last manual clear</td>
+          <td>{{ status.last_clear or '—' }}</td>
+        </tr>
+        <tr>
+          <td>Notes</td>
+          <td>
+            Tracksolid uses a rolling 24-hour window from the first call
+            of the day, not midnight UTC. Only successful calls
+            (<code>code=0</code>) count towards the quota; failed calls
+            and cache hits do not.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3 style="margin-top: 1.5rem; font-size: 0.95rem; color: #444;">
+      Per-method breakdown (this process)
+    </h3>
+    {% if method_rows %}
+      <div class="table-scroll">
+        <table class="preview-table">
+          <thead>
+            <tr><th>Method</th><th>Calls</th></tr>
+          </thead>
+          <tbody>
+            {% for r in method_rows %}
+              <tr>
+                <td><code style="font-size: 0.82rem;">{{ r.method }}</code></td>
+                <td>{{ r.count }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="muted">No calls recorded in this process yet.</p>
+    {% endif %}
+  </div>
+{% endblock %}

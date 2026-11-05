@@ -13,7 +13,9 @@ from pathlib import Path
 import requests
 
 from config import APP_KEY, APP_SECRET, USER_ID, USER_PWD_MD5
-from services.ratelimit import note_rate_limited, is_rate_limited
+from services.ratelimit import (
+    note_call, note_rate_limited, is_rate_limited,
+)
 
 
 BASE_URL = "https://eu-open.tracksolidpro.com/route/rest"
@@ -61,24 +63,11 @@ def build_common_params(method: str) -> dict:
 # Parallel fan-out helper
 # ---------------------------------------------------------------------------
 
-# Kept low on purpose. Tracksolid's daily quota is per-account; the parallel
-# fan-out in app.py already uses 4, so total concurrent calls during a
-# preview should stay <= 8 to avoid hitting 1006 under load.
 _HISTORY_WORKERS = 4
 
 
 def parallel_call(fn, items, *, workers: int = _HISTORY_WORKERS):
-    """Run `fn(item)` for each item in `items`, up to `workers` at a time.
-
-    Returns a list in input order. Short-circuits on RateLimitExceeded:
-    the exception is re-raised after the current batch finishes, so the
-    caller can decide whether to abandon or fall back to sequential.
-
-    The pre-flight `is_rate_limited()` check means a fan-out that starts
-    after the quota is already exhausted (or a sibling fan-out that
-    trips it) fails in milliseconds instead of firing every request and
-    timing each one out.
-    """
+    """Run `fn(item)` for each item in `items`, up to `workers` at a time."""
     if not items:
         return []
     if is_rate_limited():
@@ -150,9 +139,6 @@ def _fetch_new_token() -> str:
 
 
 def get_access_token() -> str:
-    # The token fetch itself is not thread-safe (two threads fetching
-    # at the same time would each cost an API call). Lock around the
-    # whole read-check-fetch path.
     with _token_lock:
         now = time.time()
 
@@ -181,8 +167,14 @@ def api_call(method: str, private_params: dict | None = None) -> dict:
         params.update(private_params)
     params["sign"] = make_sign(params, APP_SECRET)
 
-    response = requests.post(BASE_URL, data=params, timeout=30)
-    response.raise_for_status()
+    try:
+        response = requests.post(BASE_URL, data=params, timeout=30)
+        response.raise_for_status()
+    except Exception:
+        # Network / HTTP-level failure — not a quota failure, but record it.
+        note_call(method, ok=False)
+        raise
+
     payload = response.json()
 
     code = payload.get("code")
@@ -190,23 +182,30 @@ def api_call(method: str, private_params: dict | None = None) -> dict:
         msg = (f"Rate limit reached on {method}: "
                f"{payload.get('message')!r}")
         note_rate_limited(msg)
+        note_call(method, ok=False)
         raise RateLimitExceeded(f"Tracksolid Pro rate limit reached on {method}: "
                                 f"{payload.get('message')!r}")
     if code != 0:
+        note_call(method, ok=False)
         raise RuntimeError(
             f"API error on {method}: code={code} "
             f"message={payload.get('message')!r}"
         )
+
+    # Successful call — count it, and if this is the first success of a new
+    # 24h window, anchor the window to now.
+    note_call(method, ok=True)
     return payload
 
 
 # ---------------------------------------------------------------------------
-# Alarm cache — 15 minutes, in-memory only
+# Alarm cache — 5 minutes, LRU-bounded, in-memory only
 # ---------------------------------------------------------------------------
-
 _alarm_cache: dict = {}
 _alarm_cache_lock = threading.Lock()
-_ALARM_CACHE_TTL = 900
+_ALARM_CACHE_TTL = 300           # 5 minutes
+_ALARM_CACHE_MAX_ENTRIES = 500
+_ALARM_CACHE_MAX_BYTES = 80 * 1024 * 1024  # 80 MB
 
 
 def _cache_get(key):
@@ -224,6 +223,28 @@ def _cache_get(key):
 def _cache_put(key, alarms):
     with _alarm_cache_lock:
         _alarm_cache[key] = (time.time() + _ALARM_CACHE_TTL, alarms)
+
+        # Evict expired entries first.
+        now = time.time()
+        expired = [k for k, (exp, _) in _alarm_cache.items() if now > exp]
+        for k in expired:
+            _alarm_cache.pop(k, None)
+
+        # Then enforce the entry cap (LRU by insertion order).
+        while len(_alarm_cache) > _ALARM_CACHE_MAX_ENTRIES:
+            oldest = next(iter(_alarm_cache))
+            _alarm_cache.pop(oldest, None)
+
+        # Finally enforce the byte budget. Approximate each entry as
+        # ~500 bytes per alarm row (Tracksolid alarm dicts are small).
+        approx_bytes = sum(
+            len(a) * 500
+            for (_, a) in _alarm_cache.values()
+        )
+        while approx_bytes > _ALARM_CACHE_MAX_BYTES and _alarm_cache:
+            oldest = next(iter(_alarm_cache))
+            _, dropped = _alarm_cache.pop(oldest)
+            approx_bytes -= len(dropped) * 500
 
 
 def _cache_key(imei: str, begin_str: str, end_str: str) -> tuple:
@@ -272,20 +293,8 @@ def fetch_alarms(imei: str, begin_str: str, end_str: str,
 
 def fetch_alarms_chunked(imei: str, begin: datetime, end: datetime,
                          chunk_days: int = 7) -> list:
-    """Fetch alarms in 7-day chunks, parallelised across chunks.
-
-    For a 3-month window this is ~13 chunks; sequentially they cost ~20s
-    of wall clock, which used to dominate preview time for the first trip
-    of every preview (all subsequent trips hit the alarm cache, but only
-    if their ranges align exactly). Running them 4-way drops it to ~5s,
-    and the per-chunk cache in `fetch_alarms` still prevents a *second*
-    trip from re-fetching anything already retrieved.
-    """
     from datetime import timedelta as _td
 
-    # Build the chunk boundaries up-front so `parallel_call` can fan them
-    # out evenly. The cache hit/miss decision is per-chunk, not per-range,
-    # so a partial cache still saves the chunks that were already loaded.
     chunks: list[tuple[str, str]] = []
     cursor = begin
     while cursor < end:
@@ -309,7 +318,6 @@ def fetch_alarms_chunked(imei: str, begin: datetime, end: datetime,
         raise
     except Exception as exc:
         print(f"[alarms] parallel chunk fetch failed: {exc}")
-        # Fall back to sequential — better a slow result than none.
         batches = []
         for chunk in chunks:
             try:
@@ -349,7 +357,6 @@ def _parking_cache_put(key, rows):
 
 
 def _parse_parking_dt(s) -> datetime | None:
-    """Parse a Tracksolid parking timestamp like '2022-12-10T01:05:33.000Z'."""
     if not s:
         return None
     s2 = str(s).replace("Z", "+00:00")
@@ -389,16 +396,11 @@ def _parking_total(response: dict) -> int | None:
         return None
 
 
-# Module-level so we don't re-try all six start_row/page_size variants on
-# every single call. The first successful variant wins; later calls start
-# from it. The cache resets on process restart, which is fine — worst case
-# the first call per process tries the variants again.
 _parking_accepted: dict | None = None
 _parking_accepted_lock = threading.Lock()
 
 
 def _parking_variants(base_params: dict):
-    """Try the last-known-good variant first, then the fixed fallback list."""
     global _parking_accepted
     with _parking_accepted_lock:
         cached = _parking_accepted
@@ -420,13 +422,6 @@ def _parking_variants(base_params: dict):
 
 def fetch_parking(imei: str, begin: datetime, end: datetime,
                   acc_type: str = "off") -> list[dict]:
-    """Fetch parking (acc_type='off') or idling (acc_type='on') events.
-
-    Cached per (imei, begin, end, acc_type) for 15 minutes. The
-    `_parking_accepted` module cache means the start_row/page_size variant
-    dance is paid once per process, not on every call — which alone was
-    costing 3-4 wasted HTTP round trips per fetch on some accounts.
-    """
     key = (imei, begin.strftime("%Y-%m-%d %H:%M:%S"),
            end.strftime("%Y-%m-%d %H:%M:%S"), acc_type)
     cached = _parking_cache_get(key)

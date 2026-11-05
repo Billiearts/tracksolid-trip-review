@@ -11,7 +11,12 @@
       <a href="{{ url_for('admin.new_user') }}"
          style="font-size: 0.9rem;">+ New user</a>
     </div>
-
+      <div style="display: flex; gap: 0.5rem;">
+        <a href="{{ url_for('admin.usage') }}"
+           class="btn-edit" style="text-decoration: none;">API usage</a>
+        <a href="{{ url_for('admin.new_user') }}"
+           style="font-size: 0.9rem;">+ New user</a>
+      </div>
     {% if result.users %}
       <div class="table-scroll">
       <table class="admin-table">

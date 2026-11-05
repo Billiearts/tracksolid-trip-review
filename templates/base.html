@@ -121,6 +121,41 @@
       color: var(--ink-3);
     }
 
+           .usage-pill {
+      display: inline-flex; align-items: center; gap: 0.35rem;
+      background: #f3f6f9;
+      color: var(--ink-2);
+      text-decoration: none;
+      padding: 0.32rem 0.7rem;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      margin-right: 0.35rem;
+      transition: background 0.12s ease, color 0.12s ease;
+    }
+    .usage-pill:hover { background: #e8edf3; color: var(--ink); }
+    .usage-pill.warning  { background: #fff7e6; color: #8a5a00; }
+    .usage-pill.critical { background: #fde7e7; color: #a02525; }
+    .usage-pill[hidden]  { display: none; }
+
+    /* A gentle two-pulse when the pill becomes warning/critical on load,
+       then stop. Cancelled if the user hovers it. */
+    @keyframes usage-pill-pulse {
+      0%, 100% { transform: scale(1); }
+      50%      { transform: scale(1.06); }
+    }
+    .usage-pill.warning.pulse,
+    .usage-pill.critical.pulse {
+      animation: usage-pill-pulse 0.7s ease-in-out 2;
+    }
+    .usage-pill:hover { animation: none; }
+
+    @media (max-width: 900px) {
+      #usage-pill-label { display: none; }
+      .usage-pill { padding: 0.32rem 0.5rem; }
+    }
     .topbar-spacer { flex: 1 1 auto; }
 
     .topbar-right {
@@ -712,8 +747,17 @@
       <div class="topbar-spacer"></div>
 
       <div class="topbar-right">
-              {% if session.get('role') == 'super_admin' %}
-        <a href="{{ url_for('admin.alerts') }}"
+        <a id="usage-pill" class="usage-pill" href="#" aria-label="Tracksolid API usage"
+           title="Tracksolid API usage">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+               style="width: 14px; height: 14px;">
+            <path d="M22 12A10 10 0 1 1 12 2v10z"></path>
+          </svg>
+          <span id="usage-pill-label">API: — / —</span>
+        </a>
+        {% if session.get('role') == 'super_admin' %}
+          <a href="{{ url_for('admin.alerts') }}"
            class="icon-btn"
            title="Alerts{% if nav_unacked_alerts %} ({{ nav_unacked_alerts }} unread){% endif %}"
            aria-label="Alerts">
@@ -793,17 +837,6 @@
       </div>
     {% endif %}
   </nav>
-  {% endif %}
-
-  {% if session.get('user_id') %}
-    <div id="ratelimit-banner" class="ratelimit-banner" hidden>
-      <span class="ratelimit-banner-icon">&#9888;&#65039;</span>
-      <span class="ratelimit-banner-text" id="ratelimit-banner-text">
-        Tracksolid Pro daily API limit reached.
-      </span>
-      <button type="button" class="ratelimit-close" id="ratelimit-banner-close"
-              aria-label="Dismiss">&times;</button>
-    </div>
   {% endif %}
 
   <div class="container">
@@ -965,6 +998,66 @@
       poll();
       setInterval(poll, POLL_MS);
     })();
+        // ---------------- usage pill ----------------
+    //
+    // Polls /api/usage every 60 s (cached in-memory state, no Tracksolid
+    // call) and shows "API: 412 / 86,400". Colour-coded: green under 75 %,
+    // yellow 75-90 %, red 90 %+. Pulses twice on load if warning/critical.
+    (function () {
+      const pill  = document.getElementById('usage-pill');
+      const label = document.getElementById('usage-pill-label');
+      if (!pill || !label) return;
+
+      function fmt(n) {
+        return Number(n || 0).toLocaleString();
+      }
+      function cls(level, { pulse = false } = {}) {
+        pill.classList.remove('warning', 'critical');
+        if (level === 'critical') pill.classList.add('critical');
+        else if (level === 'warning') pill.classList.add('warning');
+        if (pulse && (level === 'warning' || level === 'critical')) {
+          pill.classList.add('pulse');
+          setTimeout(() => pill.classList.remove('pulse'), 1500);
+        }
+      }
+
+      let first = true;
+      async function poll() {
+        try {
+          const r = await fetch('/api/usage');
+          if (!r.ok) return;
+          const j = await r.json();
+          if (j.rate_limited) {
+            pill.hidden = false;
+            label.textContent = 'API: rate limited';
+            cls('critical', { pulse: first });
+            pill.title = 'Rate limit active until ' + (j.resets_at || '?');
+            first = false;
+            return;
+          }
+          const c = j.calls || {};
+          const used = c.total || 0;
+          const quota = c.quota_total || 86400;
+          const pct = c.percent_total || 0;
+          pill.hidden = false;
+          label.textContent = 'API: ' + fmt(used) + ' / ' + fmt(quota);
+          pill.title =
+            'All calls: ' + fmt(used) + ' / ' + fmt(quota) +
+            ' (' + pct.toFixed(1) + '%)\n' +
+            'Location: ' + fmt(c.location_calls || 0) + ' / ' +
+              fmt(c.quota_location || 86400) + '\n' +
+            (j.resets_at
+              ? 'Resets: ' + j.resets_at
+              : 'Window not started (no calls yet)');
+          const lvl = j.summary ? j.summary.level_total : 'ok';
+          cls(lvl, { pulse: first });
+          first = false;
+        } catch (e) { /* ignore */ }
+      }
+      poll();
+      setInterval(poll, 60000);
+    })();
+
   </script>
   {% block scripts %}{% endblock %}
 </body>

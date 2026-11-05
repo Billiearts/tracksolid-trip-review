@@ -1,12 +1,23 @@
 """
-services/supabase_client.py — Supabase client factory with singletons.
+services/supabase_client.py — Supabase client factory (thread-local).
 
-create_client() builds a full HTTP client and handshake; doing it on every
-call is expensive. These singletons are created once per process.
+Supabase's Python SDK (httpx under the hood) is NOT thread-safe on
+Windows. Under load from the job-worker fan-out it raises:
+
+    [WinError 10035] A non-blocking socket operation could not be
+    completed immediately
+
+which silently broke `claim_next_queued_job()` and left preview jobs
+stuck in 'queued' forever (see `services/report_jobs.py`).
+
+Both clients are now **thread-local**: each thread gets its own instance,
+its own httpx connection pool, and its own authentication state. The
+per-thread cost is small (the SDK pools connections per client), and the
+fix makes the worker reliable under concurrency on every platform.
 """
 from __future__ import annotations
 
-from threading import Lock
+import threading
 
 from supabase import create_client, Client
 
@@ -15,26 +26,21 @@ from config import (
 )
 
 
-_anon_client:  Client | None = None
-_admin_client: Client | None = None
-_lock = Lock()
+_anon_local  = threading.local()
+_admin_local = threading.local()
 
 
 def anon_client() -> Client:
-    global _anon_client
-    if _anon_client is None:
-        with _lock:
-            if _anon_client is None:
-                _anon_client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-    return _anon_client
+    client = getattr(_anon_local, "client", None)
+    if client is None:
+        client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+        _anon_local.client = client
+    return client
 
 
 def admin_client() -> Client:
-    global _admin_client
-    if _admin_client is None:
-        with _lock:
-            if _admin_client is None:
-                _admin_client = create_client(
-                    SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
-                )
-    return _admin_client
+    client = getattr(_admin_local, "client", None)
+    if client is None:
+        client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        _admin_local.client = client
+    return client
