@@ -29,10 +29,62 @@
              value="{{ 'on' if include_history else '' }}">
       <input type="hidden" name="selected_trips" id="selected-trips" value="[]">
 
+      {# ---------------- Selection toolbar ---------------- #}
+      <div class="select-toolbar"
+           style="display: flex; flex-wrap: wrap; gap: 0.5rem;
+                  align-items: center; padding: 0.75rem 0.9rem;
+                  background: #f7f9fb; border: 1px solid #e2e6ea;
+                  border-radius: 6px; margin-bottom: 1rem;">
+        <span style="font-size: 0.82rem; color: #555; font-weight: 500; margin-right: 0.25rem;">
+          Quick select:
+        </span>
+        <button type="button" class="btn-edit" data-quick="first-100"
+                title="Select the first 100 trips in the list, in order">
+          First 100 trips
+        </button>
+        <button type="button" class="btn-edit" data-quick="newest-100"
+                title="Select the 100 trips with the most recent start time">
+          Newest 100 trips
+        </button>
+        <button type="button" class="btn-edit" data-quick="first-per-truck"
+                title="Select one trip per truck — the earliest one for each">
+          First trip per truck
+        </button>
+        <button type="button" class="btn-edit" data-quick="last-per-truck"
+                title="Select one trip per truck — the latest one for each">
+          Last trip per truck
+        </button>
+        <button type="button" class="btn-edit" data-quick="clear"
+                style="margin-left: auto; color: #a02525; border-color: #e2b3b3; background: #fde7e7;">
+          Clear all
+        </button>
+      </div>
+
+      {# ---------------- Selection counter ---------------- #}
+      <div id="selection-summary"
+           style="display: flex; justify-content: space-between;
+                  align-items: center; margin-bottom: 1rem;
+                  padding: 0.6rem 0.9rem;
+                  background: #eaf2fb; border: 1px solid #c7ddf3;
+                  border-radius: 6px; font-size: 0.88rem; color: #1e5f9e;">
+        <span>
+          <strong id="sel-count">0</strong> of {{ max_per_preview }} selected
+          <span id="sel-slots" style="color: #666; margin-left: 0.4rem;">
+            ({{ max_per_preview }} slots left)
+          </span>
+        </span>
+        <span id="sel-hint" style="color: #666; font-size: 0.8rem;">
+          Click a checkbox, or use the quick-select buttons above.
+        </span>
+      </div>
+
+      {# ---------------- Truck groups ---------------- #}
       {% for g in truck_groups %}
         <div class="truck-block" data-truck-imei="{{ g.imei }}"
              style="margin-bottom: 1.75rem;">
-          <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
+          <div style="display: flex; justify-content: space-between;
+                      align-items: baseline; margin-bottom: 0.5rem;
+                      flex-wrap: wrap; gap: 0.5rem;">
             <h3 style="font-size: 0.95rem; margin: 0; color: #1e5f9e;">
               {{ g.truck }}
               <span style="color: #888; font-weight: 400; font-size: 0.8rem;">
@@ -43,15 +95,15 @@
             <div style="display: flex; align-items: center; gap: 0.6rem;">
               <span class="truck-counter" data-imei="{{ g.imei }}"
                     style="font-size: 0.8rem; color: #666; font-variant-numeric: tabular-nums;">
-                0 of {{ max_per_truck }} selected
+                0 selected
               </span>
               <button type="button" class="role-btn truck-select-all"
                       data-truck-imei="{{ g.imei }}">
-                Select up to {{ max_per_truck }}
+                Select all for this truck
               </button>
               <button type="button" class="role-btn truck-clear-all"
                       data-truck-imei="{{ g.imei }}">
-                Clear
+                Clear this truck
               </button>
             </div>
           </div>
@@ -77,7 +129,7 @@
                              data-driver="{{ g.driver_name or '' }}"
                              data-start="{{ t.start.strftime('%Y-%m-%d %H:%M:%S') }}"
                              data-end="{{ t.end.strftime('%Y-%m-%d %H:%M:%S') }}"
-                             value="{{ loop.index0 }}" checked>
+                             value="{{ loop.index0 }}">
                     </td>
                     <td>{{ loop.index }}</td>
                     <td style="text-align: left;">{{ t.start.strftime('%Y-%m-%d %H:%M:%S') }}</td>
@@ -91,14 +143,17 @@
         </div>
       {% endfor %}
 
-      <p style="color: #888; font-size: 0.85rem; margin: 1rem 0;">
-        Up to <strong>{{ max_per_truck }} trips per truck</strong>.
-        Uncheck any trips you don't want.
-      </p>
-
       <p id="trip-cap-warning" class="flash error" style="display: none;"></p>
 
-      <button type="submit" id="preview-btn">Preview selected trips</button>
+      <div style="display: flex; gap: 0.75rem; align-items: center; margin-top: 1rem;">
+        <button type="submit" id="preview-btn">Preview selected trips</button>
+        <span class="muted" style="font-size: 0.82rem;">
+          Up to <strong>{{ max_per_preview }} trips per preview</strong>.
+          No per-truck limit. If you need more than {{ max_per_preview }},
+          export in batches — completed trips can be exported while the
+          rest keep computing.
+        </span>
+      </div>
     </form>
   </div>
 
@@ -107,53 +162,78 @@
 {% block scripts %}
   <script>
     (function () {
-      const MAX_PER_TRUCK = {{ max_per_truck }};
+      const MAX_PER_PREVIEW = {{ max_per_preview }};
       const form    = document.getElementById('trips-form');
       const hidden  = document.getElementById('selected-trips');
       const warnEl  = document.getElementById('trip-cap-warning');
       const btn     = document.getElementById('preview-btn');
-      const boxes   = () => Array.from(document.querySelectorAll('.trip-checkbox'));
+      const selCountEl = document.getElementById('sel-count');
+      const selSlotsEl = document.getElementById('sel-slots');
+      const selHintEl  = document.getElementById('sel-hint');
+      const summaryEl  = document.getElementById('selection-summary');
 
-      function checkedForTruck(imei) {
-        return boxes().filter((b) => b.checked && b.dataset.imei === imei);
-      }
-      function allForTruck(imei) {
-        return boxes().filter((b) => b.dataset.imei === imei);
-      }
-      function checkedBoxes() { return boxes().filter((b) => b.checked); }
+      const boxes = () => Array.from(document.querySelectorAll('.trip-checkbox'));
+      const checkedBoxes = () => boxes().filter((b) => b.checked);
 
-      function updateCounter(imei) {
-        const el = document.querySelector('.truck-counter[data-imei="' + imei + '"]');
-        if (!el) return;
-        const n = checkedForTruck(imei).length;
-        el.textContent = n + ' of ' + MAX_PER_TRUCK + ' selected';
-        el.style.color = n >= MAX_PER_TRUCK ? '#a02525' : '#666';
+      function clearAll() {
+        boxes().forEach((b) => { b.checked = false; });
       }
 
-      function enforce() {
-        // If a truck somehow has more than MAX_PER_TRUCK checked (e.g. after
-        // a select-all), uncheck the overflow deterministically.
+      function setChecked(box) {
+        if (box.checked) return true;
+        const n = checkedBoxes().length;
+        if (n >= MAX_PER_PREVIEW) {
+          warnEl.textContent =
+            'You can select at most ' + MAX_PER_PREVIEW +
+            ' trips per preview. Uncheck something first.';
+          warnEl.style.display = 'block';
+          return false;
+        }
+        box.checked = true;
+        warnEl.style.display = 'none';
+        return true;
+      }
+
+      function tickPerTruck() {
         const byTruck = {};
-        for (const b of boxes()) {
-          if (!b.checked) continue;
-          (byTruck[b.dataset.imei] = byTruck[b.dataset.imei] || []).push(b);
+        boxes().forEach((b) => {
+          if (!b.checked) return;
+          byTruck[b.dataset.imei] = (byTruck[b.dataset.imei] || 0) + 1;
+        });
+        document.querySelectorAll('.truck-counter').forEach((el) => {
+          const n = byTruck[el.dataset.imei] || 0;
+          el.textContent = n + ' selected';
+          el.style.color = n > 0 ? '#1e5f9e' : '#666';
+        });
+      }
+
+      function updateSummary() {
+        const n = checkedBoxes().length;
+        const left = Math.max(0, MAX_PER_PREVIEW - n);
+        selCountEl.textContent = String(n);
+        selSlotsEl.textContent = '(' + left + ' slot' + (left === 1 ? '' : 's') + ' left)';
+        if (n === 0) {
+          summaryEl.style.background = '#eaf2fb';
+          summaryEl.style.borderColor = '#c7ddf3';
+          summaryEl.style.color = '#1e5f9e';
+          selHintEl.textContent = 'Click a checkbox, or use the quick-select buttons above.';
+          btn.disabled = true;
+        } else if (n >= MAX_PER_PREVIEW) {
+          summaryEl.style.background = '#fff7e6';
+          summaryEl.style.borderColor = '#f0d9a8';
+          summaryEl.style.color = '#8a5a00';
+          selHintEl.textContent = 'Cap reached. Uncheck to swap selections.';
+          btn.disabled = false;
+        } else {
+          summaryEl.style.background = '#eaf2fb';
+          summaryEl.style.borderColor = '#c7ddf3';
+          summaryEl.style.color = '#1e5f9e';
+          selHintEl.textContent = '';
+          btn.disabled = false;
         }
-        let overflow = false;
-        for (const imei in byTruck) {
-          const list = byTruck[imei];
-          if (list.length > MAX_PER_TRUCK) {
-            overflow = true;
-            // Keep the first MAX_PER_TRUCK; uncheck the rest.
-            for (let i = MAX_PER_TRUCK; i < list.length; i++) {
-              list[i].checked = false;
-            }
-          }
-        }
-        return overflow;
       }
 
       function sync() {
-        enforce();
         const sel = checkedBoxes();
         hidden.value = JSON.stringify(sel.map((b) => ({
           truck:  b.dataset.truck,
@@ -162,29 +242,65 @@
           start:  b.dataset.start,
           end:    b.dataset.end,
         })));
-
-        const imeis = new Set(boxes().map((b) => b.dataset.imei));
-        imeis.forEach(updateCounter);
-
-        if (sel.length === 0) {
-          warnEl.style.display = 'none';
-          btn.disabled = true;
-        } else {
-          warnEl.style.display = 'none';
-          btn.disabled = false;
-        }
+        tickPerTruck();
+        updateSummary();
       }
 
+      function selectFirstN(n) {
+        clearAll();
+        const all = boxes();
+        // Sort by start time ascending (data-start ISO-ish string sorts lexically).
+        all.sort((a, b) => (a.dataset.start < b.dataset.start ? -1 : 1));
+        let picked = 0;
+        for (const b of all) {
+          if (picked >= n) break;
+          b.checked = true;
+          picked++;
+        }
+        sync();
+      }
+
+      function selectNewestN(n) {
+        clearAll();
+        const all = boxes();
+        all.sort((a, b) => (a.dataset.start < b.dataset.start ? 1 : -1));
+        let picked = 0;
+        for (const b of all) {
+          if (picked >= n) break;
+          b.checked = true;
+          picked++;
+        }
+        sync();
+      }
+
+      function selectOnePerTruck(mode) {
+        // mode = 'first' | 'last'
+        clearAll();
+        const groups = {};
+        boxes().forEach((b) => {
+          (groups[b.dataset.imei] = groups[b.dataset.imei] || []).push(b);
+        });
+        let picked = 0;
+        for (const imei in groups) {
+          const list = groups[imei];
+          list.sort((a, b) => (a.dataset.start < b.dataset.start ? -1 : 1));
+          const target = (mode === 'first') ? list[0] : list[list.length - 1];
+          if (picked >= MAX_PER_PREVIEW) break;
+          target.checked = true;
+          picked++;
+        }
+        sync();
+      }
+
+      // ---------------- wiring ----------------
       document.querySelectorAll('.trip-checkbox').forEach((b) => {
         b.addEventListener('change', () => {
-          // If the user is trying to check a 6th for this truck, refuse.
-          if (b.checked && checkedForTruck(b.dataset.imei).length > MAX_PER_TRUCK) {
-            b.checked = false;
-            warnEl.textContent =
-              'You can select at most ' + MAX_PER_TRUCK +
-              ' trips per truck.';
-            warnEl.style.display = 'block';
-            return;
+          if (b.checked) {
+            if (!setChecked(b)) {
+              b.checked = false;
+              sync();
+              return;
+            }
           }
           sync();
         });
@@ -193,20 +309,42 @@
       document.querySelectorAll('.truck-select-all').forEach((btnEl) => {
         btnEl.addEventListener('click', function () {
           const imei = btnEl.dataset.truckImei;
-          const group = allForTruck(imei);
-          let chosen = 0;
-          group.forEach((b) => {
-            if (chosen < MAX_PER_TRUCK) { b.checked = true; chosen++; }
-            else b.checked = false;
-          });
+          const all = Array.from(document.querySelectorAll(
+            '.trip-checkbox[data-imei="' + imei + '"]'
+          ));
+          for (const b of all) {
+            if (checkedBoxes().length >= MAX_PER_PREVIEW) {
+              warnEl.textContent =
+                'Select-all would exceed the ' + MAX_PER_PREVIEW +
+                '-trip preview cap. Stopped at the limit.';
+              warnEl.style.display = 'block';
+              break;
+            }
+            b.checked = true;
+          }
           sync();
         });
       });
 
       document.querySelectorAll('.truck-clear-all').forEach((btnEl) => {
         btnEl.addEventListener('click', function () {
-          allForTruck(btnEl.dataset.truckImei).forEach((b) => { b.checked = false; });
+          const imei = btnEl.dataset.truckImei;
+          document.querySelectorAll(
+            '.trip-checkbox[data-imei="' + imei + '"]'
+          ).forEach((b) => { b.checked = false; });
           sync();
+        });
+      });
+
+      document.querySelectorAll('[data-quick]').forEach((btnEl) => {
+        btnEl.addEventListener('click', function () {
+          const q = btnEl.dataset.quick;
+          warnEl.style.display = 'none';
+          if (q === 'clear')             { clearAll(); sync(); return; }
+          if (q === 'first-100')         { selectFirstN(MAX_PER_PREVIEW); return; }
+          if (q === 'newest-100')        { selectNewestN(MAX_PER_PREVIEW); return; }
+          if (q === 'first-per-truck')   { selectOnePerTruck('first'); return; }
+          if (q === 'last-per-truck')    { selectOnePerTruck('last'); return; }
         });
       });
 
@@ -217,21 +355,16 @@
           alert('Please select at least one trip.');
           return;
         }
-        // Per-truck cap re-check (defensive — shouldn't trip because sync()
-        // enforces it, but a user could disable JS).
-        const byTruck = {};
-        for (const b of sel) {
-          byTruck[b.dataset.imei] = (byTruck[b.dataset.imei] || 0) + 1;
-        }
-        for (const imei in byTruck) {
-          if (byTruck[imei] > MAX_PER_TRUCK) {
-            e.preventDefault();
-            alert('A truck has more than ' + MAX_PER_TRUCK + ' trips selected.');
-            return;
-          }
+        if (sel.length > MAX_PER_PREVIEW) {
+          e.preventDefault();
+          alert('Too many trips selected (' + sel.length + '). The cap is '
+                + MAX_PER_PREVIEW + '.');
+          return;
         }
       });
 
+      // Initial state: nothing checked. sync() sets the counter to 0/N,
+      // disables Preview, and sets the hint text.
       sync();
     })();
   </script>

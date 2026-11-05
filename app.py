@@ -109,7 +109,10 @@ _preview_pool = ThreadPoolExecutor(max_workers=_PREVIEW_WORKERS,
 executor = ThreadPoolExecutor(max_workers=2)
 
 MAX_TRUCKS          = 200
-MAX_TRIPS_PER_TRUCK = 5
+# Per-truck trip cap is gone — the 100-per-preview cap is the only
+# safeguard now. MAX_TRIPS_PER_TRUCK is kept for log/grep compatibility
+# but is no longer enforced anywhere.
+MAX_TRIPS_PER_TRUCK   = None
 MAX_TRIPS_PER_PREVIEW = 100
 
 
@@ -219,16 +222,6 @@ def _parse_requested_trucks():
             "driver": (it.get("driver") or "").strip(),
         })
     return out
-
-
-def _group_trips_by_truck(selected: list[dict]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for s in selected:
-        imei = (s.get("imei") or "").strip()
-        if not imei:
-            continue
-        counts[imei] = counts.get(imei, 0) + 1
-    return counts
 
 
 def _unique_trucks_from_reports(reports: list[dict]) -> list[str]:
@@ -719,7 +712,7 @@ def trips_list():
         "trips.html",
         truck_groups=groups, total_trips=total, not_found=not_found,
         begin_str=begin_s, end_str=end_s, include_history=include_history,
-        max_per_truck=MAX_TRIPS_PER_TRUCK,
+        max_per_preview=MAX_TRIPS_PER_PREVIEW,
     )
 
 
@@ -738,20 +731,13 @@ def preview_start():
         flash("Select at least one trip.", "error")
         return redirect(url_for("index"))
 
-    per_truck = _group_trips_by_truck(selected)
-    for imei, n in per_truck.items():
-        if n > MAX_TRIPS_PER_TRUCK:
-            flash(f"At most {MAX_TRIPS_PER_TRUCK} trips per truck. "
-                  f"One truck has {n}.", "error")
-            return redirect(url_for("index"))
-
     if len(selected) > MAX_TRIPS_PER_PREVIEW:
         flash(f"At most {MAX_TRIPS_PER_PREVIEW} trips per preview. "
               f"You selected {len(selected)}. Please split into smaller "
               f"batches.", "error")
         return redirect(url_for("index"))
 
-    for s in selected: 
+    for s in selected:
         for key in ("imei", "truck", "start", "end"):
             if not (s.get(key) or "").strip():
                 flash("Invalid trip selection.", "error")
