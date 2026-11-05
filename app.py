@@ -34,6 +34,12 @@ from services.previews import (
 from services.ratelimit import status as ratelimit_status, is_rate_limited
 from services import report_jobs
 from services import job_worker
+from services.prefetch import prefetch_alarms_for_preview_lazy
+
+# Backward-compat alias: the name lived here before the move to
+# services/prefetch.py. Keep it so any stray reference still resolves.
+_prefetch_alarms_for_preview_lazy = prefetch_alarms_for_preview_lazy
+
 from report_analysis import YARD_LOOKBACK, history_window
 from services.supabase_client import admin_client
 
@@ -384,68 +390,6 @@ def _safe_compute_report(trip, include_history, alarms=None):
     )
 
 
-def _prefetch_alarms_for_preview_lazy(trips, include_history, *, max_workers=4):
-    from jimi import fetch_alarms_chunked
-
-    if not trips:
-        return {}, {}
-
-    per_imei_bounds = {}
-    for t in trips:
-        imei = t["imei"]
-        t_start = datetime.strptime(
-            t["start"], "%Y-%m-%d %H:%M:%S"
-        ).replace(tzinfo=timezone.utc)
-        t_end = datetime.strptime(
-            t["end"], "%Y-%m-%d %H:%M:%S"
-        ).replace(tzinfo=timezone.utc)
-        if imei not in per_imei_bounds:
-            per_imei_bounds[imei] = (t_start, t_end)
-        else:
-            b, e = per_imei_bounds[imei]
-            per_imei_bounds[imei] = (min(b, t_start), max(e, t_end))
-
-    # Safety cap: skip prefetch entirely for big multi-truck previews.
-    # 500 unique trucks × 3-month alarms ≈ 1 GB — that's what OOM'd the
-    # 512 MB Render container. Beyond 20 IMEIs each trip fetches its own
-    # alarms (slower per trip, but bounded memory).
-    MAX_PREFETCH_IMEIS = 20
-    if len(per_imei_bounds) > MAX_PREFETCH_IMEIS:
-        log.info(
-            "preview: %d unique trucks exceeds prefetch cap (%d) — "
-            "each trip will fetch its own alarms",
-            len(per_imei_bounds), MAX_PREFETCH_IMEIS,
-        )
-        return {}, {}
-
-    expanded = {}
-    for imei, (b, e) in per_imei_bounds.items():
-        if include_history:
-            hist_begin, hist_end = history_window(b)
-            expanded[imei] = (min(b, hist_begin), max(e, hist_end))
-        else:
-            expanded[imei] = (b - YARD_LOOKBACK, e)
-
-    def _fetch_one(imei):
-        b, e = expanded[imei]
-        try:
-            return imei, fetch_alarms_chunked(imei, b, e)
-        except RateLimitExceeded:
-            raise
-        except Exception as exc:
-            log.warning("preview: alarm prefetch failed for %s: %s", imei, exc)
-            return imei, []
-
-    if is_rate_limited():
-        raise RateLimitExceeded("rate limited (before alarm prefetch)")
-
-    with ThreadPoolExecutor(max_workers=max_workers,
-                            thread_name_prefix="preview-alarms") as pool:
-        results = list(pool.map(_fetch_one, list(expanded.keys())))
-
-    return dict(results), expanded
-
-
 def _run_preview_single(preview_id, trip, include_history):
     try:
         t_start = datetime.strptime(
@@ -604,9 +548,6 @@ def index():
 @app.route("/api/usage")
 @login_required
 def api_usage():
-    """Detailed usage view. Available to any signed-in user so anyone can
-    check whether they're burning through the quota, but the /admin/usage
-    page (where the reset button lives) is super-admin-only."""
     s = ratelimit_status()
     calls = s.get("calls", {})
     total = calls.get("total", 0)
@@ -879,13 +820,7 @@ def preview_job_show(job_id):
     pending = total - done - failed
     pct = int(100 * (done + failed) / total) if total else 100
 
-    # Whether to show the "Export N completed trips" button. Show it any
-    # time there's at least one done item — including while the job is
-    # still running, so the user can grab work-in-progress if they need
-    # to bail out.
     can_partial_export = done > 0
-    # Whether to show the plain "Export all N trips" button. Only when
-    # the whole job finished cleanly.
     can_full_export = (job["status"] == "done" and done > 0)
 
     return render_template(
@@ -1141,21 +1076,28 @@ def export():
     return redirect(url_for("reports"))
 
 
-@app.route("/export/job", methods=["POST"])
-@login_required
-def export_job_start():
-    """Start a bulk export from a preview job.
+# ---------------------------------------------------------------------------
+# Shared export-job starter
+#
+# Both /export/job (the POST that kicks off a bulk export) and
+# /preview/job/<id>/export-partial (the "Export N completed trips"
+# button on the preview page) call `_do_export_job_start(...)`.
+#
+# The previous code had `preview_job_export_partial` re-enter
+# `export_job_start()` via `app.test_request_context(...)`. That creates
+# a fresh request context with an EMPTY session — no `session_id`, no
+# `user_id` — so `@login_required` on `export_job_start` bounced the user
+# to /login. Extracting the body into a helper that reads from the REAL
+# current request fixes that.
+# ---------------------------------------------------------------------------
 
-    `mode` (form field, optional):
-      "full"    — default. Requires job.status == 'done'. Exports every
-                  done item, exactly as before.
-      "partial" — allowed regardless of job status (running / cancelled /
-                  failed / done). Exports whatever items are done *now*.
-                  Filename gets a "(N of M)" suffix so partial workbooks
-                  are distinguishable from full ones.
+def _do_export_job_start(preview_job_id: str, mode: str):
+    """Body shared by /export/job and /preview/job/<id>/export-partial.
+
+    Assumes the caller has already resolved `preview_job_id` and `mode`
+    from the current request (form field or URL path). Runs in the
+    current request context, so `session` is the real session.
     """
-    preview_job_id = (request.form.get("preview_job_id") or "").strip()
-    mode = (request.form.get("mode") or "full").strip().lower()
     if mode not in ("full", "partial"):
         mode = "full"
 
@@ -1193,8 +1135,6 @@ def export_job_start():
     bulk_label = _bulk_truck_label(done_reports)
     safe_label = _bulk_safe_filename_label(done_reports)
 
-    # Filename: append "(N of M)" when exporting less than the full set,
-    # so nobody confuses a partial workbook with a complete one.
     suffix = ""
     if is_partial:
         suffix = f" ({len(done_items)} of {total_items})"
@@ -1275,14 +1215,32 @@ def export_job_start():
 
     return redirect(url_for("export_job_show", job_id=export_job_id))
 
+
+@app.route("/export/job", methods=["POST"])
+@login_required
+def export_job_start():
+    """Start a bulk export from a preview job.
+
+    `mode` (form field, optional):
+      "full"    — default. Requires job.status == 'done'. Exports every
+                  done item, exactly as before.
+      "partial" — allowed regardless of job status (running / cancelled /
+                  failed / done). Exports whatever items are done *now*.
+                  Filename gets a "(N of M)" suffix.
+    """
+    preview_job_id = (request.form.get("preview_job_id") or "").strip()
+    mode = (request.form.get("mode") or "full").strip().lower()
+    return _do_export_job_start(preview_job_id, mode)
+
+
 @app.route("/preview/job/<job_id>/export-partial", methods=["POST"])
 @login_required
 def preview_job_export_partial(job_id):
     """Convenience route for the "Export N completed trips" button.
 
-    Just re-POSTs to `/export/job` with `mode=partial`. Having a
-    separate URL makes the button a plain HTML form with no JS
-    shim, and it's easy to find in the audit log.
+    Delegates to `_do_export_job_start` directly (NOT via a fresh
+    `test_request_context`, which would drop the session and bounce the
+    user to /login).
     """
     job = report_jobs.get_job(job_id)
     if not job:
@@ -1293,19 +1251,13 @@ def preview_job_export_partial(job_id):
             and session.get("role") not in ("admin", "super_admin")):
         abort(403)
 
-    done = (report_jobs.get_job_items(job_id, statuses=["done"]))
+    done = report_jobs.get_job_items(job_id, statuses=["done"])
     done = [it for it in done if it.get("computed")]
     if not done:
         flash("No completed trips yet — nothing to export.", "info")
         return redirect(url_for("preview_job_show", job_id=job_id))
 
-    # Rebuild the form body and delegate to export_job_start.
-    with app.test_request_context(
-        "/export/job",
-        method="POST",
-        data={"preview_job_id": job_id, "mode": "partial"},
-    ):
-        return export_job_start()
+    return _do_export_job_start(job_id, "partial")
 
 
 @app.route("/export/job/<job_id>")

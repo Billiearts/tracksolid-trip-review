@@ -14,6 +14,13 @@ Design:
     whose worker died.
 
   * Every 30 s the job's `heartbeat_at` is bumped.
+
+Import note:
+  `prefetch_alarms_for_preview_lazy` now lives in `services/prefetch.py`,
+  NOT in `app.py`. Importing it from `app` used to create a circular
+  dependency (app imports job_worker, job_worker imports app) that on
+  Render's gunicorn post_fork could resolve to a partially-initialized
+  module. Import from `services.prefetch` directly.
 """
 from __future__ import annotations
 
@@ -27,6 +34,7 @@ from datetime import datetime, timezone
 from jimi import RateLimitExceeded
 from report import compute_report
 from services import report_jobs
+from services.prefetch import prefetch_alarms_for_preview_lazy
 from services.ratelimit import is_rate_limited
 from services.previews import (
     mark_ready_reports, mark_failed as mark_preview_failed,
@@ -119,9 +127,6 @@ def _run_preview_job(job: dict) -> None:
         except Exception as exc:
             log.debug("heartbeat failed: %s", exc)
 
-    from app import (
-        _prefetch_alarms_for_preview_lazy,
-    )
     items = report_jobs.get_job_items(job_id)
     trips = [{
         "imei":  it["imei"],
@@ -136,7 +141,7 @@ def _run_preview_job(job: dict) -> None:
     if trips:
         try:
             prefetched_alarms, prefetch_bounds = (
-                _prefetch_alarms_for_preview_lazy(
+                prefetch_alarms_for_preview_lazy(
                     trips, include_history,
                     max_workers=JOB_WORKERS,
                 )

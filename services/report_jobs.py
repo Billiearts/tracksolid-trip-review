@@ -17,7 +17,8 @@ Public API:
     get_job(job_id)                 -> dict | None
     get_job_items(job_id)           -> list[dict]
     get_job_item(job_id, item_id)   -> dict | None
-    next_queued_items(job_id, n)    -> list[dict]      # for the worker
+    next_queued_items_for_job(job_id, n) -> list[dict]      # for the worker
+    claim_next_queued_job()         -> dict | None
     mark_job_running(job_id)
     mark_job_done(job_id)
     mark_job_failed(job_id, error)
@@ -27,7 +28,7 @@ Public API:
     mark_item_done(item_id, computed)
     mark_item_failed(item_id, error)
     requeue_failed_items(job_id)                     -> int
-    requeue_stale_running(max_stale_minutes=5)        # startup recovery
+    requeue_stale_running(max_stale_minutes=5)       # startup recovery
     pending_items_for_user(user_id)                  -> int
 """
 from __future__ import annotations
@@ -44,18 +45,6 @@ log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # JSON serialisation helpers
-#
-# `compute_report()` returns a dict that contains raw `datetime` objects
-# (query_begin, query_end, trip_start, trip_end, generated_at, plus
-# datetimes nested inside stops.intervals, yard.visit, history windows,
-# etc.). The Supabase/postgrest client hands its payload straight to
-# httpx, which calls json.dumps() — and json.dumps() cannot serialise a
-# datetime. The result was a `TypeError: Object of type datetime is not
-# JSON serializable` on every mark_item_done(), which the worker catches
-# and logs, leaving done_items stuck at 0 and the preview page empty.
-#
-# `_to_jsonable` / `_from_jsonable` are the same pair used in app.py for
-# the single-trip / bulk export path. Keep them in sync.
 # ---------------------------------------------------------------------------
 
 def _to_jsonable(obj):
@@ -137,11 +126,6 @@ def _row_to_item(row: dict) -> dict:
     }
 
 
-# Columns fetched by get_job_items / next_queued_items_for_job. Kept as a
-# constant so we can't forget a column again: the previous version omitted
-# `computed_json`, which made every item's `computed` field None even for
-# `status='done'` rows — that's what caused "No completed trips to export"
-# every time the user hit "Export all N trips".
 _ITEM_COLUMNS = (
     "id,job_id,imei,truck_id,driver_name,trip_start,trip_end,"
     "status,error,attempts,started_at,finished_at,computed_json"
@@ -156,20 +140,10 @@ def create_preview_job(*, trips: list[dict],
                        include_history: bool,
                        created_by: str | None,
                        created_by_email: str | None) -> str:
-    """Create a preview job and all of its items in one transaction.
-
-    `trips` is a list of {imei, truck, driver, start, end} dicts from the
-    /preview form. The items are inserted in a single Supabase call so
-    partial failure can't leave a job with a wrong total_items count.
-
-    Returns the job id.
-    """
     if not trips:
         raise ValueError("create_preview_job: trips list is empty")
 
     client = admin_client()
-    now = _now_iso()
-
     job_resp = client.table("report_jobs").insert({
         "created_by":       created_by,
         "created_by_email": created_by_email,
@@ -183,7 +157,6 @@ def create_preview_job(*, trips: list[dict],
         raise RuntimeError("create_preview_job: no row returned")
     job_id = job_rows[0]["id"]
 
-    # Insert items in chunks so we don't blow the request size for 400 trips.
     item_rows = []
     for t in trips:
         item_rows.append({
@@ -210,20 +183,14 @@ def create_export_job(*, preview_job_id: str,
                       reports_row_id: str,
                       created_by: str | None,
                       created_by_email: str | None) -> str:
-    """Create an export job that will build one workbook from every trip
-    in the (completed) preview job `preview_job_id`.
-
-    `reports_row_id` is the row in `reports` that will hold the exported
-    file. The export worker fills it in when done.
-    """
     client = admin_client()
     resp = client.table("report_jobs").insert({
         "created_by":       created_by,
         "created_by_email": created_by_email,
         "kind":             "export",
         "status":           "queued",
-        "include_history":  False,     # irrelevant for export, always false
-        "total_items":      1,         # one item per export job (the whole file)
+        "include_history":  False,
+        "total_items":      1,
         "reports_row_id":   reports_row_id,
     }).execute()
     rows = resp.data or []
@@ -253,12 +220,6 @@ def get_job(job_id: str) -> dict | None:
 
 def get_job_items(job_id: str,
                   statuses: list[str] | None = None) -> list[dict]:
-    """Return every item for a job, optionally filtered by status.
-
-    Selects `computed_json` so callers that need the report payload
-    (notably `export_job_start`) actually get it. Omitting it here is
-    what made `it["computed"]` None for every 'done' row.
-    """
     client = admin_client()
     q = (client.table("report_job_items")
          .select(_ITEM_COLUMNS)
@@ -291,7 +252,6 @@ def get_job_item(job_id: str, item_id: str) -> dict | None:
 
 
 def pending_items_for_user(user_id: str) -> int:
-    """Count queued/running preview jobs for a user. Used by the nav badge."""
     if not user_id:
         return 0
     client = admin_client()
@@ -355,12 +315,6 @@ def touch_job_heartbeat(job_id: str) -> None:
 def bump_job_counters(job_id: str,
                       *, done_delta: int = 0,
                       failed_delta: int = 0) -> None:
-    """Increment done_items / failed_items atomically.
-
-    Postgres doesn't have a single-call increment via the Supabase REST
-    client, so we fetch + update. Because only one worker owns a job at
-    a time (Option B), there's no race.
-    """
     client = admin_client()
     resp = (client.table("report_jobs")
             .select("done_items,failed_items")
@@ -412,13 +366,6 @@ def mark_item_failed(item_id: str, error: str) -> None:
 
 
 def requeue_failed_items(job_id: str) -> int:
-    """Reset every failed item in a job back to 'queued' and reopen the
-    parent job so the worker picks it up again.
-
-    Replaces the inline admin_client() juggling that used to live in the
-    /preview/job/<id>/retry route (and which raised NameError when the
-    import drifted). Returns the number of items re-queued.
-    """
     client = admin_client()
 
     resp = (client.table("report_job_items")
@@ -450,37 +397,109 @@ def requeue_failed_items(job_id: str) -> int:
 # Worker helpers
 # ---------------------------------------------------------------------------
 
+# Transient network errors we retry inside claim_next_queued_job().
+_TRANSIENT_MARKERS = (
+    "WinError 10035",
+    "would block",
+    "ConnectionResetError",
+    "handshake operation timed out",
+    "Connection aborted",
+    "RemoteProtocolError",
+    "ReadTimeout",
+    "ConnectTimeout",
+    "Server disconnected",
+)
+
+
+def _is_transient(exc: Exception) -> bool:
+    msg = str(exc)
+    return any(marker in msg for marker in _TRANSIENT_MARKERS)
+
+
 def claim_next_queued_job() -> dict | None:
     """Atomically claim the oldest queued job.
 
-    Retries up to 3 times on transient socket errors (WinError 10035,
-    HTTPS handshake timeout, connection reset) — these can still happen
-    even with the thread-local Supabase client under sustained load.
-    Other errors fall through.
+    Returns the full job dict (same shape as get_job()) after flipping
+    its status to 'running', or None if there's nothing to claim.
+
+    The claim is a conditional UPDATE: we select the oldest queued job id,
+    then UPDATE ... SET status='running' WHERE id = <id> AND status =
+    'queued' AND RETURNING *. If another worker beat us to it, the
+    UPDATE matches zero rows and we loop and try the next one. This is
+    safe under multiple workers without a separate lock table.
+
+    Retries transient socket errors up to 3 times.
     """
     client = admin_client()
-    for _attempt in range(3):
+
+    for attempt in range(3):
+        # --- 1. Find the oldest queued job ---
         try:
             resp = (client.table("report_jobs")
-                    .select("*")
+                    .select("id")
                     .eq("status", "queued")
                     .order("created_at", desc=False)
                     .limit(1)
                     .execute())
         except Exception as exc:
-            msg = str(exc)
-            if ("WinError 10035" in msg
-                    or "would block" in msg
-                    or "ConnectionResetError" in msg
-                    or "handshake operation timed out" in msg
-                    or "Connection aborted" in msg):
-                time.sleep(0.5)
+            if _is_transient(exc) and attempt < 2:
+                log.debug(
+                    "claim_next_queued_job: select transient error "
+                    "(attempt %d/3): %s", attempt + 1, exc,
+                )
+                time.sleep(0.5 * (attempt + 1))
                 continue
             log.warning("claim_next_queued_job: select failed: %s", exc)
             return None
+
         rows = resp.data or []
         if not rows:
             return None
+
+        candidate_id = rows[0]["id"]
+
+        # --- 2. Claim it: conditional UPDATE ... WHERE status='queued' ---
+        #    If it returns a row, we own it. If it returns nothing, another
+        #    worker grabbed it between our select and update — loop and
+        #    try again.
+        try:
+            claim_resp = (client.table("report_jobs")
+                          .update({
+                              "status":       "running",
+                              "started_at":   _now_iso(),
+                              "heartbeat_at": _now_iso(),
+                          })
+                          .eq("id", candidate_id)
+                          .eq("status", "queued")
+                          .execute())
+        except Exception as exc:
+            if _is_transient(exc) and attempt < 2:
+                log.debug(
+                    "claim_next_queued_job: update transient error "
+                    "(attempt %d/3): %s", attempt + 1, exc,
+                )
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            log.warning("claim_next_queued_job: claim update failed: %s", exc)
+            return None
+
+        claimed_rows = claim_resp.data or []
+        if not claimed_rows:
+            # Lost the race — someone else claimed it. Try the next one.
+            log.debug(
+                "claim_next_queued_job: job %s claimed by another worker",
+                candidate_id,
+            )
+            continue
+
+        job = _row_to_job(claimed_rows[0])
+        log.info(
+            "worker: claimed job %s (kind=%s, items=%d)",
+            job["id"], job["kind"], job["total_items"],
+        )
+        return job
+
+    return None
 
 
 def next_queued_items_for_job(job_id: str, n: int) -> list[dict]:
@@ -503,15 +522,11 @@ def next_queued_items_for_job(job_id: str, n: int) -> list[dict]:
 def requeue_stale_running(max_stale_minutes: int = 5) -> int:
     """On startup: any item that's been `running` for longer than the
     heartbeat window was orphaned by a crashed worker. Re-queue it.
-
-    Also re-queues the parent job (status='running') if all of its items
-    are queued again — otherwise it'd sit in 'running' forever.
     """
     client = admin_client()
     cutoff = (datetime.now(timezone.utc)
               - timedelta(minutes=max_stale_minutes)).isoformat()
     try:
-        # Items stuck in 'running' with a start time before the cutoff.
         resp = (client.table("report_job_items")
                 .select("id,job_id")
                 .eq("status", "running")
@@ -529,7 +544,6 @@ def requeue_stale_running(max_stale_minutes: int = 5) -> int:
          .in_("id", item_ids)
          .execute())
 
-        # Reopen parent jobs.
         (client.table("report_jobs")
          .update({"status": "queued", "started_at": None})
          .in_("id", job_ids)
