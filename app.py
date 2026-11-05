@@ -104,6 +104,7 @@ executor = ThreadPoolExecutor(max_workers=2)
 
 MAX_TRUCKS          = 200
 MAX_TRIPS_PER_TRUCK = 5
+MAX_TRIPS_PER_PREVIEW = 100
 
 
 from blueprints.auth       import bp as auth_bp
@@ -403,6 +404,19 @@ def _prefetch_alarms_for_preview_lazy(trips, include_history, *, max_workers=4):
         else:
             b, e = per_imei_bounds[imei]
             per_imei_bounds[imei] = (min(b, t_start), max(e, t_end))
+
+    # Safety cap: skip prefetch entirely for big multi-truck previews.
+    # 500 unique trucks × 3-month alarms ≈ 1 GB — that's what OOM'd the
+    # 512 MB Render container. Beyond 20 IMEIs each trip fetches its own
+    # alarms (slower per trip, but bounded memory).
+    MAX_PREFETCH_IMEIS = 20
+    if len(per_imei_bounds) > MAX_PREFETCH_IMEIS:
+        log.info(
+            "preview: %d unique trucks exceeds prefetch cap (%d) — "
+            "each trip will fetch its own alarms",
+            len(per_imei_bounds), MAX_PREFETCH_IMEIS,
+        )
+        return {}, {}
 
     expanded = {}
     for imei, (b, e) in per_imei_bounds.items():
@@ -796,7 +810,7 @@ def preview_start():
               f"batches.", "error")
         return redirect(url_for("index"))
 
-    for s in selected:
+    for s in selected: 
         for key in ("imei", "truck", "start", "end"):
             if not (s.get(key) or "").strip():
                 flash("Invalid trip selection.", "error")
@@ -865,13 +879,25 @@ def preview_job_show(job_id):
     pending = total - done - failed
     pct = int(100 * (done + failed) / total) if total else 100
 
+    # Whether to show the "Export N completed trips" button. Show it any
+    # time there's at least one done item — including while the job is
+    # still running, so the user can grab work-in-progress if they need
+    # to bail out.
+    can_partial_export = done > 0
+    # Whether to show the plain "Export all N trips" button. Only when
+    # the whole job finished cleanly.
+    can_full_export = (job["status"] == "done" and done > 0)
+
     return render_template(
         "preview_job.html",
         job=job,
         items=items,
         total=total, done=done, failed=failed, pending=pending, pct=pct,
         is_finished=(job["status"] in ("done", "failed", "cancelled")),
-        can_export=(job["status"] == "done" and done > 0),
+        can_export=can_full_export,
+        can_partial_export=can_partial_export,
+        done_count=done,
+        total_count=total,
     )
 
 
@@ -1118,7 +1144,21 @@ def export():
 @app.route("/export/job", methods=["POST"])
 @login_required
 def export_job_start():
+    """Start a bulk export from a preview job.
+
+    `mode` (form field, optional):
+      "full"    — default. Requires job.status == 'done'. Exports every
+                  done item, exactly as before.
+      "partial" — allowed regardless of job status (running / cancelled /
+                  failed / done). Exports whatever items are done *now*.
+                  Filename gets a "(N of M)" suffix so partial workbooks
+                  are distinguishable from full ones.
+    """
     preview_job_id = (request.form.get("preview_job_id") or "").strip()
+    mode = (request.form.get("mode") or "full").strip().lower()
+    if mode not in ("full", "partial"):
+        mode = "full"
+
     preview_job = report_jobs.get_job(preview_job_id)
     if not preview_job or preview_job["kind"] != "preview":
         flash("Preview job not found.", "error")
@@ -1127,24 +1167,42 @@ def export_job_start():
             and preview_job["created_by"] != session.get("user_id")
             and session.get("role") not in ("admin", "super_admin")):
         abort(403)
-    if preview_job["status"] != "done":
-        flash("Preview is not finished yet.", "error")
+
+    if mode == "full" and preview_job["status"] != "done":
+        flash("Preview is not finished yet. Wait for it to finish, or use "
+              "\"Export completed trips\" to export what's done so far.",
+              "error")
         return redirect(url_for("preview_job_show", job_id=preview_job_id))
 
     done_items = report_jobs.get_job_items(preview_job_id, statuses=["done"])
     done_items = [it for it in done_items if it.get("computed")]
 
     if not done_items:
-        flash("No completed trips to export. Try retrying the failed "
-              "items, or run the preview again.", "error")
+        if mode == "partial":
+            flash("No completed trips yet — nothing to export.", "info")
+        else:
+            flash("No completed trips to export. Try retrying the failed "
+                  "items, or run the preview again.", "error")
         return redirect(url_for("preview_job_show", job_id=preview_job_id))
+
+    total_items = preview_job["total_items"]
+    is_partial = (mode == "partial"
+                  or len(done_items) < total_items)
 
     done_reports = [it["computed"] for it in done_items]
     bulk_label = _bulk_truck_label(done_reports)
     safe_label = _bulk_safe_filename_label(done_reports)
+
+    # Filename: append "(N of M)" when exporting less than the full set,
+    # so nobody confuses a partial workbook with a complete one.
+    suffix = ""
+    if is_partial:
+        suffix = f" ({len(done_items)} of {total_items})"
+
     run_stamp  = datetime.now(timezone.utc).strftime("%H%M%S")
     today      = datetime.now(timezone.utc).date()
-    filename   = f"Trip Review - {safe_label} - {today} - {run_stamp}.xlsx"
+    filename   = (f"Trip Review - {safe_label}{suffix} - "
+                  f"{today} - {run_stamp}.xlsx")
 
     def _as_dt(s):
         if not s:
@@ -1167,7 +1225,10 @@ def export_job_start():
             trip_start=job_trip_start, trip_end=job_trip_end,
             created_by=session.get("user_id"),
             created_by_email=session.get("email"),
-            manual={"preview_job_id": preview_job_id},
+            manual={"preview_job_id": preview_job_id,
+                    "export_mode": mode,
+                    "trips_exported": len(done_items),
+                    "trips_total": total_items},
         )
     except Exception as exc:
         log.exception("could not create reports row for export")
@@ -1186,10 +1247,65 @@ def export_job_start():
         created_by_email=session.get("email"),
     )
 
-    audit.record("export.job.start", target=preview_job_id,
-                 detail=f"export job {export_job_id}, "
-                        f"{len(done_items)} trips, filename={filename}")
+    audit.record(
+        "export.job.start",
+        target=preview_job_id,
+        severity="notice" if not is_partial else "warning",
+        detail=(f"export job {export_job_id}, mode={mode}, "
+                f"{len(done_items)}/{total_items} trips, "
+                f"filename={filename}"),
+        meta={"export_job_id": export_job_id,
+              "preview_job_id": preview_job_id,
+              "mode": mode,
+              "trips_exported": len(done_items),
+              "trips_total": total_items,
+              "is_partial": is_partial},
+    )
+
+    if is_partial:
+        flash(
+            f"Partial export queued: {len(done_items)} of {total_items} "
+            f"trip(s). The workbook will be named with \"({len(done_items)} "
+            f"of {total_items})\". Download from the Reports page.",
+            "success",
+        )
+    else:
+        flash(f"Export queued: {len(done_items)} trip(s). "
+              f"Download from the Reports page.", "success")
+
     return redirect(url_for("export_job_show", job_id=export_job_id))
+
+@app.route("/preview/job/<job_id>/export-partial", methods=["POST"])
+@login_required
+def preview_job_export_partial(job_id):
+    """Convenience route for the "Export N completed trips" button.
+
+    Just re-POSTs to `/export/job` with `mode=partial`. Having a
+    separate URL makes the button a plain HTML form with no JS
+    shim, and it's easy to find in the audit log.
+    """
+    job = report_jobs.get_job(job_id)
+    if not job:
+        flash("Preview job not found.", "error")
+        return redirect(url_for("index"))
+    if (job["created_by"]
+            and job["created_by"] != session.get("user_id")
+            and session.get("role") not in ("admin", "super_admin")):
+        abort(403)
+
+    done = (report_jobs.get_job_items(job_id, statuses=["done"]))
+    done = [it for it in done if it.get("computed")]
+    if not done:
+        flash("No completed trips yet — nothing to export.", "info")
+        return redirect(url_for("preview_job_show", job_id=job_id))
+
+    # Rebuild the form body and delegate to export_job_start.
+    with app.test_request_context(
+        "/export/job",
+        method="POST",
+        data={"preview_job_id": job_id, "mode": "partial"},
+    ):
+        return export_job_start()
 
 
 @app.route("/export/job/<job_id>")
@@ -1548,20 +1664,7 @@ def download(filename):
 
 # ---------------------------------------------------------------------------
 # Worker startup
-# ---------------------------------------------------------------------------
-#
-# On Windows + Flask debug mode, `WERKZEUG_RUN_MAIN=true` marks the
-# reloader child (the process that actually serves requests). Without
-# this check, the parent also starts the worker, giving 2× threads
-# against the shared Supabase client — which caused the `WinError 10035`
-# socket errors AND the "job never starts" behaviour (multiple workers
-# racing on claim_next_queued_job).
-#
-# Note: the standalone `try: job_worker.start()` block that used to sit
-# here has been removed. It was starting a THIRD worker inside the
-# reloader child, on top of the two started by the branches below.
-# That's the "three job worker threads racing for the same job" bug
-# visible in the startup log (11:37:44 + 11:37:50 + __main__ at 11:37:50).
+# --------------------------------------------------------------------------
 
 def _start_worker():
     try:

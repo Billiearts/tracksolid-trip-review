@@ -16,7 +16,7 @@
     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
       {% if job.status in ('queued', 'running') %}
         <form method="post" action="{{ url_for('preview_job_cancel', job_id=job.id) }}"
-              onsubmit="return confirm('Cancel this preview? Completed trips are kept.');"
+              onsubmit="return confirm('Cancel this preview? Completed trips are kept and can still be exported.');"
               style="display:inline;">
           <button type="submit" style="background:#a02525;">Cancel</button>
         </form>
@@ -26,10 +26,29 @@
           <button type="submit" style="background:#8a5a00;">Retry {{ job.failed_items }} failed</button>
         </form>
       {% endif %}
+
+      {# Partial export: show whenever at least one trip is done. #}
+      {% if can_partial_export %}
+        <form method="post"
+              action="{{ url_for('preview_job_export_partial', job_id=job.id) }}"
+              style="display:inline;">
+          <button type="submit"
+                  style="background:{% if can_export %}#1e5f9e{% else %}#2b8a3e{% endif %};">
+            Export {{ done_count }} completed trip{{ 's' if done_count != 1 else '' }}
+            {% if done_count < total_count %}(of {{ total_count }}){% endif %}
+            →
+          </button>
+        </form>
+      {% endif %}
+
+      {# Full export: only when the job completed with all done. #}
       {% if can_export %}
         <form method="post" action="{{ url_for('export_job_start') }}" style="display:inline;">
           <input type="hidden" name="preview_job_id" value="{{ job.id }}">
-          <button type="submit" style="background:#2b8a3e;">Export all {{ done }} trips →</button>
+          <input type="hidden" name="mode" value="full">
+          <button type="submit" style="background:#2b8a3e;">
+            Export all {{ done }} trips →
+          </button>
         </form>
       {% endif %}
     </div>
@@ -43,6 +62,7 @@
       <span>
         <strong id="count-done">{{ done }}</strong> / {{ total }} done
         {% if failed %}<span style="color:#a02525;">· <span id="count-failed">{{ failed }}</span> failed</span>{% endif %}
+        {% if pending %}<span style="color:#666;">· <span id="count-pending">{{ pending }}</span> pending</span>{% endif %}
       </span>
       <span id="job-status-line">
         {% if job.status == 'queued' %}Queued…
@@ -54,6 +74,15 @@
       </span>
     </div>
   </div>
+
+  {% if can_partial_export and not can_export %}
+    <div class="flash info" style="font-size: 0.82rem;">
+      <strong>{{ done_count }} of {{ total_count }} trips are ready.</strong>
+      You can export them now — the workbook will be named with
+      <code>({{ done_count }} of {{ total_count }})</code> so it's
+      distinguishable from a full export.
+    </div>
+  {% endif %}
 
   <div class="filter-bar" style="margin-bottom: 0.75rem;">
     <div class="field-inline">
@@ -119,6 +148,7 @@
   const tbody = document.getElementById('items-tbody');
   const countDone = document.getElementById('count-done');
   const countFailed = document.getElementById('count-failed');
+  const countPending = document.getElementById('count-pending');
   const bar = document.getElementById('job-progress-bar');
   const statusLine = document.getElementById('job-status-line');
   const filterSelect = document.getElementById('item-filter');
@@ -156,22 +186,18 @@
 
       countDone.textContent = job.done_items;
       if (countFailed) countFailed.textContent = job.failed_items;
+      if (countPending) {
+        const pending = job.total_items - job.done_items - job.failed_items;
+        countPending.textContent = pending > 0 ? pending : 0;
+      }
       const pct = job.total_items
         ? Math.floor(100 * (job.done_items + job.failed_items) / job.total_items)
         : 100;
       bar.style.width = pct + '%';
 
-      if (job.status === 'done') {
-        statusLine.textContent = '✓ Complete';
+      if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') {
+        // Reload once so the server-rendered buttons reflect the new counts.
         setTimeout(() => location.reload(), 500);
-        return;
-      }
-      if (job.status === 'failed') {
-        statusLine.textContent = '✗ Failed: ' + (job.error || 'unknown');
-        return;
-      }
-      if (job.status === 'cancelled') {
-        statusLine.textContent = 'Cancelled';
         return;
       }
 

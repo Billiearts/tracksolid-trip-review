@@ -33,6 +33,7 @@ Public API:
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from services.supabase_client import admin_client
@@ -452,10 +453,10 @@ def requeue_failed_items(job_id: str) -> int:
 def claim_next_queued_job() -> dict | None:
     """Atomically claim the oldest queued job.
 
-    Retries up to 3 times on transient WinError 10035 socket errors, which
-    can still happen even with the thread-local Supabase client when
-    several threads burst the API simultaneously. Other errors fall
-    straight through.
+    Retries up to 3 times on transient socket errors (WinError 10035,
+    HTTPS handshake timeout, connection reset) — these can still happen
+    even with the thread-local Supabase client under sustained load.
+    Other errors fall through.
     """
     client = admin_client()
     for _attempt in range(3):
@@ -470,7 +471,9 @@ def claim_next_queued_job() -> dict | None:
             msg = str(exc)
             if ("WinError 10035" in msg
                     or "would block" in msg
-                    or "ConnectionResetError" in msg):
+                    or "ConnectionResetError" in msg
+                    or "handshake operation timed out" in msg
+                    or "Connection aborted" in msg):
                 time.sleep(0.5)
                 continue
             log.warning("claim_next_queued_job: select failed: %s", exc)
@@ -478,23 +481,6 @@ def claim_next_queued_job() -> dict | None:
         rows = resp.data or []
         if not rows:
             return None
-        job = rows[0]
-        try:
-            upd = (client.table("report_jobs")
-                   .update({
-                       "status":       "running",
-                       "started_at":   _now_iso(),
-                       "heartbeat_at": _now_iso(),
-                   })
-                   .eq("id", job["id"])
-                   .eq("status", "queued")
-                   .execute())
-        except Exception as exc:
-            log.warning("claim_next_queued_job: update failed: %s", exc)
-            return None
-        if upd.data:
-            return _row_to_job(upd.data[0])
-    return None
 
 
 def next_queued_items_for_job(job_id: str, n: int) -> list[dict]:

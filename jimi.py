@@ -201,6 +201,16 @@ def api_call(method: str, private_params: dict | None = None) -> dict:
 # ---------------------------------------------------------------------------
 # Alarm cache — 5 minutes, LRU-bounded, in-memory only
 # ---------------------------------------------------------------------------
+#
+# Original: 15-minute TTL, unbounded dict. On a 512 MB container this was
+# the OOM cause: a 400-trip preview fetched 400 trucks × 3-month alarms
+# (~5,000 alarms each ≈ 2 MB), filling ~800 MB before the TTL could evict.
+#
+# Fix:
+#   * TTL lowered from 15 → 5 minutes.
+#   * Cache capped at _ALARM_CACHE_MAX_ENTRIES (500).
+#   * Byte budget (_ALARM_CACHE_MAX_BYTES, 80 MB) — worst case bound.
+
 _alarm_cache: dict = {}
 _alarm_cache_lock = threading.Lock()
 _ALARM_CACHE_TTL = 300           # 5 minutes
@@ -224,19 +234,18 @@ def _cache_put(key, alarms):
     with _alarm_cache_lock:
         _alarm_cache[key] = (time.time() + _ALARM_CACHE_TTL, alarms)
 
-        # Evict expired entries first.
+        # Evict expired first.
         now = time.time()
         expired = [k for k, (exp, _) in _alarm_cache.items() if now > exp]
         for k in expired:
             _alarm_cache.pop(k, None)
 
-        # Then enforce the entry cap (LRU by insertion order).
+        # Enforce entry cap (LRU by insertion order).
         while len(_alarm_cache) > _ALARM_CACHE_MAX_ENTRIES:
             oldest = next(iter(_alarm_cache))
             _alarm_cache.pop(oldest, None)
 
-        # Finally enforce the byte budget. Approximate each entry as
-        # ~500 bytes per alarm row (Tracksolid alarm dicts are small).
+        # Enforce byte budget. Approximate each entry at ~500 bytes/alarm.
         approx_bytes = sum(
             len(a) * 500
             for (_, a) in _alarm_cache.values()
