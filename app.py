@@ -594,11 +594,10 @@ def api_usage():
     check whether they're burning through the quota, but the /admin/usage
     page (where the reset button lives) is super-admin-only."""
     s = ratelimit_status()
-    # Add a friendly summary that the nav / usage page can render directly.
     calls = s.get("calls", {})
     total = calls.get("total", 0)
     location = calls.get("location_calls", 0)
-    quota = calls.get("quota_total", 8640)
+    quota = calls.get("quota_total", 86400)
     quota_loc = calls.get("quota_location", 86400)
 
     def level(percent: float) -> str:
@@ -790,6 +789,12 @@ def preview_start():
             flash(f"At most {MAX_TRIPS_PER_TRUCK} trips per truck. "
                   f"One truck has {n}.", "error")
             return redirect(url_for("index"))
+
+    if len(selected) > MAX_TRIPS_PER_PREVIEW:
+        flash(f"At most {MAX_TRIPS_PER_PREVIEW} trips per preview. "
+              f"You selected {len(selected)}. Please split into smaller "
+              f"batches.", "error")
+        return redirect(url_for("index"))
 
     for s in selected:
         for key in ("imei", "truck", "start", "end"):
@@ -1242,17 +1247,12 @@ def _load_report_or_404(report_id):
 @app.route("/reports/<report_id>/view")
 @login_required
 def report_view(report_id):
-    """Single-trip report detail, or the per-trip page of a bulk report
-    (when ?trip=N is present). For a bulk report with no ?trip=N, this
-    redirects to the bulk index page (/reports/<id>/bulk)."""
     row = _load_report_or_404(report_id)
     if row is None:
         return redirect(url_for("reports"))
 
     stored = row.get("computed_json")
     if not stored:
-        # Old bulk rows written before computed_json was persisted.
-        # Fall back to the preview job if it still exists.
         preview_job_id = (row.get("error") or "").strip()
         if preview_job_id and report_jobs.get_job(preview_job_id):
             return redirect(url_for("preview_job_show",
@@ -1268,9 +1268,6 @@ def report_view(report_id):
         flash("This report is empty.", "error")
         return redirect(url_for("reports"))
 
-    # If this is a bulk report and the caller didn't ask for a specific
-    # trip, show the bulk index (table + search + filter) instead of a
-    # single-trip detail page.
     if is_bulk and "trip" not in request.args:
         return redirect(url_for("report_bulk_view", report_id=report_id))
 
@@ -1307,9 +1304,6 @@ def report_view(report_id):
 @app.route("/reports/<report_id>/bulk")
 @login_required
 def report_bulk_view(report_id):
-    """Bulk report index: every trip in the workbook listed in a table,
-    with search + status filter. Each row links to the per-trip detail
-    (/reports/<id>/view?trip=N)."""
     row = _load_report_or_404(report_id)
     if row is None:
         return redirect(url_for("reports"))
@@ -1322,7 +1316,6 @@ def report_bulk_view(report_id):
 
     stored = _from_jsonable(stored)
     if not _is_bulk_payload(stored):
-        # Single-trip report — redirect to the normal detail view.
         return redirect(url_for("report_view", report_id=report_id))
 
     reports = stored or []
@@ -1464,8 +1457,6 @@ def report_edit_meta(report_id):
         if is_bulk:
             flash(f"Trip {trip_index + 1} ({computed['truck_id']}) updated; "
                   f"bulk workbook regenerated.", "success")
-            # Send the user back to the bulk index so they can pick the
-            # next trip to edit.
             return redirect(url_for("report_bulk_view",
                                     report_id=report_id))
         flash("Report details updated and Excel regenerated.", "success")
@@ -1555,11 +1546,6 @@ def download(filename):
     abort(404)
 
 
-try:
-    job_worker.start()
-except Exception as exc:
-    log.error("could not start job worker: %s", exc)
-
 # ---------------------------------------------------------------------------
 # Worker startup
 # ---------------------------------------------------------------------------
@@ -1567,9 +1553,15 @@ except Exception as exc:
 # On Windows + Flask debug mode, `WERKZEUG_RUN_MAIN=true` marks the
 # reloader child (the process that actually serves requests). Without
 # this check, the parent also starts the worker, giving 2× threads
-# against the shared Supabase client — which is what was causing the
-# `WinError 10035` socket errors. Under gunicorn (wsgi:app) there is
-# only one process, so start unconditionally.
+# against the shared Supabase client — which caused the `WinError 10035`
+# socket errors AND the "job never starts" behaviour (multiple workers
+# racing on claim_next_queued_job).
+#
+# Note: the standalone `try: job_worker.start()` block that used to sit
+# here has been removed. It was starting a THIRD worker inside the
+# reloader child, on top of the two started by the branches below.
+# That's the "three job worker threads racing for the same job" bug
+# visible in the startup log (11:37:44 + 11:37:50 + __main__ at 11:37:50).
 
 def _start_worker():
     try:
