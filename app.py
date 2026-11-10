@@ -36,8 +36,6 @@ from services import report_jobs
 from services import job_worker
 from services.prefetch import prefetch_alarms_for_preview_lazy
 
-# Backward-compat alias: the name lived here before the move to
-# services/prefetch.py. Keep it so any stray reference still resolves.
 _prefetch_alarms_for_preview_lazy = prefetch_alarms_for_preview_lazy
 
 from report_analysis import YARD_LOOKBACK, history_window
@@ -109,11 +107,8 @@ _preview_pool = ThreadPoolExecutor(max_workers=_PREVIEW_WORKERS,
 executor = ThreadPoolExecutor(max_workers=2)
 
 MAX_TRUCKS          = 200
-# Per-truck trip cap is gone — the 100-per-preview cap is the only
-# safeguard now. MAX_TRIPS_PER_TRUCK is kept for log/grep compatibility
-# but is no longer enforced anywhere.
+# Server-hosted build: no preview cap.
 MAX_TRIPS_PER_TRUCK   = None
-MAX_TRIPS_PER_PREVIEW = 100
 
 
 from blueprints.auth       import bp as auth_bp
@@ -183,19 +178,35 @@ def fmt_duration(seconds):
     return f"{h}:{m:02d}:{s:02d}"
 
 
+# ---------------------------------------------------------------------------
+# Manual metadata — board additions (Nov 2026)
+#
+#   comments             — free-form; use for anything (incl. drugs/refuse)
+#   maintenance_issues   — maintenance side / mechanical issues
+#   officer_signature    — image (data URL), same shape as driver signature
+#   officer_signature_kind
+# ---------------------------------------------------------------------------
+
 def _collect_manual_from_form():
-    signature = (request.form.get("meta_signature") or "").strip()
+    signature   = (request.form.get("meta_signature") or "").strip()
+    officer_sig = (request.form.get("meta_officer_signature") or "").strip()
+
     raw = {
-        "driver_name":   (request.form.get("meta_driver_name")   or "").strip(),
-        "out_of_fuel":   (request.form.get("meta_out_of_fuel")   or "").strip(),
-        "accidents":     (request.form.get("meta_accidents")     or "").strip(),
-        "tyres_damaged": (request.form.get("meta_tyres")         or "").strip(),
-        "breakdown":     (request.form.get("meta_breakdown")     or "").strip(),
+        "driver_name":        (request.form.get("meta_driver_name")        or "").strip(),
+        "out_of_fuel":        (request.form.get("meta_out_of_fuel")        or "").strip(),
+        "accidents":          (request.form.get("meta_accidents")          or "").strip(),
+        "tyres_damaged":      (request.form.get("meta_tyres")              or "").strip(),
+        "breakdown":          (request.form.get("meta_breakdown")          or "").strip(),
+        "comments":           (request.form.get("meta_comments")           or "").strip(),
+        "maintenance_issues": (request.form.get("meta_maintenance_issues") or "").strip(),
     }
     out = {k: v for k, v in raw.items() if v}
     if signature:
         out["signature"] = signature
         out["signature_kind"] = "image"
+    if officer_sig:
+        out["officer_signature"] = officer_sig
+        out["officer_signature_kind"] = "image"
     return out
 
 
@@ -262,7 +273,8 @@ def _merge_manual(old: dict | None, new: dict) -> dict:
     old = old or {}
     merged = dict(old)
     for k, v in new.items():
-        if k in ("signature", "signature_kind") and not v:
+        if k in ("signature", "signature_kind",
+                 "officer_signature", "officer_signature_kind") and not v:
             continue
         merged[k] = v
     return merged
@@ -274,11 +286,13 @@ def _normalise_submitted_manual(raw: dict) -> dict:
 
     out: dict = {}
     mapping = {
-        "meta_driver_name": "driver_name",
-        "meta_out_of_fuel": "out_of_fuel",
-        "meta_accidents":   "accidents",
-        "meta_tyres":       "tyres_damaged",
-        "meta_breakdown":   "breakdown",
+        "meta_driver_name":        "driver_name",
+        "meta_out_of_fuel":        "out_of_fuel",
+        "meta_accidents":          "accidents",
+        "meta_tyres":              "tyres_damaged",
+        "meta_breakdown":          "breakdown",
+        "meta_comments":           "comments",
+        "meta_maintenance_issues": "maintenance_issues",
     }
     for form_key, manual_key in mapping.items():
         val = (raw.get(form_key) or "").strip()
@@ -289,6 +303,11 @@ def _normalise_submitted_manual(raw: dict) -> dict:
     if sig:
         out["signature"] = sig
         out["signature_kind"] = raw.get("meta_signature_kind") or "image"
+
+    osig = (raw.get("meta_officer_signature") or "").strip()
+    if osig:
+        out["officer_signature"] = osig
+        out["officer_signature_kind"] = raw.get("meta_officer_signature_kind") or "image"
 
     return out
 
@@ -316,8 +335,7 @@ def _resolve_export_context():
                 and session.get("role") not in ("admin", "super_admin")):
             abort(403)
         items = [
-            it for it in report_jobs.get_job_items(job_id,
-                                                    statuses=["done"])
+            it for it in report_jobs.get_job_items(job_id, statuses=["done"])
             if it.get("computed")
         ]
         return job, items
@@ -428,8 +446,7 @@ def _run_export(job_id, computed, out_path, manual):
     else:
         log.error(
             "report %s NOT mirrored to storage — it will be undownloadable "
-            "after the next container restart. Check the Supabase 'reports' "
-            "bucket exists and accepts uploads.",
+            "after the next container restart.",
             out_path.name,
         )
 
@@ -462,12 +479,7 @@ def _run_bulk_export(job_id, reports, out_path, per_trip_manual):
     if remote:
         log.info("bulk report mirrored to storage: %s", remote)
     else:
-        log.error(
-            "bulk report %s NOT mirrored to storage — it will be "
-            "undownloadable after the next container restart. Check the "
-            "Supabase 'reports' bucket exists and accepts uploads.",
-            out_path.name,
-        )
+        log.error("bulk report %s NOT mirrored to storage.", out_path.name)
 
     jobs.mark_done(job_id, filesize_bytes=size)
 
@@ -712,7 +724,6 @@ def trips_list():
         "trips.html",
         truck_groups=groups, total_trips=total, not_found=not_found,
         begin_str=begin_s, end_str=end_s, include_history=include_history,
-        max_per_preview=MAX_TRIPS_PER_PREVIEW,
     )
 
 
@@ -729,12 +740,6 @@ def preview_start():
 
     if not isinstance(selected, list) or not selected:
         flash("Select at least one trip.", "error")
-        return redirect(url_for("index"))
-
-    if len(selected) > MAX_TRIPS_PER_PREVIEW:
-        flash(f"At most {MAX_TRIPS_PER_PREVIEW} trips per preview. "
-              f"You selected {len(selected)}. Please split into smaller "
-              f"batches.", "error")
         return redirect(url_for("index"))
 
     for s in selected:
@@ -1026,8 +1031,7 @@ def export():
         log.exception("could not create report row")
         flash(f"Could not queue export: {exc}", "error")
         if preview_job_id:
-            return redirect(url_for("preview_job_show",
-                                    job_id=preview_job_id))
+            return redirect(url_for("preview_job_show", job_id=preview_job_id))
         if preview_id:
             return redirect(url_for("preview_show", preview_id=preview_id,
                                     trip=trip_index))
@@ -1039,8 +1043,7 @@ def export():
                 "error": preview_job_id,
             }).eq("id", job_id).execute()
         except Exception:
-            log.exception("could not stash preview_job_id on report %s",
-                          job_id)
+            log.exception("could not stash preview_job_id on report %s", job_id)
 
     executor.submit(_run_export, job_id, computed, out_path, manual)
     audit.record(
@@ -1064,26 +1067,9 @@ def export():
 
 # ---------------------------------------------------------------------------
 # Shared export-job starter
-#
-# Both /export/job (the POST that kicks off a bulk export) and
-# /preview/job/<id>/export-partial (the "Export N completed trips"
-# button on the preview page) call `_do_export_job_start(...)`.
-#
-# The previous code had `preview_job_export_partial` re-enter
-# `export_job_start()` via `app.test_request_context(...)`. That creates
-# a fresh request context with an EMPTY session — no `session_id`, no
-# `user_id` — so `@login_required` on `export_job_start` bounced the user
-# to /login. Extracting the body into a helper that reads from the REAL
-# current request fixes that.
 # ---------------------------------------------------------------------------
 
 def _do_export_job_start(preview_job_id: str, mode: str):
-    """Body shared by /export/job and /preview/job/<id>/export-partial.
-
-    Assumes the caller has already resolved `preview_job_id` and `mode`
-    from the current request (form field or URL path). Runs in the
-    current request context, so `session` is the real session.
-    """
     if mode not in ("full", "partial"):
         mode = "full"
 
@@ -1205,15 +1191,6 @@ def _do_export_job_start(preview_job_id: str, mode: str):
 @app.route("/export/job", methods=["POST"])
 @login_required
 def export_job_start():
-    """Start a bulk export from a preview job.
-
-    `mode` (form field, optional):
-      "full"    — default. Requires job.status == 'done'. Exports every
-                  done item, exactly as before.
-      "partial" — allowed regardless of job status (running / cancelled /
-                  failed / done). Exports whatever items are done *now*.
-                  Filename gets a "(N of M)" suffix.
-    """
     preview_job_id = (request.form.get("preview_job_id") or "").strip()
     mode = (request.form.get("mode") or "full").strip().lower()
     return _do_export_job_start(preview_job_id, mode)
@@ -1222,12 +1199,6 @@ def export_job_start():
 @app.route("/preview/job/<job_id>/export-partial", methods=["POST"])
 @login_required
 def preview_job_export_partial(job_id):
-    """Convenience route for the "Export N completed trips" button.
-
-    Delegates to `_do_export_job_start` directly (NOT via a fresh
-    `test_request_context`, which would drop the session and bounce the
-    user to /login).
-    """
     job = report_jobs.get_job(job_id)
     if not job:
         flash("Preview job not found.", "error")
@@ -1309,8 +1280,7 @@ def report_view(report_id):
     if not stored:
         preview_job_id = (row.get("error") or "").strip()
         if preview_job_id and report_jobs.get_job(preview_job_id):
-            return redirect(url_for("preview_job_show",
-                                    job_id=preview_job_id))
+            return redirect(url_for("preview_job_show", job_id=preview_job_id))
         flash("This report has no stored detail — regenerate it to view.",
               "error")
         return redirect(url_for("reports"))
@@ -1489,11 +1459,8 @@ def report_edit_meta(report_id):
             if remote:
                 log.info("regenerated report mirrored to storage: %s", remote)
             else:
-                log.error(
-                    "regenerated report %s NOT mirrored to storage — it will "
-                    "be undownloadable after the next container restart.",
-                    out_path.name,
-                )
+                log.error("regenerated report %s NOT mirrored to storage.",
+                          out_path.name)
         except Exception:
             log.exception("storage mirror failed for %s", out_path.name)
 
@@ -1511,8 +1478,7 @@ def report_edit_meta(report_id):
         if is_bulk:
             flash(f"Trip {trip_index + 1} ({computed['truck_id']}) updated; "
                   f"bulk workbook regenerated.", "success")
-            return redirect(url_for("report_bulk_view",
-                                    report_id=report_id))
+            return redirect(url_for("report_bulk_view", report_id=report_id))
         flash("Report details updated and Excel regenerated.", "success")
     except Exception as exc:
         log.exception("edit-meta failed")
@@ -1587,9 +1553,8 @@ def download(filename):
         return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
     log.warning(
-        "download: 404 for %s — not on disk and not retrievable from the "
-        "Supabase 'reports' bucket. Verify the bucket exists and that the "
-        "original upload succeeded (search the logs for 'NOT mirrored').",
+        "download: 404 for %s — not on disk and not in storage. Verify the "
+        "Supabase 'reports' bucket exists.",
         filename,
     )
     audit.record(

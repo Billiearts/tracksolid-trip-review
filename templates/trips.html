@@ -1,160 +1,297 @@
 {% extends "base.html" %}
 
+{% block head %}
+<style>
+  /* Layout: the results card sits in a centered column, and the action bar
+     lives in the right gutter outside it. */
+  .trips-layout {
+    position: relative;
+  }
+
+  /* Sticky action bar. It lives OUTSIDE the results card and is pinned to
+     the right gutter of the page while the user scrolls. When the card's
+     natural footer scrolls into view, it animates back into place. */
+  .action-bar {
+    position: fixed;
+    bottom: 1.25rem;
+    right: 1.25rem;
+    z-index: 900;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 0.55rem 0.55rem 0.9rem;
+    background: #f7f9fb;
+    border: 1px solid #d7dbe0;
+    border-radius: 8px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+    font-size: 0.88rem;
+    transition: transform 0.22s ease, opacity 0.22s ease,
+                bottom 0.22s ease, right 0.22s ease;
+    pointer-events: auto;
+  }
+  /* While docked (i.e. the in-card placeholder is visible), hide the fixed
+     bar and reveal the in-card copy so the button sits inside the card. */
+  .action-bar.docked {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(8px);
+  }
+  .action-bar .count {
+    color: #555;
+    font-variant-numeric: tabular-nums;
+  }
+  .action-bar .count strong {
+    color: #1e5f9e;
+    font-weight: 700;
+  }
+  .action-bar button {
+    background: var(--brand, #1e5f9e);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 0.5rem 1rem;
+    font-size: 0.9rem;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .action-bar button:hover  { background: var(--brand-dark, #164a7a); }
+  .action-bar button:disabled {
+    background: #a0c3e8;
+    cursor: not-allowed;
+  }
+
+  /* The in-card footer that the fixed bar docks into. It reserves the
+     space so the layout doesn't jump when the fixed bar appears. */
+  .action-dock {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1rem;
+    padding: 0.55rem 0.55rem 0.55rem 0.9rem;
+    background: #f7f9fb;
+    border: 1px solid #d7dbe0;
+    border-radius: 8px;
+    font-size: 0.88rem;
+    justify-content: flex-end;
+  }
+  .action-dock .count {
+    color: #555;
+    font-variant-numeric: tabular-nums;
+  }
+  .action-dock .count strong {
+    color: #1e5f9e;
+    font-weight: 700;
+  }
+  .action-dock button {
+    background: var(--brand, #1e5f9e);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 0.5rem 1rem;
+    font-size: 0.9rem;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .action-dock button:hover  { background: var(--brand-dark, #164a7a); }
+  .action-dock button:disabled {
+    background: #a0c3e8;
+    cursor: not-allowed;
+  }
+
+  /* Sentinel used to detect when the in-card footer scrolls into view. */
+  .action-sentinel {
+    height: 1px;
+    width: 100%;
+  }
+
+  @media (max-width: 900px) {
+    /* On narrow screens, push the fixed bar to the viewport edge since
+       there's no gutter. */
+    .action-bar {
+      right: 0.75rem;
+      bottom: 0.75rem;
+    }
+  }
+  @media (max-width: 640px) {
+    .action-bar {
+      left: 0.5rem;
+      right: 0.5rem;
+      bottom: 0.5rem;
+      justify-content: space-between;
+    }
+  }
+</style>
+{% endblock %}
+
 {% block content %}
 
-  <div class="card">
-    <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem;">
-      <h2 style="font-size: 1.1rem; margin: 0;">Select trips</h2>
-      <a href="{{ url_for('index') }}" style="font-size: 0.9rem;">← Back to search</a>
-    </div>
-
-    <p style="color: #666; font-size: 0.9rem; margin: 0 0 1rem;">
-      {{ truck_groups | length }} truck{{ 's' if truck_groups | length != 1 else '' }}
-      &middot; {{ total_trips }} trip{{ 's' if total_trips != 1 else '' }} found
-      &middot; date range {{ begin_str }} → {{ end_str }}
-    </p>
-
-    {% if not_found %}
-      <div class="flash error" style="margin-bottom: 1rem;">
-        Could not resolve
-        {{ not_found | length }} truck{{ 's' if not_found | length != 1 else '' }}:
-        {{ not_found | join(', ') }}.
-        They have been skipped.
-      </div>
-    {% endif %}
-
-    <form action="{{ url_for('preview_start') }}" method="post" id="trips-form"
-          data-loading-overlay="Computing selected trips… this can take up to 90 seconds per trip.">
-      <input type="hidden" name="include_history"
-             value="{{ 'on' if include_history else '' }}">
-      <input type="hidden" name="selected_trips" id="selected-trips" value="[]">
-
-      {# ---------------- Selection toolbar ---------------- #}
-      <div class="select-toolbar"
-           style="display: flex; flex-wrap: wrap; gap: 0.5rem;
-                  align-items: center; padding: 0.75rem 0.9rem;
-                  background: #f7f9fb; border: 1px solid #e2e6ea;
-                  border-radius: 6px; margin-bottom: 1rem;">
-        <span style="font-size: 0.82rem; color: #555; font-weight: 500; margin-right: 0.25rem;">
-          Quick select:
-        </span>
-        <button type="button" class="btn-edit" data-quick="first-100"
-                title="Select the first 100 trips in the list, in order">
-          First 100 trips
-        </button>
-        <button type="button" class="btn-edit" data-quick="newest-100"
-                title="Select the 100 trips with the most recent start time">
-          Newest 100 trips
-        </button>
-        <button type="button" class="btn-edit" data-quick="first-per-truck"
-                title="Select one trip per truck — the earliest one for each">
-          First trip per truck
-        </button>
-        <button type="button" class="btn-edit" data-quick="last-per-truck"
-                title="Select one trip per truck — the latest one for each">
-          Last trip per truck
-        </button>
-        <button type="button" class="btn-edit" data-quick="clear"
-                style="margin-left: auto; color: #a02525; border-color: #e2b3b3; background: #fde7e7;">
-          Clear all
-        </button>
+  <div class="trips-layout">
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem;">
+        <h2 style="font-size: 1.1rem; margin: 0;">Select trips</h2>
+        <a href="{{ url_for('index') }}" style="font-size: 0.9rem;">← Back to search</a>
       </div>
 
-      {# ---------------- Selection counter ---------------- #}
-      <div id="selection-summary"
-           style="display: flex; justify-content: space-between;
-                  align-items: center; margin-bottom: 1rem;
-                  padding: 0.6rem 0.9rem;
-                  background: #eaf2fb; border: 1px solid #c7ddf3;
-                  border-radius: 6px; font-size: 0.88rem; color: #1e5f9e;">
-        <span>
-          <strong id="sel-count">0</strong> of {{ max_per_preview }} selected
-          <span id="sel-slots" style="color: #666; margin-left: 0.4rem;">
-            ({{ max_per_preview }} slots left)
+      <p style="color: #666; font-size: 0.9rem; margin: 0 0 1rem;">
+        {{ truck_groups | length }} truck{{ 's' if truck_groups | length != 1 else '' }}
+        &middot; {{ total_trips }} trip{{ 's' if total_trips != 1 else '' }} found
+        &middot; date range {{ begin_str }} → {{ end_str }}
+      </p>
+
+      {% if not_found %}
+        <div class="flash error" style="margin-bottom: 1rem;">
+          Could not resolve
+          {{ not_found | length }} truck{{ 's' if not_found | length != 1 else '' }}:
+          {{ not_found | join(', ') }}.
+          They have been skipped.
+        </div>
+      {% endif %}
+
+      <form action="{{ url_for('preview_start') }}" method="post" id="trips-form"
+            data-loading-overlay="Computing selected trips… this can take a while.">
+        <input type="hidden" name="include_history"
+               value="{{ 'on' if include_history else '' }}">
+        <input type="hidden" name="selected_trips" id="selected-trips" value="[]">
+
+        {# ---------------- Selection toolbar ---------------- #}
+        <div class="select-toolbar"
+             style="display: flex; flex-wrap: wrap; gap: 0.5rem;
+                    align-items: center; padding: 0.75rem 0.9rem;
+                    background: #f7f9fb; border: 1px solid #e2e6ea;
+                    border-radius: 6px; margin-bottom: 1rem;">
+          <span style="font-size: 0.82rem; color: #555; font-weight: 500; margin-right: 0.25rem;">
+            Quick select:
           </span>
-        </span>
-        <span id="sel-hint" style="color: #666; font-size: 0.8rem;">
-          Click a checkbox, or use the quick-select buttons above.
-        </span>
-      </div>
+          <button type="button" class="btn-edit" data-quick="first-100"
+                  title="Select the first 100 trips in the list, in order">
+            First 100 trips
+          </button>
+          <button type="button" class="btn-edit" data-quick="newest-100"
+                  title="Select the 100 trips with the most recent start time">
+            Newest 100 trips
+          </button>
+          <button type="button" class="btn-edit" data-quick="first-per-truck"
+                  title="Select one trip per truck — the earliest one for each">
+            First trip per truck
+          </button>
+          <button type="button" class="btn-edit" data-quick="last-per-truck"
+                  title="Select one trip per truck — the latest one for each">
+            Last trip per truck
+          </button>
+          <button type="button" class="btn-edit" data-quick="clear"
+                  style="margin-left: auto; color: #a02525; border-color: #e2b3b3; background: #fde7e7;">
+            Clear all
+          </button>
+        </div>
 
-      {# ---------------- Truck groups ---------------- #}
-      {% for g in truck_groups %}
-        <div class="truck-block" data-truck-imei="{{ g.imei }}"
-             style="margin-bottom: 1.75rem;">
-          <div style="display: flex; justify-content: space-between;
-                      align-items: baseline; margin-bottom: 0.5rem;
-                      flex-wrap: wrap; gap: 0.5rem;">
-            <h3 style="font-size: 0.95rem; margin: 0; color: #1e5f9e;">
-              {{ g.truck }}
-              <span style="color: #888; font-weight: 400; font-size: 0.8rem;">
-                &middot; IMEI {{ g.imei }}
-                &middot; {{ g.trips | length }} trip{{ 's' if g.trips | length != 1 else '' }}
-              </span>
-            </h3>
-            <div style="display: flex; align-items: center; gap: 0.6rem;">
-              <span class="truck-counter" data-imei="{{ g.imei }}"
-                    style="font-size: 0.8rem; color: #666; font-variant-numeric: tabular-nums;">
-                0 selected
-              </span>
-              <button type="button" class="role-btn truck-select-all"
-                      data-truck-imei="{{ g.imei }}">
-                Select all for this truck
-              </button>
-              <button type="button" class="role-btn truck-clear-all"
-                      data-truck-imei="{{ g.imei }}">
-                Clear this truck
-              </button>
+        {# ---------------- Selection counter ---------------- #}
+        <div id="selection-summary"
+             style="display: flex; justify-content: space-between;
+                    align-items: center; margin-bottom: 1rem;
+                    padding: 0.6rem 0.9rem;
+                    background: #eaf2fb; border: 1px solid #c7ddf3;
+                    border-radius: 6px; font-size: 0.88rem; color: #1e5f9e;">
+          <span>
+            <strong id="sel-count">0</strong> selected
+          </span>
+          <span id="sel-hint" style="color: #666; font-size: 0.8rem;">
+            Click a checkbox, or use the quick-select buttons above.
+          </span>
+        </div>
+
+        {# ---------------- Truck groups ---------------- #}
+        {% for g in truck_groups %}
+          <div class="truck-block" data-truck-imei="{{ g.imei }}"
+               style="margin-bottom: 1.75rem;">
+            <div style="display: flex; justify-content: space-between;
+                        align-items: baseline; margin-bottom: 0.5rem;
+                        flex-wrap: wrap; gap: 0.5rem;">
+              <h3 style="font-size: 0.95rem; margin: 0; color: #1e5f9e;">
+                {{ g.truck }}
+                <span style="color: #888; font-weight: 400; font-size: 0.8rem;">
+                  &middot; IMEI {{ g.imei }}
+                  &middot; {{ g.trips | length }} trip{{ 's' if g.trips | length != 1 else '' }}
+                </span>
+              </h3>
+              <div style="display: flex; align-items: center; gap: 0.6rem;">
+                <span class="truck-counter" data-imei="{{ g.imei }}"
+                      style="font-size: 0.8rem; color: #666; font-variant-numeric: tabular-nums;">
+                  0 selected
+                </span>
+                <button type="button" class="role-btn truck-select-all"
+                        data-truck-imei="{{ g.imei }}">
+                  Select all for this truck
+                </button>
+                <button type="button" class="role-btn truck-clear-all"
+                        data-truck-imei="{{ g.imei }}">
+                  Clear this truck
+                </button>
+              </div>
+            </div>
+
+            <div class="table-scroll">
+              <table class="preview-table">
+                <thead>
+                  <tr>
+                    <th style="width: 40px;"></th>
+                    <th style="width: 40px;">#</th>
+                    <th>Start</th>
+                    <th>End</th>
+                    <th>Duration</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for t in g.trips %}
+                    <tr>
+                      <td>
+                        <input type="checkbox" class="trip-checkbox"
+                               data-truck="{{ g.truck }}"
+                               data-imei="{{ g.imei }}"
+                               data-driver="{{ g.driver_name or '' }}"
+                               data-start="{{ t.start.strftime('%Y-%m-%d %H:%M:%S') }}"
+                               data-end="{{ t.end.strftime('%Y-%m-%d %H:%M:%S') }}"
+                               value="{{ loop.index0 }}">
+                      </td>
+                      <td>{{ loop.index }}</td>
+                      <td style="text-align: left;">{{ t.start.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                      <td style="text-align: left;">{{ t.end.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                      <td>{{ t.duration_s | fmt_duration }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
             </div>
           </div>
+        {% endfor %}
 
-          <div class="table-scroll">
-            <table class="preview-table">
-              <thead>
-                <tr>
-                  <th style="width: 40px;"></th>
-                  <th style="width: 40px;">#</th>
-                  <th>Start</th>
-                  <th>End</th>
-                  <th>Duration</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for t in g.trips %}
-                  <tr>
-                    <td>
-                      <input type="checkbox" class="trip-checkbox"
-                             data-truck="{{ g.truck }}"
-                             data-imei="{{ g.imei }}"
-                             data-driver="{{ g.driver_name or '' }}"
-                             data-start="{{ t.start.strftime('%Y-%m-%d %H:%M:%S') }}"
-                             data-end="{{ t.end.strftime('%Y-%m-%d %H:%M:%S') }}"
-                             value="{{ loop.index0 }}">
-                    </td>
-                    <td>{{ loop.index }}</td>
-                    <td style="text-align: left;">{{ t.start.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                    <td style="text-align: left;">{{ t.end.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                    <td>{{ t.duration_s | fmt_duration }}</td>
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
+        <p id="trip-cap-warning" class="flash error" style="display: none;"></p>
+
+        {# ---------------- In-card dock (where the fixed bar lands) ---------------- #}
+        <div class="action-dock" id="action-dock">
+          <span class="count">
+            <strong id="dock-count">0</strong> selected
+          </span>
+          <button type="submit" id="dock-submit" disabled>
+            Preview selected trips
+          </button>
         </div>
-      {% endfor %}
+        <div class="action-sentinel" id="action-sentinel"></div>
+      </form>
+    </div>
+  </div>
 
-      <p id="trip-cap-warning" class="flash error" style="display: none;"></p>
-
-      <div style="display: flex; gap: 0.75rem; align-items: center; margin-top: 1rem;">
-        <button type="submit" id="preview-btn">Preview selected trips</button>
-        <span class="muted" style="font-size: 0.82rem;">
-          Up to <strong>{{ max_per_preview }} trips per preview</strong>.
-          No per-truck limit. If you need more than {{ max_per_preview }},
-          export in batches — completed trips can be exported while the
-          rest keep computing.
-        </span>
-      </div>
-    </form>
+  {# ---------------- Fixed action bar (lives outside the card) ---------------- #}
+  <div class="action-bar" id="action-bar">
+    <span class="count">
+      <strong id="float-count">0</strong> selected
+    </span>
+    <button type="button" id="float-submit" disabled>
+      Preview selected trips
+    </button>
   </div>
 
 {% endblock %}
@@ -162,36 +299,24 @@
 {% block scripts %}
   <script>
     (function () {
-      const MAX_PER_PREVIEW = {{ max_per_preview }};
       const form    = document.getElementById('trips-form');
       const hidden  = document.getElementById('selected-trips');
       const warnEl  = document.getElementById('trip-cap-warning');
-      const btn     = document.getElementById('preview-btn');
+      const dockBtn = document.getElementById('dock-submit');
+      const floatBtn = document.getElementById('float-submit');
       const selCountEl = document.getElementById('sel-count');
-      const selSlotsEl = document.getElementById('sel-slots');
       const selHintEl  = document.getElementById('sel-hint');
-      const summaryEl  = document.getElementById('selection-summary');
+
+      const floatBar = document.getElementById('action-bar');
+      const floatCnt = document.getElementById('float-count');
+      const dockCnt  = document.getElementById('dock-count');
+      const sentinel = document.getElementById('action-sentinel');
 
       const boxes = () => Array.from(document.querySelectorAll('.trip-checkbox'));
       const checkedBoxes = () => boxes().filter((b) => b.checked);
 
       function clearAll() {
         boxes().forEach((b) => { b.checked = false; });
-      }
-
-      function setChecked(box) {
-        if (box.checked) return true;
-        const n = checkedBoxes().length;
-        if (n >= MAX_PER_PREVIEW) {
-          warnEl.textContent =
-            'You can select at most ' + MAX_PER_PREVIEW +
-            ' trips per preview. Uncheck something first.';
-          warnEl.style.display = 'block';
-          return false;
-        }
-        box.checked = true;
-        warnEl.style.display = 'none';
-        return true;
       }
 
       function tickPerTruck() {
@@ -209,28 +334,17 @@
 
       function updateSummary() {
         const n = checkedBoxes().length;
-        const left = Math.max(0, MAX_PER_PREVIEW - n);
         selCountEl.textContent = String(n);
-        selSlotsEl.textContent = '(' + left + ' slot' + (left === 1 ? '' : 's') + ' left)';
-        if (n === 0) {
-          summaryEl.style.background = '#eaf2fb';
-          summaryEl.style.borderColor = '#c7ddf3';
-          summaryEl.style.color = '#1e5f9e';
-          selHintEl.textContent = 'Click a checkbox, or use the quick-select buttons above.';
-          btn.disabled = true;
-        } else if (n >= MAX_PER_PREVIEW) {
-          summaryEl.style.background = '#fff7e6';
-          summaryEl.style.borderColor = '#f0d9a8';
-          summaryEl.style.color = '#8a5a00';
-          selHintEl.textContent = 'Cap reached. Uncheck to swap selections.';
-          btn.disabled = false;
-        } else {
-          summaryEl.style.background = '#eaf2fb';
-          summaryEl.style.borderColor = '#c7ddf3';
-          summaryEl.style.color = '#1e5f9e';
-          selHintEl.textContent = '';
-          btn.disabled = false;
-        }
+        selHintEl.textContent = n === 0
+          ? 'Click a checkbox, or use the quick-select buttons above.'
+          : '';
+
+        const disabled = n === 0;
+        dockBtn.disabled = disabled;
+        floatBtn.disabled = disabled;
+
+        floatCnt.textContent = String(n);
+        dockCnt.textContent  = String(n);
       }
 
       function sync() {
@@ -249,14 +363,8 @@
       function selectFirstN(n) {
         clearAll();
         const all = boxes();
-        // Sort by start time ascending (data-start ISO-ish string sorts lexically).
         all.sort((a, b) => (a.dataset.start < b.dataset.start ? -1 : 1));
-        let picked = 0;
-        for (const b of all) {
-          if (picked >= n) break;
-          b.checked = true;
-          picked++;
-        }
+        for (let i = 0; i < Math.min(n, all.length); i++) all[i].checked = true;
         sync();
       }
 
@@ -264,64 +372,36 @@
         clearAll();
         const all = boxes();
         all.sort((a, b) => (a.dataset.start < b.dataset.start ? 1 : -1));
-        let picked = 0;
-        for (const b of all) {
-          if (picked >= n) break;
-          b.checked = true;
-          picked++;
-        }
+        for (let i = 0; i < Math.min(n, all.length); i++) all[i].checked = true;
         sync();
       }
 
       function selectOnePerTruck(mode) {
-        // mode = 'first' | 'last'
         clearAll();
         const groups = {};
         boxes().forEach((b) => {
           (groups[b.dataset.imei] = groups[b.dataset.imei] || []).push(b);
         });
-        let picked = 0;
         for (const imei in groups) {
           const list = groups[imei];
           list.sort((a, b) => (a.dataset.start < b.dataset.start ? -1 : 1));
           const target = (mode === 'first') ? list[0] : list[list.length - 1];
-          if (picked >= MAX_PER_PREVIEW) break;
           target.checked = true;
-          picked++;
         }
         sync();
       }
 
-      // ---------------- wiring ----------------
+      // ---- wiring ----
       document.querySelectorAll('.trip-checkbox').forEach((b) => {
-        b.addEventListener('change', () => {
-          if (b.checked) {
-            if (!setChecked(b)) {
-              b.checked = false;
-              sync();
-              return;
-            }
-          }
-          sync();
-        });
+        b.addEventListener('change', sync);
       });
 
       document.querySelectorAll('.truck-select-all').forEach((btnEl) => {
         btnEl.addEventListener('click', function () {
           const imei = btnEl.dataset.truckImei;
-          const all = Array.from(document.querySelectorAll(
+          document.querySelectorAll(
             '.trip-checkbox[data-imei="' + imei + '"]'
-          ));
-          for (const b of all) {
-            if (checkedBoxes().length >= MAX_PER_PREVIEW) {
-              warnEl.textContent =
-                'Select-all would exceed the ' + MAX_PER_PREVIEW +
-                '-trip preview cap. Stopped at the limit.';
-              warnEl.style.display = 'block';
-              break;
-            }
-            b.checked = true;
-          }
+          ).forEach((b) => { b.checked = true; });
           sync();
         });
       });
@@ -340,12 +420,17 @@
         btnEl.addEventListener('click', function () {
           const q = btnEl.dataset.quick;
           warnEl.style.display = 'none';
-          if (q === 'clear')             { clearAll(); sync(); return; }
-          if (q === 'first-100')         { selectFirstN(MAX_PER_PREVIEW); return; }
-          if (q === 'newest-100')        { selectNewestN(MAX_PER_PREVIEW); return; }
-          if (q === 'first-per-truck')   { selectOnePerTruck('first'); return; }
-          if (q === 'last-per-truck')    { selectOnePerTruck('last'); return; }
+          if (q === 'clear')           { clearAll(); sync(); return; }
+          if (q === 'first-100')       { selectFirstN(100); return; }
+          if (q === 'newest-100')      { selectNewestN(100); return; }
+          if (q === 'first-per-truck') { selectOnePerTruck('first'); return; }
+          if (q === 'last-per-truck')  { selectOnePerTruck('last'); return; }
         });
+      });
+
+      // Both the floating button and the in-card button submit the same form.
+      floatBtn.addEventListener('click', function () {
+        form.requestSubmit ? form.requestSubmit(dockBtn) : form.submit();
       });
 
       form.addEventListener('submit', function (e) {
@@ -353,18 +438,23 @@
         if (sel.length === 0) {
           e.preventDefault();
           alert('Please select at least one trip.');
-          return;
-        }
-        if (sel.length > MAX_PER_PREVIEW) {
-          e.preventDefault();
-          alert('Too many trips selected (' + sel.length + '). The cap is '
-                + MAX_PER_PREVIEW + '.');
-          return;
         }
       });
 
-      // Initial state: nothing checked. sync() sets the counter to 0/N,
-      // disables Preview, and sets the hint text.
+      // ---- dock detection: when the sentinel just below the in-card footer
+      //      is visible, the fixed bar hides and the in-card footer takes over. ----
+      const observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          floatBar.classList.toggle('docked', entry.isIntersecting);
+        });
+      }, {
+        root: null,
+        rootMargin: '0px 0px -8px 0px',
+        threshold: 0,
+      });
+      observer.observe(sentinel);
+
+      // Initial state
       sync();
     })();
   </script>

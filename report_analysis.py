@@ -43,6 +43,22 @@ History parallelism — since Nov 2026:
   The chunk cache is per-(imei, chunk_start) so the cost per truck is
   ~ceil(window_days / 7) calls, not ~N_trips calls. For a 3-month window
   that's ~13 calls per truck instead of ~67, with 100% accuracy.
+
+Event coordinates:
+  Tracksolid alarms carry `lat` and `lng` alongside `alertTime`. We pass
+  them through to summarise_events() so every event row on the preview
+  page can link to a map. Parking rows already have lat/lng from
+  _normalise_parking_row(); we surface them on stop intervals too.
+
+Alert matching (Nov 2026):
+  The `alertTypeId` values returned by `jimi.device.alarm.list` differ from
+  the numeric ids documented in older Tracksolid docs. On this account the
+  platform sends strings like `suddenAcceleration`, `suddenDeceleration`,
+  `sharpTurnLeft`, `sharpTurnRight`, `overSpeed`. Device firmware also varies
+  the human-readable `alarmTypeName` ("Sudden Acceleration Alert" vs
+  "Harsh Acceleration" vs "Sudden Acceleration Alarm"). We therefore match
+  on BOTH the id and a set of English-name substrings, plus the legacy
+  numeric ids for older firmware, so a report never silently loses events.
 """
 
 from __future__ import annotations
@@ -74,11 +90,6 @@ GBC_GEOIDS = frozenset({
 GBC_FENCE_NAME_FALLBACKS = ("TRIP TIME GBC", "GBC TRIP TIME")
 
 SPEED_LIMIT_KPH = 75.0
-
-ALERT_ACCELERATION = "41"
-ALERT_CORNERING    = "43"
-ALERT_DECELERATION = "48"
-ALERT_OVERSPEED    = "overSpeed"
 
 MIN_STOP_SECONDS     = 300
 MIN_REST_SECONDS     = 7200
@@ -134,6 +145,16 @@ def _to_float(x) -> float:
         return float(x)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _to_float_or_none(x) -> float | None:
+    """Tolerant float coercion for coordinates. Returns None on failure."""
+    if x is None:
+        return None
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
 
 
 def _speed_of(p: dict) -> float:
@@ -193,6 +214,28 @@ def _alarm_time(alarm: dict) -> datetime | None:
         return parse_utc(ts)
     except ValueError:
         return None
+
+
+def _alarm_coords(alarm: dict) -> tuple[float | None, float | None]:
+    """Pull a usable (lat, lng) from an alarm payload.
+
+    Tracksolid documents `lat` and `lng` on alarm.list responses, but the
+    field names have been seen in a few shapes (`lat`/`lng`, `lat`/`lon`,
+    and occasionally as the raw strings). Try all of them, coerce, and
+    treat 0/0 or out-of-range values as "no coordinate".
+    """
+    lat = _to_float_or_none(alarm.get("lat"))
+    lng = _to_float_or_none(alarm.get("lng"))
+    if lng is None:
+        lng = _to_float_or_none(alarm.get("lon"))
+
+    if lat is None or lng is None:
+        return None, None
+    if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
+        return None, None
+    if abs(lat) < 1e-9 and abs(lng) < 1e-9:
+        return None, None
+    return lat, lng
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +468,7 @@ def _track_stop_intervals(track: list[dict],
     if not track:
         return []
 
-    points: list[tuple[datetime, bool]] = []
+    points: list[tuple[datetime, bool, float | None, float | None]] = []
     for p in track:
         ts = p.get("gpsTime")
         if not ts:
@@ -434,7 +477,11 @@ def _track_stop_intervals(track: list[dict],
             dt = parse_utc(ts)
         except ValueError:
             continue
-        points.append((dt, _is_stationary_point(p)))
+        lat = _to_float_or_none(p.get("lat"))
+        lng = _to_float_or_none(p.get("lng"))
+        if lng is None:
+            lng = _to_float_or_none(p.get("lon"))
+        points.append((dt, _is_stationary_point(p), lat, lng))
     points.sort(key=lambda x: x[0])
 
     if trip_start:
@@ -463,8 +510,11 @@ def _track_stop_intervals(track: list[dict],
         dur = (end - start).total_seconds()
         if dur < MIN_STOP_SECONDS:
             continue
+        # Use the first stationary point's fix as the "where" coordinate.
+        lat, lng = points[i0][2], points[i0][3]
         intervals.append({
             "start": start, "end": end, "seconds": dur, "address": "",
+            "lat": lat, "lng": lng,
         })
     return intervals
 
@@ -488,6 +538,8 @@ def _parking_stop_intervals(parking_events: list[dict],
         out.append({
             "start": s, "end": en, "seconds": dur,
             "address": e.get("address", "") or "",
+            "lat": e.get("lat"),
+            "lng": e.get("lng"),
         })
     return out
 
@@ -690,37 +742,102 @@ def summarise_yard(alarms: list[dict], trip_start: datetime | None) -> dict | No
 # ---------------------------------------------------------------------------
 # Events
 # ---------------------------------------------------------------------------
+#
+# Every event dict now carries:
+#   time       — raw `alertTime` string (unchanged)
+#   type       — human label
+#   kind       — one of the bucket keys below
+#   speed      — km/h at the alarm
+#   lat / lng  — coordinates, if Tracksolid provided them
+#
+# Alert matching
+# --------------
+# Tracksolid's `jimi.device.alarm.list` returns `alertTypeId` as a string
+# (not a number) on this account, e.g. `suddenAcceleration`,
+# `suddenDeceleration`, `sharpTurnLeft`, `sharpTurnRight`, `overSpeed`.
+# Older firmware / docs use numeric ids (`41`, `43`, `48`). Device
+# firmware also varies `alarmTypeName` ("Sudden Acceleration Alert" vs
+# "Harsh Acceleration" vs "Sudden Acceleration Alarm").
+#
+# `_classify_alarm()` below matches on ALL of those so no event is ever
+# silently dropped. If Tracksolid changes its vocabulary again, add the
+# new substring to the appropriate branch and redeploy.
+
+_BRAKE_IDS = frozenset({"48", "suddendeceleration", "suddenbraking",
+                        "harshbraking", "hardbraking"})
+_ACCEL_IDS = frozenset({"41", "45", "suddenacceleration",
+                        "harshacceleration", "hardacceleration"})
+_CORNER_IDS = frozenset({"43", "sharpturnleft", "sharpturnright",
+                         "sharpcornering", "harshcornering",
+                         "hardcornering", "sharpturn"})
+_OVERSPEED_IDS = frozenset({"overspeed", "overspeeding"})
+
+
+def _classify_alarm(alert_type_id: str, alarm_name: str) -> str | None:
+    """Map a Tracksolid alarm to one of our bucket keys, or None.
+
+    Returns one of: 'hard_braking', 'hard_acceleration',
+    'hard_cornering', 'speeding'. Returns None if the alarm isn't a
+    driver-behaviour event (geofence in/out, parking, idling, etc.).
+    """
+    a = (alert_type_id or "").strip().lower()
+    n = (alarm_name or "").lower()
+
+    # Overspeed fires by name reliably across all firmwares; match first
+    # so "overSpeed" never falls through to a different branch.
+    if a in _OVERSPEED_IDS or "overspeed" in n or "over speed" in n:
+        return "speeding"
+
+    if a in _BRAKE_IDS or "deceleration" in n \
+            or "harsh brak" in n or "hard brak" in n \
+            or "sudden brak" in n:
+        return "hard_braking"
+
+    if a in _ACCEL_IDS or "acceleration" in n \
+            or "harsh accel" in n or "hard accel" in n:
+        return "hard_acceleration"
+
+    if a in _CORNER_IDS or "sharp turn" in n or "cornering" in n \
+            or "harsh turn" in n or "hard corner" in n:
+        return "hard_cornering"
+
+    return None
+
 
 def summarise_events(alarms: list[dict]) -> dict:
     counts = {
-        "hard_braking":     0,
-        "hard_cornering":   0,
-        "speeding_10":      0,
-        "speeding_20":      0,
-        "speeding_over_20": 0,
+        "hard_braking":      0,
+        "hard_acceleration": 0,
+        "hard_cornering":    0,
+        "speeding_10":       0,
+        "speeding_20":       0,
+        "speeding_over_20":  0,
     }
     max_speed = {k: 0.0 for k in counts}
-    acceleration_count = 0
     event_list: list[dict] = []
 
-    for a in alarms:
-        atid = (a.get("alertTypeId") or "").strip()
-        name = (a.get("alarmTypeName") or "").lower()
-        speed = _to_float(a.get("speed"))
-        t = a.get("alertTime")
+    def _emit(kind: str, label: str, alarm: dict, speed: float):
+        lat, lng = _alarm_coords(alarm)
+        event_list.append({
+            "time":  alarm.get("alertTime"),
+            "type":  label,
+            "kind":  kind,
+            "speed": speed,
+            "lat":   lat,
+            "lng":   lng,
+        })
 
-        if atid == ALERT_DECELERATION or "sudden deceleration" in name:
-            counts["hard_braking"] += 1
-            max_speed["hard_braking"] = max(max_speed["hard_braking"], speed)
-            event_list.append({"time": t, "type": "Hard braking", "speed": speed})
-        elif atid == ALERT_CORNERING or "sharp turn" in name or "cornering" in name:
-            counts["hard_cornering"] += 1
-            max_speed["hard_cornering"] = max(max_speed["hard_cornering"], speed)
-            event_list.append({"time": t, "type": "Hard cornering", "speed": speed})
-        elif atid == ALERT_ACCELERATION or "sudden acceleration" in name:
-            acceleration_count += 1
-            event_list.append({"time": t, "type": "Sudden acceleration", "speed": speed})
-        elif atid == ALERT_OVERSPEED or "overspeed" in name:
+    for a in alarms:
+        kind = _classify_alarm(
+            a.get("alertTypeId") or "",
+            a.get("alarmTypeName") or "",
+        )
+        if kind is None:
+            continue
+
+        speed = _to_float(a.get("speed"))
+
+        if kind == "speeding":
             over = speed - SPEED_LIMIT_KPH
             if over <= 0:
                 continue
@@ -734,15 +851,24 @@ def summarise_events(alarms: list[dict]) -> dict:
                 "speeding_20":      "Speeding <20 kph over",
                 "speeding_over_20": "Speeding >20 kph over",
             }[bucket]
-            event_list.append({"time": t, "type": label, "speed": speed})
+            _emit(bucket, label, a, speed)
+            continue
+
+        counts[kind] += 1
+        max_speed[kind] = max(max_speed[kind], speed)
+        label = {
+            "hard_braking":      "Hard braking",
+            "hard_acceleration": "Hard acceleration",
+            "hard_cornering":    "Hard cornering",
+        }[kind]
+        _emit(kind, label, a, speed)
 
     event_list.sort(key=lambda e: e.get("time") or "")
 
     return {
-        "counts": counts,
+        "counts":    counts,
         "max_speed": max_speed,
-        "acceleration_count": acceleration_count,
-        "events": event_list,
+        "events":    event_list,
     }
 
 
@@ -891,7 +1017,7 @@ def build_history(imei: str, reference: datetime, *,
     rest_breaks_s: list[float] = []
 
     behav_events = {k: 0 for k in
-                    ("hard_braking", "hard_cornering",
+                    ("hard_braking", "hard_acceleration", "hard_cornering",
                      "speeding_10", "speeding_20", "speeding_over_20")}
     behav_max = {k: 0.0 for k in behav_events}
     behav_per_trip_max = {k: [] for k in behav_events}

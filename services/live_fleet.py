@@ -44,13 +44,31 @@ Yard membership has THREE freshness windows:
     inside, the alarm state is discarded regardless of age. This is the
     direct fix for "truck 250 km away still shows as in the fence".
 
-Direction classification:
+Direction classification (updated Nov 2026):
   A truck is `at_<facility>` when:
     - its GPS fix is inside the corridor facility polygon, OR
     - its GPS fix is within _FACILITY_NEAR_KM of the corridor facility
       polygon AND it is not moving above _FACILITY_NEAR_MOVING_KPH.
-  This catches trucks parked just outside a shrunken polygon without
-  misclassifying a truck driving past on the highway.
+
+  A truck is `heading_to_<facility>` when its bearing (from the live fix)
+  falls within ±_CORRIDOR_BEARING_TOLERANCE_DEG of the corridor axis
+  bearing toward that facility. The corridor axis is computed from the
+  two facility centroids.
+
+  The Awaso↔Takoradi road is not straight — it curves through towns and
+  bends. A tight ±45° cone around the straight-line axis leaves 40-50%
+  of a legitimately corridor-bound truck's track points classified as
+  off-corridor. The tolerance is therefore ±60°, which matches what
+  Tracksolid's own playback shows.
+
+  When a moving truck's bearing momentarily falls outside the ±60° cone
+  (sharp bend, brief GPS glitch, or slow manoeuvre inside a town), we do
+  NOT immediately flip to "unknown". Instead we hold the last known
+  corridor direction, provided the truck has moved less than
+  _CORRIDOR_HOLD_DISTANCE_KM (5 km) since that classification was made.
+  This is the "direction memory" Tracksolid's playback has and which a
+  naive bearing-vs-axis classifier lacks. Only a genuine 5 km+ departure
+  from the corridor resets the direction to "unknown".
 """
 from __future__ import annotations
 
@@ -84,14 +102,9 @@ _YARD_ALARM_PAGE_SIZE      = 500
 _YARD_STATE_TTL_SEC        = 60
 
 # How long a stale alarm `in` is still trusted if GPS can't contradict it.
-# Reduced from 24 h to 4 h to match the parked-GPS window; a truck that
-# hasn't reported an `in` or `out` for 4 h is almost certainly not still
-# parked inside a yard.
 _YARD_STATE_MAX_AGE        = timedelta(hours=4)
 
-# If a truck's GPS says it is farther than this from the polygon that its
-# alarm state claims it is inside, discard the alarm state. This is the
-# hard sanity check for the "250 km away but still counted" bug.
+# Sanity distance for the yard membership test.
 _YARD_SANITY_DISTANCE_KM   = 5.0
 
 # Two separate freshness windows for the corridor direction logic.
@@ -100,14 +113,25 @@ _YARD_GPS_MEMBERSHIP_AGE   = timedelta(hours=4)
 
 # "At facility" heuristic: within this many km of a corridor facility and
 # not moving faster than _FACILITY_NEAR_MOVING_KPH → counted as AT that
-# facility, not "heading to" the other one. Defaults tuned so that a truck
-# parked in the Takoradi yard just outside a shrunken polygon still reads
-# as at_takoradi, but a truck driving the highway at 60 kph does not.
+# facility, not "heading to" the other one.
 _FACILITY_NEAR_KM          = 5.0
 _FACILITY_NEAR_MOVING_KPH  = 20.0
 
-# Viewer presence: no /live/api/fleet or heartbeat in this many seconds →
-# treat the process as "nobody watching" and skip the Tracksolid fetch.
+# ---------------------------------------------------------------------------
+# Corridor direction tuning (Nov 2026)
+#
+# The road is not a straight line; a ±45° cone around the straight-line
+# corridor axis misses almost half the track points. ±60° matches the
+# playback tab's classification. When a truck's bearing is momentarily
+# outside that cone (bend, manoeuvre, GPS glitch), we hold the last
+# corridor direction as long as the truck is still within
+# _CORRIDOR_HOLD_DISTANCE_KM of where that direction was last confirmed.
+# ---------------------------------------------------------------------------
+_CORRIDOR_BEARING_TOLERANCE_DEG = 60.0
+_CORRIDOR_HOLD_DISTANCE_KM      = 5.0
+_CORRIDOR_HOLD_MAX_AGE          = timedelta(minutes=30)
+
+# Viewer presence
 _VIEWER_TTL_SEC            = 60
 
 _YARD_FENCES = (
@@ -126,14 +150,6 @@ _CORRIDOR_DEFAULTS = {
     "takoradi": {"lat": 4.893897, "lng": -1.748176, "radius_km": 0.40},
 }
 
-# Direction bearing thresholds (degrees, 0 = north, clockwise).
-_DIR_EAST_MIN  = 45.0
-_DIR_EAST_MAX  = 135.0
-_DIR_SOUTH_MIN = 135.0
-_DIR_SOUTH_MAX = 225.0
-_DIR_WEST_MIN  = 225.0
-_DIR_WEST_MAX  = 315.0
-
 
 # ---------------------------------------------------------------------------
 # Scan pause (GLOBAL, admin-only)
@@ -145,13 +161,11 @@ _paused_lock = Lock()
 
 
 def is_scanning(session_id: str | None = None, default: bool = True) -> bool:
-    """Return True if live scanning is allowed right now (i.e. not paused)."""
     with _paused_lock:
         return not _paused
 
 
 def set_scanning(session_id: str | None, enabled: bool) -> None:
-    """Set the GLOBAL pause flag."""
     global _paused, _paused_since
     with _paused_lock:
         _paused = not bool(enabled)
@@ -176,9 +190,6 @@ _viewers_lock = Lock()
 
 
 def heartbeat(session_id: str | None) -> None:
-    """Record a viewer heartbeat. Called by /live/api/fleet and
-    /live/api/heartbeat. Uses the session_id (empty string for unauthenticated
-    probes, which we ignore)."""
     if not session_id:
         return
     with _viewers_lock:
@@ -186,10 +197,8 @@ def heartbeat(session_id: str | None) -> None:
 
 
 def viewer_count() -> int:
-    """Number of distinct sessions that have heartbeated in the TTL window."""
     cutoff = time.time() - _VIEWER_TTL_SEC
     with _viewers_lock:
-        # Opportunistically evict expired entries.
         stale = [k for k, t in _viewers.items() if t < cutoff]
         for k in stale:
             _viewers.pop(k, None)
@@ -201,7 +210,6 @@ def has_active_viewers() -> bool:
 
 
 def forget_session(session_id: str | None) -> None:
-    """Drop a viewer's heartbeat (called on logout)."""
     if not session_id:
         return
     with _viewers_lock:
@@ -248,6 +256,22 @@ def _haversine_km(lat1, lng1, lat2, lng2) -> float:
     a = (math.sin(dp / 2) ** 2
          + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2)
     return 2 * R * math.asin(math.sqrt(a))
+
+
+def _bearing_deg(lat1: float, lng1: float,
+                 lat2: float, lng2: float) -> float:
+    """Initial bearing from (lat1,lng1) to (lat2,lng2), 0°=N, clockwise."""
+    p1 = math.radians(lat1); p2 = math.radians(lat2)
+    dl = math.radians(lng2 - lng1)
+    x = math.sin(dl) * math.cos(p2)
+    y = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return (math.degrees(math.atan2(x, y)) + 360.0) % 360.0
+
+
+def _angular_distance(a: float, b: float) -> float:
+    """Smallest angular distance between two bearings, in degrees (0-180)."""
+    d = abs((a - b) % 360.0)
+    return min(d, 360.0 - d)
 
 
 def _polygon_centroid(points: list[list[float]]) -> tuple[float, float]:
@@ -297,19 +321,10 @@ def _point_in_polygon(lat: float, lng: float, points: list[list[float]]) -> bool
 def _point_to_segment_km(lat: float, lng: float,
                          lat1: float, lng1: float,
                          lat2: float, lng2: float) -> float:
-    """Shortest distance from a point to a great-circle segment, in km.
-
-    Uses an equirectangular approximation local to the segment's latitude
-    band, which is accurate to well under 1 % for segments shorter than a
-    few km at these latitudes. That is more than enough for a "is this
-    truck anywhere near the fence" sanity check.
-    """
     ref_lat = math.radians((lat + lat1 + lat2) / 3.0)
     kx = 111.32 * math.cos(ref_lat)
     ky = 111.32
 
-    # Project to a local plane centred on the point.
-    px, py = 0.0, 0.0
     ax = (lng1 - lng) * kx
     ay = (lat1 - lat) * ky
     bx = (lng2 - lng) * kx
@@ -327,11 +342,6 @@ def _point_to_segment_km(lat: float, lng: float,
 
 
 def _distance_to_facility_km(lat: float, lng: float, facility: dict) -> float:
-    """Shortest distance from (lat, lng) to the facility geometry, in km.
-
-    For a polygon: min distance to any edge (0 if inside).
-    For a circle: max(0, haversine to centre − radius).
-    """
     if facility.get("shape") == "polygon" and facility.get("polygon"):
         poly = facility["polygon"]
         if _point_in_polygon(lat, lng, poly):
@@ -351,6 +361,8 @@ def _distance_to_facility_km(lat: float, lng: float, facility: dict) -> float:
         return max(0.0, d - facility["radius_km"])
 
     return float("inf")
+
+
 def _validate_polygon(points) -> list[list[float]] | None:
     if not isinstance(points, list) or len(points) < 3:
         return None
@@ -651,11 +663,6 @@ _inside_yard_gps = _inside_yard
 
 def _nearest_facility(lat: float, lng: float,
                       facilities: list[dict]) -> tuple[dict | None, float]:
-    """Return (facility, distance_km) for the closest corridor facility.
-
-    `distance_km` is 0 if inside, otherwise the shortest distance to the
-    facility's edge (polygon edges or circle circumference).
-    """
     best: dict | None = None
     best_d = float("inf")
     for f in facilities:
@@ -666,6 +673,104 @@ def _nearest_facility(lat: float, lng: float,
             best_d = d
             best = f
     return best, best_d
+
+
+# ---------------------------------------------------------------------------
+# Corridor axis + bearing
+# ---------------------------------------------------------------------------
+#
+# Computed once from the two facility centroids and cached until the
+# facilities change. The two bearings are the straight-line axis in each
+# direction; the tolerance in _CORRIDOR_BEARING_TOLERANCE_DEG widens the
+# cone to account for road curves.
+
+_corridor_axis_lock = Lock()
+_corridor_axis_cache: dict = {
+    "awaso_lat": None, "awaso_lng": None,
+    "takoradi_lat": None, "takoradi_lng": None,
+    "to_takoradi_bearing": None,
+    "to_awaso_bearing": None,
+}
+
+
+def _corridor_axis(corridor_facilities: list[dict]) -> dict:
+    """Return {to_takoradi_bearing, to_awaso_bearing} from facility centroids."""
+    awaso = next(
+        (f for f in corridor_facilities if f.get("kind") == "awaso"),
+        None,
+    )
+    takoradi = next(
+        (f for f in corridor_facilities if f.get("kind") == "takoradi"),
+        None,
+    )
+    if not awaso or not takoradi:
+        return {
+            "to_takoradi_bearing": None,
+            "to_awaso_bearing": None,
+        }
+
+    # Check cache
+    with _corridor_axis_lock:
+        if (_corridor_axis_cache["awaso_lat"] == awaso.get("lat")
+                and _corridor_axis_cache["awaso_lng"] == awaso.get("lng")
+                and _corridor_axis_cache["takoradi_lat"] == takoradi.get("lat")
+                and _corridor_axis_cache["takoradi_lng"] == takoradi.get("lng")
+                and _corridor_axis_cache["to_takoradi_bearing"] is not None):
+            return {
+                "to_takoradi_bearing": _corridor_axis_cache["to_takoradi_bearing"],
+                "to_awaso_bearing": _corridor_axis_cache["to_awaso_bearing"],
+            }
+
+    try:
+        to_tak = _bearing_deg(
+            float(awaso["lat"]), float(awaso["lng"]),
+            float(takoradi["lat"]), float(takoradi["lng"]),
+        )
+    except (TypeError, ValueError):
+        return {
+            "to_takoradi_bearing": None,
+            "to_awaso_bearing": None,
+        }
+    to_awa = (to_tak + 180.0) % 360.0
+
+    with _corridor_axis_lock:
+        _corridor_axis_cache.update({
+            "awaso_lat": awaso.get("lat"),
+            "awaso_lng": awaso.get("lng"),
+            "takoradi_lat": takoradi.get("lat"),
+            "takoradi_lng": takoradi.get("lng"),
+            "to_takoradi_bearing": to_tak,
+            "to_awaso_bearing": to_awa,
+        })
+
+    return {
+        "to_takoradi_bearing": to_tak,
+        "to_awaso_bearing": to_awa,
+    }
+
+
+def _direction_from_heading_corridor(
+    heading: float,
+    axis: dict,
+    *,
+    tolerance_deg: float = _CORRIDOR_BEARING_TOLERANCE_DEG,
+) -> str | None:
+    """Classify a bearing against the corridor axis.
+
+    Returns 'heading_to_takoradi', 'heading_to_awaso', or None if the
+    bearing is outside both cones.
+    """
+    to_tak = axis.get("to_takoradi_bearing")
+    to_awa = axis.get("to_awaso_bearing")
+    if to_tak is None or to_awa is None:
+        return None
+    if _angular_distance(heading, to_tak) <= tolerance_deg:
+        return "heading_to_takoradi"
+    if _angular_distance(heading, to_awa) <= tolerance_deg:
+        return "heading_to_awaso"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Corridor event state
 # ---------------------------------------------------------------------------
@@ -739,13 +844,6 @@ def _fetch_recent_yard_alarms(imeis: list[str]) -> dict[str, list[dict]]:
 
 
 def _derive_yard_state_from_alarms(alarms: list[dict]) -> dict | None:
-    """Decide whether a truck is *currently* inside a yard fence.
-
-    Correctness rule: for each fence, the truck is inside iff the most
-    recent alarm *for that fence* is an 'in' (newer than the fence's last
-    'out'), and it is no older than _YARD_STATE_MAX_AGE. The returned
-    fence is the one whose 'in' is newest among those that qualify.
-    """
     if not alarms:
         return None
 
@@ -764,7 +862,6 @@ def _derive_yard_state_from_alarms(alarms: list[dict]) -> dict | None:
         if ev is None:
             continue
         if key in last_event:
-            # We already saw the newest event for this fence; ignore older ones.
             continue
         last_event[key] = ev
         last_in_time[key] = _alarm_time(a) if ev == "in" else None
@@ -775,10 +872,7 @@ def _derive_yard_state_from_alarms(alarms: list[dict]) -> dict | None:
             continue
         t = last_in_time.get(key)
         if t is not None and (now - t) > _YARD_STATE_MAX_AGE:
-            log.debug(
-                "yard-state: ignoring stale 'in' for %s at %s",
-                key, t,
-            )
+            log.debug("yard-state: ignoring stale 'in' for %s at %s", key, t)
             continue
         inside.append((t or datetime.min.replace(tzinfo=timezone.utc), key))
 
@@ -930,32 +1024,6 @@ def _resolve_yard_membership(
     gps_lng: float | None = None,
     yard_facilities: list[dict] | None = None,
 ) -> dict | None:
-    """Decide whether a truck is inside a yard fence right now.
-
-    Priority (most trustworthy first):
-
-    1. **GPS-outside with fresh fix beats a stale alarm-`in`.**
-       If GPS membership is trustworthy and says "not in any yard",
-       and the alarm state's `since` is older than the GPS fix, the
-       truck has left. Return None.
-       This is the direct fix for the "250 km away but still counted" bug.
-
-    2. **Alarm-`in` newer than the GPS fix wins.**
-       The truck just crossed into the fence after the last GPS sample.
-
-    3. **GPS-inside wins.**
-       The app's polygon is authoritative when GPS says the truck is
-       inside it, even if Tracksolid never fired an `in` (because the
-       app polygon is larger than Tracksolid's geofence).
-
-    4. **Sanity check on the alarm state.**
-       If we still have an alarm-`in` that survived the above, verify
-       the truck is actually near the claimed yard polygon. If it is
-       more than _YARD_SANITY_DISTANCE_KM away, drop the alarm state.
-       This catches stale alarms when GPS is old or missing.
-
-    5. Otherwise → outside.
-    """
     alarm_time = None
     if alarm_state and alarm_state.get("since"):
         try:
@@ -965,7 +1033,7 @@ def _resolve_yard_membership(
         except (ValueError, TypeError):
             alarm_time = None
 
-    # --- Step 1: fresh GPS saying "outside" overrides a stale alarm-in ---
+    # --- Step 1: fresh GPS outside beats stale alarm-in ---
     if gps_membership_ok and gps_yard is None and alarm_state is not None:
         if gps_time is not None and alarm_time is not None and alarm_time <= gps_time:
             log.debug(
@@ -979,7 +1047,6 @@ def _resolve_yard_membership(
     if (alarm_state is not None
             and alarm_time is not None
             and (gps_time is None or alarm_time > gps_time)):
-        # Still run the distance sanity check if we have coordinates.
         if (gps_lat is not None and gps_lng is not None
                 and yard_facilities):
             claimed = next(
@@ -1036,13 +1103,127 @@ def _resolve_yard_membership(
     return None
 
 
-def _direction_from_heading(heading: float) -> str | None:
-    """Map a compass bearing to a corridor direction, or None if ambiguous."""
-    if heading >= _DIR_WEST_MIN or heading <= _DIR_EAST_MIN:
-        return "heading_to_awaso"
-    if _DIR_SOUTH_MIN <= heading <= _DIR_SOUTH_MAX:
-        return "heading_to_takoradi"
-    return None
+# ---------------------------------------------------------------------------
+# Direction hold cache (Nov 2026)
+#
+# When a moving truck's bearing falls outside the ±60° cone momentarily
+# (bend, manoeuvre, brief GPS glitch), hold the last confirmed direction
+# if the truck has moved less than _CORRIDOR_HOLD_DISTANCE_KM since that
+# direction was confirmed. This mirrors Tracksolid's playback behaviour.
+# ---------------------------------------------------------------------------
+
+_direction_hold_cache: dict[str, dict] = {}
+_direction_hold_lock = Lock()
+
+
+def _direction_hold_get(imei: str) -> dict | None:
+    with _direction_hold_lock:
+        return _direction_hold_cache.get(imei)
+
+
+def _direction_hold_set(imei: str, direction: str,
+                        lat: float | None, lng: float | None) -> None:
+    if direction not in ("heading_to_takoradi", "heading_to_awaso"):
+        return
+    with _direction_hold_lock:
+        _direction_hold_cache[imei] = {
+            "direction": direction,
+            "lat":       lat,
+            "lng":       lng,
+            "set_at":    datetime.now(timezone.utc),
+        }
+
+
+def _direction_hold_clear(imei: str) -> None:
+    with _direction_hold_lock:
+        _direction_hold_cache.pop(imei, None)
+
+
+def _classify_direction(
+    *,
+    imei: str,
+    inside: dict | None,
+    near_facility: dict | None,
+    near_dist: float,
+    speed: float,
+    heading: float | None,
+    gps_fresh: bool,
+    last_event_state: str | None,
+    axis: dict,
+    lat: float | None,
+    lng: float | None,
+    now_dt: datetime,
+) -> str:
+    """Return the best-guess corridor direction for one truck.
+
+    Priority (highest first):
+      1. Inside a facility polygon → at_<kind>
+      2. Near a facility + not moving fast → at_<kind>
+      3. Moving with a bearing in the ±60° cone → heading_to_<facility>
+      4. Moving, bearing ambiguous, but held direction is still fresh
+         and truck hasn't moved far → hold previous direction
+      5. Fall back to last corridor alarm state
+      6. Unknown
+    """
+
+    # 1. Inside a facility
+    if inside is not None:
+        direction = f"at_{inside['kind']}"
+        # If we were "heading" and just arrived, clear the hold.
+        if near_dist == 0.0:
+            _direction_hold_clear(imei)
+        return direction
+
+    # 2. Near facility + slow
+    if (near_facility is not None
+            and near_dist <= _FACILITY_NEAR_KM
+            and speed < _FACILITY_NEAR_MOVING_KPH):
+        return f"at_{near_facility['kind']}"
+
+    # 3. Moving with bearing in the cone
+    moving_now = (speed > MOVING_KPH and heading is not None and gps_fresh)
+    if moving_now:
+        heading_dir = _direction_from_heading_corridor(heading, axis)
+        if heading_dir:
+            _direction_hold_set(imei, heading_dir, lat, lng)
+            return heading_dir
+
+        # 4. Bearing ambiguous — try the hold
+        hold = _direction_hold_get(imei)
+        if hold is not None:
+            age = now_dt - hold["set_at"]
+            if age <= _CORRIDOR_HOLD_MAX_AGE:
+                if (hold["lat"] is not None and hold["lng"] is not None
+                        and lat is not None and lng is not None):
+                    moved_km = _haversine_km(
+                        hold["lat"], hold["lng"], lat, lng,
+                    )
+                    if moved_km <= _CORRIDOR_HOLD_DISTANCE_KM:
+                        # Extend the hold with the current position so it
+                        # survives another bend.
+                        _direction_hold_set(imei, hold["direction"], lat, lng)
+                        return hold["direction"]
+                    else:
+                        log.debug(
+                            "direction hold expired for %s: moved %.1f km "
+                            "since last confirmed heading",
+                            imei, moved_km,
+                        )
+                        _direction_hold_clear(imei)
+                else:
+                    # No coordinates to compare, but the hold is still
+                    # fresh — trust it for one more tick.
+                    return hold["direction"]
+            else:
+                _direction_hold_clear(imei)
+
+    # 5. Fall back to last corridor alarm state
+    if last_event_state:
+        _direction_hold_set(imei, last_event_state, lat, lng)
+        return last_event_state
+
+    # 6. Unknown
+    return "unknown"
 
 
 def get_fleet_state(
@@ -1079,8 +1260,6 @@ def get_fleet_state(
         diagnostics["reason"] = "paused (no snapshot yet)"
         return [], False, True, diagnostics
 
-    # If nobody has heartbeated within the viewer TTL, don't spend API
-    # calls. Fall back to the cached snapshot if we have one.
     if not has_active_viewers():
         with _fleet_cache_lock:
             cached = _fleet_cache["data"]
@@ -1097,6 +1276,7 @@ def get_fleet_state(
 
     corridor_facilities, yard_facilities, fences_error = _load_facilities_diagnostic()
     diagnostics["fences_error"] = fences_error
+    axis = _corridor_axis(corridor_facilities)
 
     with _fleet_cache_lock:
         if (not force_refresh
@@ -1185,10 +1365,6 @@ def get_fleet_state(
         gps_fresh = (gps_time is not None
                      and (now_dt - gps_time) <= _YARD_GPS_TRUST_AGE)
 
-        # Yard membership uses a *wider* freshness window for parked
-        # trucks. A moving truck must have a fresh fix; a parked truck's
-        # older fix is still authoritative for "which polygon is it
-        # inside?". See the module docstring for why.
         gps_membership_ok = (
             gps_time is not None
             and (
@@ -1221,21 +1397,6 @@ def get_fleet_state(
         inside = (_inside_facility(lat, lng, corridor_facilities)
                   if lat is not None and lng is not None else None)
 
-        # --- Direction classification ---
-        #
-        # Three inputs:
-        #   * `inside` — truck is geometrically inside a corridor facility.
-        #   * `near_facility` — truck is within _FACILITY_NEAR_KM of a
-        #     corridor facility AND not moving fast. This catches trucks
-        #     parked just outside a shrunken polygon (they are physically
-        #     at Takoradi but the polygon is small).
-        #   * `moving_now` — fresh fix + speed > MOVING_KPH + heading.
-        #
-        # Priority:
-        #   1. Inside → at_<kind>
-        #   2. Near (and slow) → at_<kind>
-        #   3. Moving now → heading-based
-        #   4. Fallback → last_event_state, then "unknown"
         near_facility = None
         near_dist = float("inf")
         if lat is not None and lng is not None:
@@ -1243,33 +1404,20 @@ def get_fleet_state(
                 lat, lng, corridor_facilities
             )
 
-        moving_now = (
-            speed > MOVING_KPH
-            and heading is not None
-            and gps_fresh
+        direction = _classify_direction(
+            imei=imei,
+            inside=inside,
+            near_facility=near_facility,
+            near_dist=near_dist,
+            speed=speed,
+            heading=heading,
+            gps_fresh=gps_fresh,
+            last_event_state=last_event_state,
+            axis=axis,
+            lat=lat,
+            lng=lng,
+            now_dt=now_dt,
         )
-
-        if inside is not None:
-            direction = f"at_{inside['kind']}"
-        elif (near_facility is not None
-                and near_dist <= _FACILITY_NEAR_KM
-                and speed < _FACILITY_NEAR_MOVING_KPH):
-            # Truck is physically at the facility but parked/creeping
-            # just outside the polygon. Count as "at".
-            direction = f"at_{near_facility['kind']}"
-        elif moving_now:
-            heading_dir = _direction_from_heading(heading)
-            if heading_dir:
-                direction = heading_dir
-            elif last_event_state:
-                direction = last_event_state
-            else:
-                direction = "unknown"
-        else:
-            # Not inside a facility, not near one, and not demonstrably
-            # moving → do not invent a heading. Prefer the last corridor
-            # alarm state, else "unknown".
-            direction = last_event_state or "unknown"
 
         motion = _motion_state(speed, gps_time, now_dt)
 
@@ -1304,6 +1452,8 @@ def get_fleet_state(
 
     diagnostics["reason"] = "fetched"
     return out, _scan_in_progress.is_set(), False, diagnostics
+
+
 def summarise(states: list[dict]) -> dict:
     counts = {
         "heading_to_takoradi": 0, "heading_to_awaso": 0,
@@ -1425,6 +1575,14 @@ def save_fences(payload: list[dict]) -> dict:
             saved += 1
 
     invalidate_facilities_cache()
+    # Corridor axis cache invalidation — a facility may have moved.
+    with _corridor_axis_lock:
+        _corridor_axis_cache.update({
+            "awaso_lat": None, "awaso_lng": None,
+            "takoradi_lat": None, "takoradi_lng": None,
+            "to_takoradi_bearing": None,
+            "to_awaso_bearing": None,
+        })
     corridor, yards = _load_facilities()
     return {"saved": saved, "yards": yards, "corridor": corridor}
 
@@ -1441,4 +1599,11 @@ def delete_fence(row_id: str) -> bool:
     )
     deleted = len(resp.data or []) > 0
     invalidate_facilities_cache()
+    with _corridor_axis_lock:
+        _corridor_axis_cache.update({
+            "awaso_lat": None, "awaso_lng": None,
+            "takoradi_lat": None, "takoradi_lng": None,
+            "to_takoradi_bearing": None,
+            "to_awaso_bearing": None,
+        })
     return deleted

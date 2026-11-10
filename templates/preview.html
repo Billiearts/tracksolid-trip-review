@@ -38,6 +38,32 @@
     {% set y   = c.yard %}
     {% set m   = manual or {} %}
 
+    {#
+      Defensive accessors for behaviour fields.
+
+      Older saved reports (computed_json written before hard_acceleration
+      was added) have no `hard_acceleration` key at all — the raw Jinja
+      `ev.max_speed.hard_acceleration` resolves to Undefined and
+      `Undefined | round(1)` throws TypeError. These helpers coerce
+      missing values to 0 so every report — old or new — renders.
+    #}
+    {% macro ev_count(kind) -%}
+      {{ ev.counts.get(kind, 0) if ev and ev.counts else 0 }}
+    {%- endmacro %}
+    {% macro ev_max_speed(kind) -%}
+      {{ ((ev.max_speed.get(kind) if ev and ev.max_speed else 0) or 0) | round(1) }}
+    {%- endmacro %}
+    {% macro hist_behav(kind, field) -%}
+      {%- set b = (h.behaviours.get(kind) if h and h.behaviours else None) or {} -%}
+      {%- if field == 'total_events' -%}
+        {{ b.get('total_events', 0) }}
+      {%- elif field == 'max_speed' -%}
+        {{ (b.get('max_speed') or 0) | round(1) }}
+      {%- elif field == 'avg_max_speed' -%}
+        {{ (b.get('avg_max_speed') or 0) | round(1) }}
+      {%- endif -%}
+    {%- endmacro %}
+
     {% set unique_trucks = reports | map(attribute='truck_id') | unique | list %}
     {% set same_truck_count = reports | selectattr('truck_id', 'equalto', c.truck_id) | list | length %}
 
@@ -78,8 +104,6 @@
           <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
             <button type="submit" form="export-form">Export this trip</button>
 
-            {# "Export all" lives on the preview job page. Link to it
-               rather than duplicating the bulk form here. #}
             {% if job_id and reports | length > 1 %}
               <a class="btn-edit"
                  style="background:#2b8a3e;color:#fff;border-color:#2b8a3e;text-decoration:none;"
@@ -124,11 +148,10 @@
           <p class="muted" style="margin: 0.5rem 0 1rem;">
             {% if is_bulk %}
               Editing these fields rewrites only this trip's sheet in the
-              bulk workbook. Other trips are untouched. No Tracksolid API
-              calls are made.
+              bulk workbook. Other trips are untouched.
             {% else %}
               Editing these fields regenerates the Excel file from the stored
-              data — no Tracksolid API calls are made.
+              data.
             {% endif %}
           </p>
 
@@ -166,6 +189,18 @@
                      placeholder="e.g. 0, 1, None">
             </div>
 
+            {# ---- Board additions ---- #}
+            <div class="field">
+              <label for="meta_comments">Comments</label>
+              <textarea id="meta_comments" name="meta_comments" rows="3"
+                        placeholder="General comments, include anything found during maintenance here.">{{ m.comments or '' }}</textarea>
+            </div>
+            <div class="field">
+              <label for="meta_maintenance_issues">Maintenance</label>
+              <textarea id="meta_maintenance_issues" name="meta_maintenance_issues" rows="3"
+                        placeholder="Mechanical issues, maintenance notes…">{{ m.maintenance_issues or '' }}</textarea>
+            </div>
+
             <div class="field signature-field">
               <label>Driver's Signature</label>
               {% if m.signature %}
@@ -183,15 +218,46 @@
                   {% endif %}
                 </div>
               {% endif %}
-              <div class="signature-pad">
-                <canvas id="signature-canvas" width="640" height="160"></canvas>
-                <button type="button" class="signature-clear" id="signature-clear">Clear</button>
+              <div class="signature-pad" data-sig-pad="driver">
+                <canvas class="sig-canvas" width="640" height="160"></canvas>
+                <button type="button" class="signature-clear" data-sig-clear>Clear</button>
               </div>
               <input type="hidden" name="meta_signature" id="meta_signature">
               <input type="hidden" name="meta_signature_kind" id="meta_signature_kind"
                      value="image">
               <p class="muted" style="font-size: 0.78rem; margin: 0.35rem 0 0;">
                 Draw with mouse, stylus, or finger. Leave blank to keep the
+                existing signature (or none).
+              </p>
+            </div>
+
+            {# ---- Officer signature ---- #}
+            <div class="field signature-field">
+              <label>Officer's Signature</label>
+              {% if m.officer_signature %}
+                <div style="margin: 0.25rem 0 0.6rem; font-size: 0.82rem; color: #666;">
+                  Current signature:
+                  {% if m.officer_signature_kind == 'image' and m.officer_signature.startswith('data:image/') %}
+                    <div style="margin-top: 0.4rem; background: #fff; border: 1px solid #d7dbe0; border-radius: 4px; padding: 0.25rem; display: inline-block;">
+                      <img src="{{ m.officer_signature }}" alt="officer signature"
+                           style="display: block; max-width: 220px; max-height: 70px;">
+                    </div>
+                  {% else %}
+                    <span style="font-family: 'Brush Script MT', cursive; font-size: 1.4rem; color: #1e5f9e;">
+                      {{ m.officer_signature }}
+                    </span>
+                  {% endif %}
+                </div>
+              {% endif %}
+              <div class="signature-pad" data-sig-pad="officer">
+                <canvas class="sig-canvas" width="640" height="160"></canvas>
+                <button type="button" class="signature-clear" data-sig-clear>Clear</button>
+              </div>
+              <input type="hidden" name="meta_officer_signature" id="meta_officer_signature">
+              <input type="hidden" name="meta_officer_signature_kind"
+                     id="meta_officer_signature_kind" value="image">
+              <p class="muted" style="font-size: 0.78rem; margin: 0.35rem 0 0;">
+                Signed by the reviewing officer. Leave blank to keep the
                 existing signature (or none).
               </p>
             </div>
@@ -248,17 +314,45 @@
                      placeholder="e.g. 0, 1, None">
             </div>
 
+            {# ---- Board additions ---- #}
+            <div class="field">
+              <label for="meta_comments">Comments</label>
+              <textarea id="meta_comments" name="meta_comments" rows="3"
+                        placeholder="General comments — include drugs / refuse found during maintenance here."></textarea>
+            </div>
+            <div class="field">
+              <label for="meta_maintenance_issues">Maintenance side / mech issues</label>
+              <textarea id="meta_maintenance_issues" name="meta_maintenance_issues" rows="3"
+                        placeholder="Mechanical issues, maintenance notes…"></textarea>
+            </div>
+
             <div class="field signature-field">
               <label>Driver's Signature</label>
-              <div class="signature-pad">
-                <canvas id="signature-canvas" width="640" height="160"></canvas>
-                <button type="button" class="signature-clear" id="signature-clear">Clear</button>
+              <div class="signature-pad" data-sig-pad="driver">
+                <canvas class="sig-canvas" width="640" height="160"></canvas>
+                <button type="button" class="signature-clear" data-sig-clear>Clear</button>
               </div>
               <input type="hidden" name="meta_signature" id="meta_signature">
               <input type="hidden" name="meta_signature_kind" id="meta_signature_kind"
                      value="image">
               <p class="muted" style="font-size: 0.78rem; margin: 0.35rem 0 0;">
                 Draw with mouse, stylus, or finger. Leave blank to skip.
+              </p>
+            </div>
+
+            {# ---- Officer signature ---- #}
+            <div class="field signature-field">
+              <label>Officer's Signature</label>
+              <div class="signature-pad" data-sig-pad="officer">
+                <canvas class="sig-canvas" width="640" height="160"></canvas>
+                <button type="button" class="signature-clear" data-sig-clear>Clear</button>
+              </div>
+              <input type="hidden" name="meta_officer_signature"
+                     id="meta_officer_signature">
+              <input type="hidden" name="meta_officer_signature_kind"
+                     id="meta_officer_signature_kind" value="image">
+              <p class="muted" style="font-size: 0.78rem; margin: 0.35rem 0 0;">
+                Signed by the reviewing officer. Leave blank to skip.
               </p>
             </div>
 
@@ -362,6 +456,7 @@
           </table>
         </div>
 
+        {# ---------------- Driver Behaviour (this trip) ---------------- #}
         <div class="summary-section">
           <h3>Driver Behaviour</h3>
           <table class="preview-table">
@@ -371,28 +466,33 @@
             <tbody>
               <tr>
                 <td>Hard braking</td>
-                <td>{{ ev.counts.hard_braking }}</td>
-                <td>{{ ev.max_speed.hard_braking | round(1) }}</td>
+                <td>{{ ev_count('hard_braking') }}</td>
+                <td>{{ ev_max_speed('hard_braking') }}</td>
+              </tr>
+              <tr>
+                <td>Hard acceleration</td>
+                <td>{{ ev_count('hard_acceleration') }}</td>
+                <td>{{ ev_max_speed('hard_acceleration') }}</td>
               </tr>
               <tr>
                 <td>Hard cornering</td>
-                <td>{{ ev.counts.hard_cornering }}</td>
-                <td>{{ ev.max_speed.hard_cornering | round(1) }}</td>
+                <td>{{ ev_count('hard_cornering') }}</td>
+                <td>{{ ev_max_speed('hard_cornering') }}</td>
               </tr>
               <tr>
                 <td>Speeding &lt;10 kph over</td>
-                <td>{{ ev.counts.speeding_10 }}</td>
-                <td>{{ ev.max_speed.speeding_10 | round(1) }}</td>
+                <td>{{ ev_count('speeding_10') }}</td>
+                <td>{{ ev_max_speed('speeding_10') }}</td>
               </tr>
               <tr>
                 <td>Speeding &lt;20 kph over</td>
-                <td>{{ ev.counts.speeding_20 }}</td>
-                <td>{{ ev.max_speed.speeding_20 | round(1) }}</td>
+                <td>{{ ev_count('speeding_20') }}</td>
+                <td>{{ ev_max_speed('speeding_20') }}</td>
               </tr>
               <tr>
                 <td>Speeding &gt;20 kph over</td>
-                <td>{{ ev.counts.speeding_over_20 }}</td>
-                <td>{{ ev.max_speed.speeding_over_20 | round(1) }}</td>
+                <td>{{ ev_count('speeding_over_20') }}</td>
+                <td>{{ ev_max_speed('speeding_over_20') }}</td>
               </tr>
             </tbody>
           </table>
@@ -480,6 +580,7 @@
               </tbody>
             </table>
 
+            {# ------------- Driver Behaviour (previous 3 months) ------------- #}
             <h3 style="margin-top: 1.5rem;">Driver Behaviour</h3>
             <table class="preview-table">
               <thead>
@@ -493,33 +594,39 @@
               <tbody>
                 <tr>
                   <td>Hard braking</td>
-                  <td>{{ h.behaviours.hard_braking.total_events }}</td>
-                  <td>{{ h.behaviours.hard_braking.max_speed | round(1) }}</td>
-                  <td>{{ h.behaviours.hard_braking.avg_max_speed | round(1) }}</td>
+                  <td>{{ hist_behav('hard_braking', 'total_events') }}</td>
+                  <td>{{ hist_behav('hard_braking', 'max_speed') }}</td>
+                  <td>{{ hist_behav('hard_braking', 'avg_max_speed') }}</td>
+                </tr>
+                <tr>
+                  <td>Hard acceleration</td>
+                  <td>{{ hist_behav('hard_acceleration', 'total_events') }}</td>
+                  <td>{{ hist_behav('hard_acceleration', 'max_speed') }}</td>
+                  <td>{{ hist_behav('hard_acceleration', 'avg_max_speed') }}</td>
                 </tr>
                 <tr>
                   <td>Hard cornering</td>
-                  <td>{{ h.behaviours.hard_cornering.total_events }}</td>
-                  <td>{{ h.behaviours.hard_cornering.max_speed | round(1) }}</td>
-                  <td>{{ h.behaviours.hard_cornering.avg_max_speed | round(1) }}</td>
+                  <td>{{ hist_behav('hard_cornering', 'total_events') }}</td>
+                  <td>{{ hist_behav('hard_cornering', 'max_speed') }}</td>
+                  <td>{{ hist_behav('hard_cornering', 'avg_max_speed') }}</td>
                 </tr>
                 <tr>
                   <td>Speeding &lt;10 kph over</td>
-                  <td>{{ h.behaviours.speeding_10.total_events }}</td>
-                  <td>{{ h.behaviours.speeding_10.max_speed | round(1) }}</td>
-                  <td>{{ h.behaviours.speeding_10.avg_max_speed | round(1) }}</td>
+                  <td>{{ hist_behav('speeding_10', 'total_events') }}</td>
+                  <td>{{ hist_behav('speeding_10', 'max_speed') }}</td>
+                  <td>{{ hist_behav('speeding_10', 'avg_max_speed') }}</td>
                 </tr>
                 <tr>
                   <td>Speeding &lt;20 kph over</td>
-                  <td>{{ h.behaviours.speeding_20.total_events }}</td>
-                  <td>{{ h.behaviours.speeding_20.max_speed | round(1) }}</td>
-                  <td>{{ h.behaviours.speeding_20.avg_max_speed | round(1) }}</td>
+                  <td>{{ hist_behav('speeding_20', 'total_events') }}</td>
+                  <td>{{ hist_behav('speeding_20', 'max_speed') }}</td>
+                  <td>{{ hist_behav('speeding_20', 'avg_max_speed') }}</td>
                 </tr>
                 <tr>
                   <td>Speeding &gt;20 kph over</td>
-                  <td>{{ h.behaviours.speeding_over_20.total_events }}</td>
-                  <td>{{ h.behaviours.speeding_over_20.max_speed | round(1) }}</td>
-                  <td>{{ h.behaviours.speeding_over_20.avg_max_speed | round(1) }}</td>
+                  <td>{{ hist_behav('speeding_over_20', 'total_events') }}</td>
+                  <td>{{ hist_behav('speeding_over_20', 'max_speed') }}</td>
+                  <td>{{ hist_behav('speeding_over_20', 'avg_max_speed') }}</td>
                 </tr>
               </tbody>
             </table>
@@ -568,6 +675,7 @@
                   <th>End</th>
                   <th>Duration</th>
                   <th>Address</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -578,6 +686,17 @@
                     <td style="text-align: left;">{{ r.end.strftime('%Y-%m-%d %H:%M:%S') }}</td>
                     <td>{{ r.seconds | fmt_duration }}</td>
                     <td style="text-align: left; font-size: 0.82rem; color: #666;">{{ r.address or '' }}</td>
+                    <td style="text-align: right;">
+                      {% if r.lat is not none and r.lng is not none %}
+                        <button type="button" class="event-map-btn"
+                                data-lat="{{ r.lat }}" data-lng="{{ r.lng }}"
+                                data-label="Rest break"
+                                data-time="{{ r.start.strftime('%Y-%m-%d %H:%M:%S') }}"
+                                data-kind="rest">
+                          Map
+                        </button>
+                      {% endif %}
+                    </td>
                   </tr>
                 {% endfor %}
               </tbody>
@@ -598,6 +717,7 @@
                   <th>End</th>
                   <th>Duration</th>
                   <th>Address</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -608,6 +728,17 @@
                     <td style="text-align: left;">{{ s.end.strftime('%Y-%m-%d %H:%M:%S') }}</td>
                     <td>{{ s.seconds | fmt_duration }}</td>
                     <td style="text-align: left; font-size: 0.82rem; color: #666;">{{ s.address or '' }}</td>
+                    <td style="text-align: right;">
+                      {% if s.lat is not none and s.lng is not none %}
+                        <button type="button" class="event-map-btn"
+                                data-lat="{{ s.lat }}" data-lng="{{ s.lng }}"
+                                data-label="Stop"
+                                data-time="{{ s.start.strftime('%Y-%m-%d %H:%M:%S') }}"
+                                data-kind="stop">
+                          Map
+                        </button>
+                      {% endif %}
+                    </td>
                   </tr>
                 {% endfor %}
               </tbody>
@@ -623,7 +754,13 @@
         {% if ev.events %}
           <table class="preview-table">
             <thead>
-              <tr><th>#</th><th>Time</th><th>Type</th><th>Speed (kph)</th></tr>
+              <tr>
+                <th>#</th>
+                <th>Time</th>
+                <th>Type</th>
+                <th>Speed (kph)</th>
+                <th></th>
+              </tr>
             </thead>
             <tbody>
               {% for e in ev.events %}
@@ -632,6 +769,19 @@
                   <td style="text-align: left;">{{ e.time }}</td>
                   <td style="text-align: left;">{{ e.type }}</td>
                   <td>{{ '%.1f' | format(e.speed) }}</td>
+                  <td style="text-align: right;">
+                    {% if e.lat is not none and e.lng is not none %}
+                      <button type="button" class="event-map-btn"
+                              data-lat="{{ e.lat }}" data-lng="{{ e.lng }}"
+                              data-label="{{ e.type }}"
+                              data-time="{{ e.time }}"
+                              data-kind="{{ e.kind }}">
+                        Map
+                      </button>
+                    {% else %}
+                      <span class="muted" style="font-size:0.75rem;" title="No coordinates in this alarm">no fix</span>
+                    {% endif %}
+                  </td>
                 </tr>
               {% endfor %}
             </tbody>
@@ -651,8 +801,139 @@
         <a href="{{ back_url }}">← Back</a>
       </p>
     {% endif %}
+
+    {# ---------- Event map popup ---------- #}
+    <div class="event-map-backdrop" id="event-map-backdrop" hidden></div>
+    <div class="event-map-modal" id="event-map-modal" hidden
+         role="dialog" aria-modal="true" aria-labelledby="event-map-title">
+      <div class="event-map-head">
+        <div>
+          <div class="event-map-title" id="event-map-title">Event location</div>
+          <div class="event-map-meta" id="event-map-meta"></div>
+        </div>
+        <button type="button" class="event-map-close" id="event-map-close"
+                aria-label="Close">&times;</button>
+      </div>
+      <div class="event-map-canvas" id="event-map-canvas"></div>
+      <div class="event-map-foot">
+        <button type="button" class="event-map-open" id="event-map-open">
+          Open in new page
+        </button>
+      </div>
+    </div>
   {% endif %}
 
+{% endblock %}
+
+{% block head %}
+  {{ super() }}
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <style>
+    .event-map-btn {
+      background: #eaf2fb;
+      color: #1e5f9e;
+      border: 1px solid #c7ddf3;
+      border-radius: 4px;
+      padding: 0.18rem 0.55rem;
+      font-size: 0.78rem;
+      font-family: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .event-map-btn:hover { background: #d6e7f8; }
+
+    .event-map-backdrop {
+      position: fixed; inset: 0;
+      background: rgba(15, 25, 40, 0.55);
+      z-index: 4000;
+    }
+    .event-map-backdrop[hidden] { display: none; }
+
+    .event-map-modal {
+      position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: min(920px, calc(100vw - 2rem));
+      height: min(640px, calc(100vh - 2rem));
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+      z-index: 4001;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .event-map-modal[hidden] { display: none; }
+
+    .event-map-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid #e2e6ea;
+      background: #f7f9fb;
+    }
+    .event-map-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #1a2027;
+    }
+    .event-map-meta {
+      font-size: 0.8rem;
+      color: #6b7280;
+      margin-top: 0.15rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .event-map-close {
+      background: transparent;
+      border: none;
+      font-size: 1.5rem;
+      line-height: 1;
+      color: #6b7280;
+      cursor: pointer;
+      padding: 0 0.25rem;
+      border-radius: 4px;
+    }
+    .event-map-close:hover { background: #e2e6ea; color: #1a2027; }
+
+    .event-map-canvas {
+      flex: 1 1 auto;
+      min-height: 0;
+      background: #dfe6ec;
+    }
+
+    .event-map-foot {
+      padding: 0.6rem 1rem;
+      border-top: 1px solid #e2e6ea;
+      background: #f7f9fb;
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.5rem;
+    }
+    .event-map-open {
+      background: #1e5f9e;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 0.5rem 1.1rem;
+      font-size: 0.88rem;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .event-map-open:hover { background: #164a7a; }
+
+    @media (max-width: 640px) {
+      .event-map-modal {
+        width: 100vw;
+        height: 100vh;
+        border-radius: 0;
+        top: 0; left: 0;
+        transform: none;
+      }
+    }
+  </style>
 {% endblock %}
 
 {% block scripts %}
@@ -666,7 +947,7 @@
         width: 100%;
         max-width: 640px;
       }
-      .signature-pad canvas {
+      .signature-pad .sig-canvas {
         display: block;
         width: 100%;
         height: auto;
@@ -690,7 +971,111 @@
       .signature-pad .signature-clear:hover { background: #fde7e7; }
     </style>
 
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+            crossorigin=""></script>
+
     <script>
+      (function () {
+        function initPad(padEl, hiddenSig, hiddenKind) {
+          if (!padEl || !hiddenSig) return;
+          const canvas = padEl.querySelector('.sig-canvas');
+          const clearBtn = padEl.querySelector('.signature-clear');
+          if (!canvas) return;
+
+          const ctx = canvas.getContext('2d');
+          let drawing = false;
+
+          function reset() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.strokeStyle = '#1b3a57';
+            ctx.lineWidth = 2.2;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            hiddenSig.value = '';
+          }
+
+          function pos(ev) {
+            const r = canvas.getBoundingClientRect();
+            const x = (ev.clientX - r.left) * (canvas.width / r.width);
+            const y = (ev.clientY - r.top)  * (canvas.height / r.height);
+            return { x, y };
+          }
+
+          function snapshot() {
+            hiddenSig.value = canvas.toDataURL('image/png');
+            if (hiddenKind) hiddenKind.value = 'image';
+          }
+
+          canvas.addEventListener('pointerdown', (ev) => {
+            ev.preventDefault();
+            canvas.setPointerCapture(ev.pointerId);
+            drawing = true;
+            const p = pos(ev);
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(p.x + 0.01, p.y);
+            ctx.stroke();
+          });
+
+          canvas.addEventListener('pointermove', (ev) => {
+            if (!drawing) return;
+            ev.preventDefault();
+            const p = pos(ev);
+            ctx.lineTo(p.x, p.y);
+            ctx.stroke();
+          });
+
+          function endStroke(ev) {
+            if (!drawing) return;
+            drawing = false;
+            try { canvas.releasePointerCapture(ev.pointerId); } catch (e) {}
+            snapshot();
+          }
+          canvas.addEventListener('pointerup', endStroke);
+          canvas.addEventListener('pointerleave', endStroke);
+          canvas.addEventListener('pointercancel', endStroke);
+
+          if (clearBtn) {
+            clearBtn.addEventListener('click', () => {
+              reset();
+              canvas.focus();
+            });
+          }
+
+          reset();
+
+          return {
+            restore: function (dataUrl) {
+              if (!dataUrl || !dataUrl.startsWith('data:image/')) return;
+              const img = new Image();
+              img.onload = function () {
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              };
+              img.src = dataUrl;
+            },
+            snapshot: snapshot,
+          };
+        }
+
+        const driverPadEl = document.querySelector('[data-sig-pad="driver"]');
+        const driverSigHidden = document.getElementById('meta_signature');
+        const driverKindHidden = document.getElementById('meta_signature_kind');
+        const driverPad = initPad(driverPadEl, driverSigHidden, driverKindHidden);
+
+        const officerPadEl = document.querySelector('[data-sig-pad="officer"]');
+        const officerSigHidden = document.getElementById('meta_officer_signature');
+        const officerKindHidden = document.getElementById('meta_officer_signature_kind');
+        const officerPad = initPad(officerPadEl, officerSigHidden, officerKindHidden);
+
+        window.__signatureRestoreDriver = driverPad && driverPad.restore;
+        window.__signatureRestoreOfficer = officerPad && officerPad.restore;
+      })();
+
       (function () {
         const tabs = document.querySelectorAll('.tab');
         const panels = document.querySelectorAll('.tab-panel');
@@ -701,87 +1086,6 @@
             panels.forEach(function (p) { p.hidden = p.dataset.panel !== target; });
           });
         });
-      })();
-
-      (function () {
-        const canvas = document.getElementById('signature-canvas');
-        const clearBtn = document.getElementById('signature-clear');
-        const hiddenSig = document.getElementById('meta_signature');
-        const hiddenKind = document.getElementById('meta_signature_kind');
-        if (!canvas || !hiddenSig) return;
-
-        const ctx = canvas.getContext('2d');
-        let drawing = false;
-
-        function reset() {
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.strokeStyle = '#1b3a57';
-          ctx.lineWidth = 2.2;
-          ctx.lineCap = 'round';
-          ctx.lineJoin = 'round';
-          hiddenSig.value = '';
-        }
-
-        function pos(ev) {
-          const r = canvas.getBoundingClientRect();
-          const x = (ev.clientX - r.left) * (canvas.width / r.width);
-          const y = (ev.clientY - r.top)  * (canvas.height / r.height);
-          return { x, y };
-        }
-
-        function snapshot() {
-          hiddenSig.value = canvas.toDataURL('image/png');
-          hiddenKind.value = 'image';
-        }
-
-        canvas.addEventListener('pointerdown', (ev) => {
-          ev.preventDefault();
-          canvas.setPointerCapture(ev.pointerId);
-          drawing = true;
-          const p = pos(ev);
-          ctx.beginPath();
-          ctx.moveTo(p.x, p.y);
-          ctx.lineTo(p.x + 0.01, p.y);
-          ctx.stroke();
-        });
-
-        canvas.addEventListener('pointermove', (ev) => {
-          if (!drawing) return;
-          ev.preventDefault();
-          const p = pos(ev);
-          ctx.lineTo(p.x, p.y);
-          ctx.stroke();
-        });
-
-        function endStroke(ev) {
-          if (!drawing) return;
-          drawing = false;
-          try { canvas.releasePointerCapture(ev.pointerId); } catch (e) {}
-          snapshot();
-        }
-        canvas.addEventListener('pointerup', endStroke);
-        canvas.addEventListener('pointerleave', endStroke);
-        canvas.addEventListener('pointercancel', endStroke);
-
-        clearBtn.addEventListener('click', () => {
-          reset();
-          canvas.focus();
-        });
-
-        window.__signatureRestore = function (dataUrl) {
-          if (!dataUrl || !dataUrl.startsWith('data:image/')) return;
-          const img = new Image();
-          img.onload = function () {
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          };
-          img.src = dataUrl;
-        };
-
-        reset();
       })();
 
       {% if not view_mode %}
@@ -800,6 +1104,7 @@
           const saved = store[String(CURRENT_TRIP)] || {};
           Object.keys(saved).forEach(function (name) {
             if (name === 'meta_signature' || name === 'meta_signature_kind') return;
+            if (name === 'meta_officer_signature' || name === 'meta_officer_signature_kind') return;
             const input = form.querySelector('[name="' + name + '"]');
             if (input && saved[name] !== undefined) input.value = saved[name];
           });
@@ -808,8 +1113,17 @@
             const kind = document.getElementById('meta_signature_kind');
             if (hidden) hidden.value = saved.meta_signature;
             if (kind) kind.value = saved.meta_signature_kind || 'image';
-            if (window.__signatureRestore) {
-              window.__signatureRestore(saved.meta_signature);
+            if (window.__signatureRestoreDriver) {
+              window.__signatureRestoreDriver(saved.meta_signature);
+            }
+          }
+          if (saved.meta_officer_signature) {
+            const hidden = document.getElementById('meta_officer_signature');
+            const kind = document.getElementById('meta_officer_signature_kind');
+            if (hidden) hidden.value = saved.meta_officer_signature;
+            if (kind) kind.value = saved.meta_officer_signature_kind || 'image';
+            if (window.__signatureRestoreOfficer) {
+              window.__signatureRestoreOfficer(saved.meta_officer_signature);
             }
           }
         })();
@@ -825,7 +1139,7 @@
 
         function saveCurrent() {
           const data = {};
-          form.querySelectorAll('input[name^="meta_"]').forEach(function (input) {
+          form.querySelectorAll('input[name^="meta_"], textarea[name^="meta_"]').forEach(function (input) {
             data[input.name] = input.value;
           });
           store[String(CURRENT_TRIP)] = data;
@@ -835,22 +1149,119 @@
         }
         window.__saveCurrentTripMeta = saveCurrent;
 
-        form.querySelectorAll('input[name^="meta_"]').forEach(function (input) {
+        form.querySelectorAll('input[name^="meta_"], textarea[name^="meta_"]').forEach(function (input) {
           input.addEventListener('input', saveCurrent);
           input.addEventListener('change', saveCurrent);
         });
 
-        const canvas = document.getElementById('signature-canvas');
-        if (canvas) {
-          canvas.addEventListener('pointerup', saveCurrent);
-        }
+        const driverCanvas = document.querySelector('[data-sig-pad="driver"] .sig-canvas');
+        if (driverCanvas) driverCanvas.addEventListener('pointerup', saveCurrent);
+        const officerCanvas = document.querySelector('[data-sig-pad="officer"] .sig-canvas');
+        if (officerCanvas) officerCanvas.addEventListener('pointerup', saveCurrent);
 
-        const clearBtn = document.getElementById('signature-clear');
-        if (clearBtn) {
-          clearBtn.addEventListener('click', saveCurrent);
-        }
+        form.querySelectorAll('[data-sig-clear]').forEach(function (b) {
+          b.addEventListener('click', saveCurrent);
+        });
       })();
       {% endif %}
+
+      // ---------------- Event map popup ----------------
+      (function () {
+        const backdrop = document.getElementById('event-map-backdrop');
+        const modal    = document.getElementById('event-map-modal');
+        const canvasEl = document.getElementById('event-map-canvas');
+        const titleEl  = document.getElementById('event-map-title');
+        const metaEl   = document.getElementById('event-map-meta');
+        const closeBtn = document.getElementById('event-map-close');
+        const openBtn  = document.getElementById('event-map-open');
+        if (!backdrop || !modal || !canvasEl) return;
+
+        let map = null;
+        let marker = null;
+        let current = { lat: null, lng: null, label: '', time: '', kind: '' };
+
+        function googleSatLayer() {
+          // Google Satellite tiles. `lyrs=s` = satellite, `h` = hybrid labels.
+          return L.tileLayer(
+            'https://{s}.google.com/vt/lyrs=s,h&x={x}&y={y}&z={z}&hl=en',
+            {
+              maxZoom: 21,
+              subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
+              attribution: '&copy; Google',
+            }
+          );
+        }
+
+        function ensureMap() {
+          if (map) return map;
+          map = L.map(canvasEl, { zoomControl: true, attributionControl: true });
+          googleSatLayer().addTo(map);
+          return map;
+        }
+
+        function setPin(lat, lng) {
+          const m = ensureMap();
+          if (marker) {
+            marker.setLatLng([lat, lng]);
+          } else {
+            marker = L.marker([lat, lng], { draggable: false }).addTo(m);
+          }
+          m.setView([lat, lng], 16, { animate: false });
+          setTimeout(function () { m.invalidateSize(); }, 80);
+        }
+
+        function openFor(lat, lng, label, time, kind) {
+          current = { lat: lat, lng: lng, label: label, time: time, kind: kind };
+          titleEl.textContent = label || 'Event location';
+          const bits = [];
+          if (time) bits.push(time);
+          bits.push(lat.toFixed(6) + ', ' + lng.toFixed(6));
+          metaEl.textContent = bits.join(' · ');
+
+          backdrop.hidden = false;
+          modal.hidden = false;
+          setPin(lat, lng);
+          closeBtn.focus();
+        }
+
+        function close() {
+          modal.hidden = true;
+          backdrop.hidden = true;
+          current = { lat: null, lng: null, label: '', time: '', kind: '' };
+          if (marker) { map.removeLayer(marker); marker = null; }
+        }
+
+        function openInNewPage() {
+          if (current.lat == null || current.lng == null) return;
+          const params = new URLSearchParams({
+            lat:   String(current.lat),
+            lng:   String(current.lng),
+            label: current.label || '',
+            t:     current.time || '',
+            kind:  current.kind || '',
+          });
+          window.open('/map/point?' + params.toString(), '_blank', 'noopener');
+        }
+
+        document.addEventListener('click', function (ev) {
+          const btn = ev.target.closest('.event-map-btn');
+          if (!btn) return;
+          ev.preventDefault();
+          const lat = parseFloat(btn.dataset.lat);
+          const lng = parseFloat(btn.dataset.lng);
+          if (!isFinite(lat) || !isFinite(lng)) return;
+          openFor(lat, lng, btn.dataset.label || '', btn.dataset.time || '',
+                  btn.dataset.kind || '');
+        });
+
+        closeBtn.addEventListener('click', close);
+        backdrop.addEventListener('click', close);
+        openBtn.addEventListener('click', openInNewPage);
+
+        document.addEventListener('keydown', function (ev) {
+          if (ev.key === 'Escape' && !modal.hidden) close();
+        });
+      })();
     </script>
   {% endif %}
 {% endblock %}
