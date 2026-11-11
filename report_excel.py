@@ -1,6 +1,4 @@
-"""
-report_excel.py — filling the Trip Review Excel template.
-"""
+
 
 from __future__ import annotations
 
@@ -60,11 +58,16 @@ SIG_IMAGE_MAX_H_PX = 60
 _DEFAULT_COL_WIDTH_CHARS = 8.43
 _DEFAULT_ROW_HEIGHT_PT   = 15.0
 
+# Wrapped-text sizing constants.
 _WRAP_CHARS_PER_LINE = 50
 _LINE_HEIGHT_PT      = 15.0
 _ROW_PADDING_PT      = 4.0
 _MAX_ROW_HEIGHT_PT   = 409.0
 
+
+# ---------------------------------------------------------------------------
+# Row lookup helpers
+# ---------------------------------------------------------------------------
 
 def _find_row(ws, *labels, max_row=200):
     needles = [lbl.strip().lower() for lbl in labels]
@@ -109,6 +112,83 @@ def _find_row_after(ws, start_row, *labels, max_row=200):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Merge helpers
+# ---------------------------------------------------------------------------
+
+def _containing_merge(ws, row, col=None):
+    """Return the merged range containing (row, col), or None.
+
+    When ``col`` is None we match any merge that spans ``row``.  The
+    signature rows (``C60:H63``) and the free-text rows (``D44:J44``) are
+    each inside a merge, and the *whole* merge has to be resized for the
+    content to centre correctly.
+    """
+    for mr in ws.merged_cells.ranges:
+        if row < mr.min_row or row > mr.max_row:
+            continue
+        if col is not None and not (mr.min_col <= col <= mr.max_col):
+            continue
+        return mr
+    return None
+
+
+def _effective_row_px(ws, row):
+    dim = ws.row_dimensions.get(row)
+    if dim is not None and dim.height:
+        points = float(dim.height)
+    else:
+        points = _DEFAULT_ROW_HEIGHT_PT
+    return int(round(points * 4 / 3))
+
+
+def _expand_merged_block(ws, row, needed_pt, col=None):
+    """Grow every row in the merge containing ``row`` so the total block is
+    at least ``needed_pt`` tall.
+
+    If ``row`` is not inside a merge, only that row is grown.  Returns the
+    total block height in points after the expansion.
+    """
+    merge = _containing_merge(ws, row, col=col)
+
+    if merge is None:
+        rd = ws.row_dimensions.get(row)
+        current = float(rd.height) if (rd is not None and rd.height) else 0.0
+        if needed_pt > current:
+            ws.row_dimensions[row].height = needed_pt
+            current = needed_pt
+        return current
+
+    n_rows = merge.max_row - merge.min_row + 1
+    current_total = 0.0
+    for r in range(merge.min_row, merge.max_row + 1):
+        rd = ws.row_dimensions.get(r)
+        current_total += (
+            float(rd.height) if (rd is not None and rd.height)
+            else _DEFAULT_ROW_HEIGHT_PT
+        )
+
+    if current_total >= needed_pt:
+        return current_total
+
+    # Distribute the *extra* height evenly across every row in the merge.
+    extra = needed_pt - current_total
+    per_row_extra = extra / n_rows
+    for r in range(merge.min_row, merge.max_row + 1):
+        rd = ws.row_dimensions.get(r)
+        base = (
+            float(rd.height) if (rd is not None and rd.height)
+            else _DEFAULT_ROW_HEIGHT_PT
+        )
+        ws.row_dimensions[r].height = base + per_row_extra
+
+    return needed_pt
+
+
+# ---------------------------------------------------------------------------
+# Cell writes
+# ---------------------------------------------------------------------------
+
 def _safe_write(ws, coord_or_none, value, number_format=None):
     if coord_or_none is None:
         return None
@@ -132,30 +212,67 @@ def _write_at(ws, row, column, value, number_format=None):
 
 
 def _write_wrapped(ws, row, column, value,
-                   chars_per_line=_WRAP_CHARS_PER_LINE):
+                   chars_per_line=_WRAP_CHARS_PER_LINE,
+                   horizontal="center",
+                   vertical="center"):
+    """Write ``value`` wrapped, vertically centred, and grow the row block.
+
+    This is the text equivalent of ``_embed_signature``:
+
+      * ``wrap_text=True`` so Excel wraps the text.
+      * ``vertical="center"`` so multi-line text is centred inside the row
+        (this is the fix — ``vertical="top"`` left the text hanging at the
+        top of the cell).
+      * ``_expand_merged_block`` raises *every* row in the containing merge
+        so the whole visible cell is tall enough for the wrapped text.
+    """
     if row is None:
         return
+
     coord = _safe_write(ws, f"{column}{row}", value)
     if coord is None:
         return
+
     ws[coord].alignment = Alignment(
-        wrap_text=True, vertical="top", horizontal="left",
+        wrap_text=True,
+        vertical=vertical,
+        horizontal=horizontal,
     )
+
     text = "" if value is None else str(value)
     if not text:
         return
+
+    # Estimate the number of wrapped lines: split on explicit newlines
+    # first, then wrap each segment at ``chars_per_line``.
     line_count = 0
     for segment in text.split("\n"):
         if not segment:
             line_count += 1
             continue
         line_count += max(1, math.ceil(len(segment) / chars_per_line))
-    needed_pt = min(_MAX_ROW_HEIGHT_PT,
-                    line_count * _LINE_HEIGHT_PT + _ROW_PADDING_PT)
-    rd = ws.row_dimensions.get(row)
-    current_pt = float(rd.height) if (rd is not None and rd.height) else 0.0
-    if needed_pt > current_pt:
-        ws.row_dimensions[row].height = needed_pt
+
+    needed_pt = min(
+        _MAX_ROW_HEIGHT_PT,
+        line_count * _LINE_HEIGHT_PT + _ROW_PADDING_PT,
+    )
+
+    # Resolve the merge containing the *actual* coordinate we wrote to
+    # (it may be the anchor of a merged range, not the requested column).
+    target_col_idx = None
+    try:
+        target_col_idx = column_index_from_string(
+            re.match(r"[A-Z]+", coord).group(0)
+        )
+    except Exception:
+        target_col_idx = None
+
+    block_pt = _expand_merged_block(ws, row, needed_pt, col=target_col_idx)
+    log.debug(
+        "write_wrapped: row=%d coord=%s lines=%d needed=%.1fpt "
+        "block=%.1fpt",
+        row, coord, line_count, needed_pt, block_pt,
+    )
 
 
 def _duration(seconds):
@@ -173,6 +290,10 @@ def _blank_to_none(v):
         return None
     return v
 
+
+# ---------------------------------------------------------------------------
+# Cell-dimension helpers (for centering the signature image)
+# ---------------------------------------------------------------------------
 
 def _col_width_px(ws, col_letter):
     dim = ws.column_dimensions.get(col_letter)
@@ -194,12 +315,9 @@ def _row_height_px(ws, row, fallback_pt=None):
     return int(round(points * 4 / 3))
 
 
-def _containing_merge(ws, row):
-    for mr in ws.merged_cells.ranges:
-        if mr.min_row <= row <= mr.max_row:
-            return mr
-    return None
-
+# ---------------------------------------------------------------------------
+# Signatures
+# ---------------------------------------------------------------------------
 
 _DATA_URL_PNG_RE = re.compile(
     r"^data:image/(png|jpeg|jpg);base64,(.+)$", re.DOTALL
@@ -221,6 +339,7 @@ def _is_image_signature(kind_field, sig_value):
 
 
 def _embed_signature(ws, row, image_bytes, col_start="D", col_end="J"):
+    """Embed a signature PNG, centred inside its (possibly merged) cell."""
     if not _PIL_AVAILABLE:
         log.error("Cannot embed signature at row %d: Pillow not installed.", row)
         return
@@ -249,82 +368,55 @@ def _embed_signature(ws, row, image_bytes, col_start="D", col_end="J"):
     padding_px = 8
     needed_pt = (h + padding_px * 2) * 0.75
 
-    # ---------------------------------------------------------------
-    # If the target row sits inside a merged range, size the WHOLE merge
-    # so the block can actually fit and centre the image. Otherwise the
-    # image ends up 8 px below the top of a 4-row tall merge, which is
-    # what looked like "hanging at the top of the cell".
-    # ---------------------------------------------------------------
-    merge = _containing_merge(ws, row)
+    # Resolve the merge containing the "Driver's Signature" label cell.
+    # The default anchor column is D (col index 4) — that's where the
+    # merge in the template starts.  Passing `col=` ensures we don't
+    # accidentally match a merge that only *spans* this row.
+    merge = _containing_merge(ws, row, col=column_index_from_string("D"))
 
     if merge is None:
-        rd = ws.row_dimensions.get(row)
-        current_pt = float(rd.height) if (rd is not None and rd.height) else None
-        if current_pt is None or current_pt < needed_pt:
-            ws.row_dimensions[row].height = needed_pt
-            final_pt = needed_pt
-        else:
-            final_pt = current_pt
-        block_h_px = _row_height_px(ws, row, fallback_pt=final_pt)
-        anchor_row_pt = final_pt
-        anchor_row_off_px = (block_h_px - h) // 2
-    else:
-        n_rows = merge.max_row - merge.min_row + 1
-        per_row_pt = needed_pt / n_rows
-        for r in range(merge.min_row, merge.max_row + 1):
-            rd = ws.row_dimensions.get(r)
-            current = float(rd.height) if (rd is not None and rd.height) else 0.0
-            if current < per_row_pt:
-                ws.row_dimensions[r].height = per_row_pt
-        # Total merged block height in pixels.
-        block_h_px = sum(
-            _row_height_px(ws, r)
-            for r in range(merge.min_row, merge.max_row + 1)
-        )
-        # Anchor at the TOP of the merged block (merge.min_row - 1, 0-based),
-        # not the label row. This way the offset is measured from the top
-        # of the visible signing area.
-        anchor_row = merge.min_row
-        anchor_row_pt = sum(
-            (float(ws.row_dimensions[r].height)
-             if ws.row_dimensions.get(r) and ws.row_dimensions.get(r).height
-             else _DEFAULT_ROW_HEIGHT_PT)
-            for r in range(merge.min_row, merge.max_row + 1)
-        )
-        anchor_row_off_px = max(0, (block_h_px - h) // 2)
-
-    # Horizontal centering across the merge's horizontal span.
-    if merge is not None:
-        cs = merge.min_col
-        ce = merge.max_col
-        anchor_row = merge.min_row
-    else:
+        block_pt = _expand_merged_block(ws, row, needed_pt)
+        anchor_row = row
         cs = column_index_from_string(col_start)
         ce = column_index_from_string(col_end)
-        anchor_row = row
+    else:
+        block_pt = _expand_merged_block(
+            ws, row, needed_pt, col=column_index_from_string("D"),
+        )
+        anchor_row = merge.min_row
+        cs = merge.min_col
+        ce = merge.max_col
 
     if ce < cs:
         cs, ce = ce, cs
+
+    # Total merged block height in pixels, summed across every row.
+    if merge is None:
+        block_h_px = _row_height_px(ws, row, fallback_pt=block_pt)
+    else:
+        block_h_px = sum(
+            _effective_row_px(ws, r)
+            for r in range(merge.min_row, merge.max_row + 1)
+        )
 
     total_width_px = sum(
         _col_width_px(ws, get_column_letter(c))
         for c in range(cs, ce + 1)
     )
+
     x_off_px = max(0, (total_width_px - w) // 2)
-    y_off_px = anchor_row_off_px
+    y_off_px = max(0, (block_h_px - h) // 2)
 
     log.info(
-        "signature anchor: row=%d anchor_row=%d merge=%s final_pt=%.1f "
+        "signature anchor: row=%d anchor_row=%d merge=%s block_pt=%.1f "
         "block_h_px=%d img=%dx%d x_off_px=%d y_off_px=%d",
-        row, anchor_row, merge, anchor_row_pt, block_h_px, w, h,
+        row, anchor_row, merge, block_pt, block_h_px, w, h,
         x_off_px, y_off_px,
     )
 
-    # ---------------------------------------------------------------
-    # Clear any existing signature image at this anchor (in case the
-    # template or a previous run left one), so re-export doesn't stack
-    # images on top of each other.
-    # ---------------------------------------------------------------
+    # Remove any stale signature image already anchored here (defensive
+    # against templates that ship with a placeholder image, or a previous
+    # export that left one behind).
     try:
         for existing in list(ws._images):
             anch = existing.anchor
@@ -332,7 +424,8 @@ def _embed_signature(ws, row, image_bytes, col_start="D", col_end="J"):
                 a = anch._from
                 if a.row == anchor_row - 1 and a.col == cs - 1:
                     ws._images.remove(existing)
-                    log.info("removed stale signature image at row %d", anchor_row)
+                    log.info("removed stale signature image at row %d",
+                             anchor_row)
     except Exception:
         pass
 
@@ -348,7 +441,7 @@ def _embed_signature(ws, row, image_bytes, col_start="D", col_end="J"):
     try:
         ws.add_image(img, anchor)
         log.info(
-            "embedded signature image centered in %s%d:%s%d "
+            "embedded signature centered in %s%d:%s%d "
             "(%d×%d px, x_off=%d, y_off=%d, block_h_px=%d)",
             get_column_letter(cs), anchor_row,
             get_column_letter(ce), merge.max_row if merge else anchor_row,
@@ -358,10 +451,15 @@ def _embed_signature(ws, row, image_bytes, col_start="D", col_end="J"):
         log.warning("could not add centered signature image: %s", exc)
 
 
+# ---------------------------------------------------------------------------
+# fill_sheet
+# ---------------------------------------------------------------------------
+
 def fill_sheet(ws, *, truck_id, driver_name, trip_start, trip_end,
                stops, events, yard, history, manual=None):
     manual = manual or {}
 
+    # ---- header rows ----
     for label, value in (
         ("Report Generated", datetime.now(timezone.utc).strftime(FMT_DT)),
         ("Trip Start Date/Time", trip_start.strftime(FMT_DT) if trip_start else None),
@@ -372,11 +470,13 @@ def fill_sheet(ws, *, truck_id, driver_name, trip_start, trip_end,
             continue
         _write_at(ws, _find_row(ws, label), "D", value)
 
+    # ---- driver name ----
     row = _find_row(ws, "Drivers Name", "Driver's Name", "Driver Name")
     effective_driver = _blank_to_none(manual.get("driver_name"))
     _write_at(ws, row, "D",
               effective_driver if effective_driver is not None else driver_name)
 
+    # ---- yard operations (before trip) ----
     if yard is not None:
         for key, _ in YARD_STATIONS:
             row = _find_row(ws, YARD_STATION_LABELS[key])
@@ -387,16 +487,20 @@ def fill_sheet(ws, *, truck_id, driver_name, trip_start, trip_end,
         _write_at(ws, row, "E",
                   _duration(yard["total_seconds"]), DURATION_FORMAT)
 
+    # ---- rest and breaks (this trip) ----
     row = _find_row(ws, "Duration of Manditory rest break",
                     "Duration of Mandatory rest break")
-    _write_at(ws, row, "E", _duration(stops["rest_break_seconds"]), DURATION_FORMAT)
+    _write_at(ws, row, "E", _duration(stops["rest_break_seconds"]),
+              DURATION_FORMAT)
 
     row = _find_row(ws, "Number of stops exceeding 5 mins")
     _write_at(ws, row, "E", stops["count"])
 
     row = _find_row(ws, "Duration of stops exceeding 5 mins")
-    _write_at(ws, row, "E", _duration(stops["total_seconds"]), DURATION_FORMAT)
+    _write_at(ws, row, "E", _duration(stops["total_seconds"]),
+              DURATION_FORMAT)
 
+    # ---- driver behaviour (this trip) ----
     c, m = events["counts"], events["max_speed"]
 
     def _behaviour_row(label_start):
@@ -426,6 +530,7 @@ def fill_sheet(ws, *, truck_id, driver_name, trip_start, trip_end,
     _write_at(ws, r, "E", c["speeding_over_20"])
     _write_at(ws, r, "F", round(m["speeding_over_20"], 1))
 
+    # ---- history (previous 3 months) ----
     if history and history["trip_count"] > 0:
         h = history
         if h.get("yard"):
@@ -433,20 +538,29 @@ def fill_sheet(ws, *, truck_id, driver_name, trip_start, trip_end,
             for key, _ in YARD_STATIONS:
                 row = _find_row(ws, YARD_STATION_LABELS[key])
                 op = yh["operations"][key]
-                _write_at(ws, row, "H", _duration(op["avg_seconds"]), DURATION_FORMAT)
-                _write_at(ws, row, "I", _duration(op["max_seconds"]), DURATION_FORMAT)
-                _write_at(ws, row, "J", _duration(op["min_seconds"]), DURATION_FORMAT)
+                _write_at(ws, row, "H", _duration(op["avg_seconds"]),
+                          DURATION_FORMAT)
+                _write_at(ws, row, "I", _duration(op["max_seconds"]),
+                          DURATION_FORMAT)
+                _write_at(ws, row, "J", _duration(op["min_seconds"]),
+                          DURATION_FORMAT)
 
             row = _find_row(ws, "Total Yard Time")
-            _write_at(ws, row, "H", _duration(yh["avg_total_seconds"]), DURATION_FORMAT)
-            _write_at(ws, row, "I", _duration(yh["max_total_seconds"]), DURATION_FORMAT)
-            _write_at(ws, row, "J", _duration(yh["min_total_seconds"]), DURATION_FORMAT)
+            _write_at(ws, row, "H", _duration(yh["avg_total_seconds"]),
+                      DURATION_FORMAT)
+            _write_at(ws, row, "I", _duration(yh["max_total_seconds"]),
+                      DURATION_FORMAT)
+            _write_at(ws, row, "J", _duration(yh["min_total_seconds"]),
+                      DURATION_FORMAT)
 
         row = _find_row(ws, "Duration of Manditory rest break",
                         "Duration of Mandatory rest break")
-        _write_at(ws, row, "H", _duration(h["rests"]["avg_seconds"]), DURATION_FORMAT)
-        _write_at(ws, row, "I", _duration(h["rests"]["max_seconds"]), DURATION_FORMAT)
-        _write_at(ws, row, "J", _duration(h["rests"]["min_seconds"]), DURATION_FORMAT)
+        _write_at(ws, row, "H", _duration(h["rests"]["avg_seconds"]),
+                  DURATION_FORMAT)
+        _write_at(ws, row, "I", _duration(h["rests"]["max_seconds"]),
+                  DURATION_FORMAT)
+        _write_at(ws, row, "J", _duration(h["rests"]["min_seconds"]),
+                  DURATION_FORMAT)
 
         row = _find_row(ws, "Number of stops exceeding 5 mins")
         _write_at(ws, row, "H", round(h["stops"]["avg_count"], 1))
@@ -454,9 +568,12 @@ def fill_sheet(ws, *, truck_id, driver_name, trip_start, trip_end,
         _write_at(ws, row, "J", h["stops"]["min_count"])
 
         row = _find_row(ws, "Duration of stops exceeding 5 mins")
-        _write_at(ws, row, "H", _duration(h["stops"]["avg_seconds"]), DURATION_FORMAT)
-        _write_at(ws, row, "I", _duration(h["stops"]["max_seconds"]), DURATION_FORMAT)
-        _write_at(ws, row, "J", _duration(h["stops"]["min_seconds"]), DURATION_FORMAT)
+        _write_at(ws, row, "H", _duration(h["stops"]["avg_seconds"]),
+                  DURATION_FORMAT)
+        _write_at(ws, row, "I", _duration(h["stops"]["max_seconds"]),
+                  DURATION_FORMAT)
+        _write_at(ws, row, "J", _duration(h["stops"]["min_seconds"]),
+                  DURATION_FORMAT)
 
         b = h["behaviours"]
         r = _behaviour_row("Hard breaking") or _behaviour_row("Hard braking")
@@ -489,6 +606,7 @@ def fill_sheet(ws, *, truck_id, driver_name, trip_start, trip_end,
         _write_at(ws, r, "I", round(b["speeding_over_20"]["max_speed"], 1))
         _write_at(ws, r, "J", round(b["speeding_over_20"]["avg_max_speed"], 1))
 
+    # ---- statistics ----
     for label, key in (
         ("Out of fuel event", "out_of_fuel"),
         ("Accidents",         "accidents"),
@@ -500,16 +618,23 @@ def fill_sheet(ws, *, truck_id, driver_name, trip_start, trip_end,
             continue
         _write_at(ws, _find_row(ws, label), "E", val)
 
+    # ---- board additions (Comments + Maintenance side) ----
+    # Use _find_row_exact so "Maintenance" cannot match "Time at Maintenance".
+    # Use _write_wrapped (centred) so the text is vertically centred, wraps,
+    # and the containing merge grows to fit.
     for label_variants, key in BOARD_TEXT_FIELDS:
         val = _blank_to_none(manual.get(key))
         if val is None:
             continue
         row = _find_row_exact(ws, *label_variants)
         if row is None:
-            log.warning("fill_sheet: no exact-match row for %r", label_variants)
+            log.warning("fill_sheet: no exact-match row for %r",
+                        label_variants)
             continue
-        _write_wrapped(ws, row, "D", val)
+        _write_wrapped(ws, row, "D", val,
+                       horizontal="center", vertical="center")
 
+    # ---- driver's signature ----
     driver_sig_row = _find_row(ws, "Drivers Signature", "Driver's Signature")
     is_img, img_bytes = _is_image_signature(
         manual.get("signature_kind"), manual.get("signature"),
@@ -519,8 +644,10 @@ def fill_sheet(ws, *, truck_id, driver_name, trip_start, trip_end,
     else:
         signature = _blank_to_none(manual.get("signature"))
         if signature is not None and driver_sig_row is not None:
-            _write_wrapped(ws, driver_sig_row, "D", signature)
+            _write_wrapped(ws, driver_sig_row, "D", signature,
+                           horizontal="center", vertical="center")
 
+    # ---- officer's signature ----
     officer_sig_row = _find_row(
         ws, "Officer's Signature", "Officer Signature", "Officers Signature",
     )
@@ -532,8 +659,13 @@ def fill_sheet(ws, *, truck_id, driver_name, trip_start, trip_end,
     else:
         officer_sig = _blank_to_none(manual.get("officer_signature"))
         if officer_sig is not None and officer_sig_row is not None:
-            _write_wrapped(ws, officer_sig_row, "D", officer_sig)
+            _write_wrapped(ws, officer_sig_row, "D", officer_sig,
+                           horizontal="center", vertical="center")
 
+
+# ---------------------------------------------------------------------------
+# fill_template
+# ---------------------------------------------------------------------------
 
 def fill_template(template_path, output_path, *, truck_id, driver_name,
                   trip_start, trip_end, stops, events, yard, history,
@@ -548,6 +680,10 @@ def fill_template(template_path, output_path, *, truck_id, driver_name,
     )
     wb.save(output_path)
 
+
+# ---------------------------------------------------------------------------
+# write_bulk_excel
+# ---------------------------------------------------------------------------
 
 _SHEET_NAME_BAD_CHARS = set('[]:*?/\\')
 

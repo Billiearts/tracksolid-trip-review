@@ -1231,16 +1231,14 @@
           if (marker) { map.removeLayer(marker); marker = null; }
         }
 
-        function openInNewPage() {
+                function openInNewPage() {
           if (current.lat == null || current.lng == null) return;
-          const params = new URLSearchParams({
-            lat:   String(current.lat),
-            lng:   String(current.lng),
-            label: current.label || '',
-            t:     current.time || '',
-            kind:  current.kind || '',
-          });
-          window.open('/map/point?' + params.toString(), '_blank', 'noopener');
+          const lat = current.lat;
+          const lng = current.lng;
+          const url =
+            'https://www.google.com/maps/@' + lat + ',' + lng + ',17z/data=!3m1!1e3'
+            + '?q=' + encodeURIComponent(lat + ',' + lng);
+          window.open(url, '_blank', 'noopener');
         }
 
         document.addEventListener('click', function (ev) {

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from threading import Lock
 
 
-_PREVIEW_LIMIT = 20
+_PREVIEW_LIMIT = 200
 _previews: dict[str, dict] = {}
 _previews_lock = Lock()
 
