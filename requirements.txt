@@ -5,3 +5,4 @@ Pillow
 python-dotenv
 supabase>=2.5.0
 gunicorn
+waitress
