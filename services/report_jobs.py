@@ -2,34 +2,15 @@
 services/report_jobs.py — CRUD for report_jobs / report_job_items.
 
 A "job" is one of:
-  kind='preview' — a batch of trips to compute. When it's done, the user
-                   can view them, retry failures, or export.
-  kind='export'  — a request to build one .xlsx containing every trip
-                   from a completed preview job.
+  kind='preview' — a batch of trips to compute.
+  kind='export'  — a request to build one .xlsx from a completed preview.
 
-Jobs are persistent. A worker restart doesn't lose them: items stuck in
-'status=running' with a stale heartbeat are re-queued by the next worker
-on startup (see services/job_worker.py).
+Items now carry driver attribution:
+    driver_id    — FK to public.drivers(id), nullable.
+    driver_name  — denormalised snapshot of the driver's name, nullable.
+Both are passed straight through from create_preview_job() to the worker.
 
-Public API:
-    create_preview_job(...)         -> str (job_id)
-    create_export_job(...)          -> str (job_id)
-    get_job(job_id)                 -> dict | None
-    get_job_items(job_id)           -> list[dict]
-    get_job_item(job_id, item_id)   -> dict | None
-    next_queued_items_for_job(job_id, n) -> list[dict]      # for the worker
-    claim_next_queued_job()         -> dict | None
-    mark_job_running(job_id)
-    mark_job_done(job_id)
-    mark_job_failed(job_id, error)
-    mark_job_cancelled(job_id)
-    touch_job_heartbeat(job_id)
-    mark_item_running(item_id)
-    mark_item_done(item_id, computed)
-    mark_item_failed(item_id, error)
-    requeue_failed_items(job_id)                     -> int
-    requeue_stale_running(max_stale_minutes=5)       # startup recovery
-    pending_items_for_user(user_id)                  -> int
+Public API unchanged plus two new fields in the item payload.
 """
 from __future__ import annotations
 
@@ -113,6 +94,7 @@ def _row_to_item(row: dict) -> dict:
         "job_id":      row.get("job_id"),
         "imei":        row.get("imei"),
         "truck_id":    row.get("truck_id"),
+        "driver_id":   row.get("driver_id"),
         "driver_name": row.get("driver_name") or "",
         "trip_start":  row.get("trip_start"),
         "trip_end":    row.get("trip_end"),
@@ -127,7 +109,7 @@ def _row_to_item(row: dict) -> dict:
 
 
 _ITEM_COLUMNS = (
-    "id,job_id,imei,truck_id,driver_name,trip_start,trip_end,"
+    "id,job_id,imei,truck_id,driver_id,driver_name,trip_start,trip_end,"
     "status,error,attempts,started_at,finished_at,computed_json"
 )
 
@@ -159,7 +141,7 @@ def create_preview_job(*, trips: list[dict],
 
     item_rows = []
     for t in trips:
-        item_rows.append({
+        row = {
             "job_id":      job_id,
             "imei":        t["imei"],
             "truck_id":    t["truck"],
@@ -167,7 +149,12 @@ def create_preview_job(*, trips: list[dict],
             "trip_start":  t["start"],
             "trip_end":    t["end"],
             "status":      "queued",
-        })
+        }
+        # driver_id is optional and nullable in the DB.
+        did = t.get("driver_id")
+        if did:
+            row["driver_id"] = did
+        item_rows.append(row)
 
     CHUNK = 100
     for i in range(0, len(item_rows), CHUNK):
@@ -397,7 +384,6 @@ def requeue_failed_items(job_id: str) -> int:
 # Worker helpers
 # ---------------------------------------------------------------------------
 
-# Transient network errors we retry inside claim_next_queued_job().
 _TRANSIENT_MARKERS = (
     "WinError 10035",
     "would block",
@@ -417,23 +403,9 @@ def _is_transient(exc: Exception) -> bool:
 
 
 def claim_next_queued_job() -> dict | None:
-    """Atomically claim the oldest queued job.
-
-    Returns the full job dict (same shape as get_job()) after flipping
-    its status to 'running', or None if there's nothing to claim.
-
-    The claim is a conditional UPDATE: we select the oldest queued job id,
-    then UPDATE ... SET status='running' WHERE id = <id> AND status =
-    'queued' AND RETURNING *. If another worker beat us to it, the
-    UPDATE matches zero rows and we loop and try the next one. This is
-    safe under multiple workers without a separate lock table.
-
-    Retries transient socket errors up to 3 times.
-    """
     client = admin_client()
 
     for attempt in range(3):
-        # --- 1. Find the oldest queued job ---
         try:
             resp = (client.table("report_jobs")
                     .select("id")
@@ -458,10 +430,6 @@ def claim_next_queued_job() -> dict | None:
 
         candidate_id = rows[0]["id"]
 
-        # --- 2. Claim it: conditional UPDATE ... WHERE status='queued' ---
-        #    If it returns a row, we own it. If it returns nothing, another
-        #    worker grabbed it between our select and update — loop and
-        #    try again.
         try:
             claim_resp = (client.table("report_jobs")
                           .update({
@@ -485,7 +453,6 @@ def claim_next_queued_job() -> dict | None:
 
         claimed_rows = claim_resp.data or []
         if not claimed_rows:
-            # Lost the race — someone else claimed it. Try the next one.
             log.debug(
                 "claim_next_queued_job: job %s claimed by another worker",
                 candidate_id,
@@ -503,7 +470,6 @@ def claim_next_queued_job() -> dict | None:
 
 
 def next_queued_items_for_job(job_id: str, n: int) -> list[dict]:
-    """Return up to `n` queued items for the job, oldest first."""
     client = admin_client()
     try:
         resp = (client.table("report_job_items")
@@ -520,9 +486,6 @@ def next_queued_items_for_job(job_id: str, n: int) -> list[dict]:
 
 
 def requeue_stale_running(max_stale_minutes: int = 5) -> int:
-    """On startup: any item that's been `running` for longer than the
-    heartbeat window was orphaned by a crashed worker. Re-queue it.
-    """
     client = admin_client()
     cutoff = (datetime.now(timezone.utc)
               - timedelta(minutes=max_stale_minutes)).isoformat()

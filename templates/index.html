@@ -2,73 +2,231 @@
 
 {% block head %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/combobox.css') }}">
+  <style>
+    .mode-toggle {
+      display: flex; gap: 0;
+      background: #f0f2f5; border: 1px solid #d7dbe0;
+      border-radius: 8px; padding: 3px; margin-bottom: 1rem;
+      width: fit-content;
+    }
+    .mode-toggle button {
+      background: transparent; color: var(--ink-2);
+      border: none; border-radius: 6px;
+      padding: 0.45rem 0.95rem;
+      font-size: 0.88rem; font-weight: 500;
+      cursor: pointer; font-family: inherit;
+    }
+    .mode-toggle button.active {
+      background: #fff;
+      color: var(--brand);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    .mode-panel[hidden] { display: none; }
+
+    .pill-note {
+      display: inline-block;
+      font-size: 0.72rem;
+      background: var(--brand-light); color: var(--brand);
+      padding: 1px 7px; border-radius: 8px;
+      margin-left: 0.4rem;
+      font-weight: 600;
+    }
+
+    .driver-chips {
+      display: flex; flex-wrap: wrap; gap: 0.35rem;
+      padding: 0.5rem 0.7rem;
+      border: 1px solid #ccc; border-radius: 6px;
+      background: #fff; min-height: 38px;
+    }
+    .driver-chips:empty::before {
+      content: 'No drivers selected — search below';
+      color: #9aa3ab; font-size: 0.82rem;
+    }
+    .driver-chip {
+      display: inline-flex; align-items: center; gap: 0.35rem;
+      background: var(--brand-light);
+      color: var(--brand);
+      border-radius: 12px;
+      font-size: 0.82rem; padding: 2px 8px;
+      font-weight: 500;
+    }
+    .driver-chip button {
+      background: transparent; border: none; color: var(--brand);
+      cursor: pointer; font-size: 1rem; line-height: 1;
+      padding: 0 0.15rem;
+    }
+    .driver-chip button:hover { color: var(--err); }
+
+    #driver-listbox {
+      list-style: none; margin: 0.35rem 0 0; padding: 0;
+      border: 1px solid #d7dbe0; border-radius: 6px;
+      background: #fff; max-height: 240px; overflow-y: auto;
+    }
+    #driver-listbox[hidden] { display: none; }
+    #driver-listbox li {
+      padding: 0.4rem 0.7rem; font-size: 0.88rem;
+      cursor: pointer; display: flex; justify-content: space-between;
+      gap: 0.6rem; border-bottom: 1px solid #f0f0f0;
+    }
+    #driver-listbox li:last-child { border-bottom: none; }
+    #driver-listbox li:hover { background: #f3f6f9; }
+    #driver-listbox .drv-meta { color: #888; font-size: 0.78rem; }
+    #driver-listbox .drv-empty {
+      padding: 0.5rem 0.7rem; color: #999; font-size: 0.82rem;
+      cursor: default;
+    }
+    #driver-listbox .drv-empty:hover { background: #fff; }
+  </style>
 {% endblock %}
 
 {% block content %}
 
   <div class="card">
     <h2 style="font-size: 1.1rem; margin: 0 0 1rem;">New report</h2>
-    <form action="{{ url_for('trips_list') }}" method="post" id="search-form"
-      data-loading-overlay="Finding trips for the selected trucks… this can take a while.">
 
-      <div class="field">
-        <label for="truck-input">Trucks</label>
-        <div class="combobox" data-combobox-multi>
-          <input type="hidden" name="trucks" class="combobox-value" value="[]">
-          <div class="combobox-chips" aria-live="polite"></div>
-          <div class="combobox-input-wrap">
-            <input type="text" id="truck-input" class="combobox-input"
-                   placeholder="Search trucks…"
-                   autocomplete="off"
-                   role="combobox"
-                   aria-expanded="false"
-                   aria-controls="truck-listbox"
-                   aria-autocomplete="list">
-            <button type="button" class="combobox-clear" hidden
-                    aria-label="Clear all selections">&times;</button>
-            <button type="button" class="combobox-toggle"
-                    aria-label="Toggle list">&#9662;</button>
+    {% if can_use_drivers %}
+      <div class="mode-toggle" role="tablist">
+        <button type="button" id="mode-truck" class="active"
+                data-mode="truck">By truck</button>
+        <button type="button" id="mode-driver"
+                data-mode="driver">By driver</button>
+      </div>
+    {% endif %}
+
+    {# ============ TRUCK MODE ============ #}
+    <div class="mode-panel" id="panel-truck">
+      <form action="{{ url_for('trips_list') }}" method="post"
+            id="search-form-truck"
+            data-loading-overlay="Finding trips for the selected trucks… this can take a while.">
+
+        <div class="field">
+          <label for="truck-input">Trucks</label>
+          <div class="combobox" data-combobox-multi>
+            <input type="hidden" name="trucks" class="combobox-value" value="[]">
+            <div class="combobox-chips" aria-live="polite"></div>
+            <div class="combobox-input-wrap">
+              <input type="text" id="truck-input" class="combobox-input"
+                     placeholder="Search trucks…"
+                     autocomplete="off"
+                     role="combobox"
+                     aria-expanded="false"
+                     aria-controls="truck-listbox"
+                     aria-autocomplete="list">
+              <button type="button" class="combobox-clear" hidden
+                      aria-label="Clear all selections">&times;</button>
+              <button type="button" class="combobox-toggle"
+                      aria-label="Toggle list">&#9662;</button>
+            </div>
+            <div class="combobox-count" hidden></div>
+            <div class="combobox-warn" hidden></div>
+            <ul class="combobox-listbox" id="truck-listbox"
+                role="listbox" aria-multiselectable="true" hidden></ul>
+            <div class="combobox-status" hidden></div>
           </div>
-          <div class="combobox-count" hidden></div>
-          <div class="combobox-warn" hidden></div>
-          <ul class="combobox-listbox" id="truck-listbox"
-              role="listbox" aria-multiselectable="true" hidden></ul>
-          <div class="combobox-status" hidden></div>
         </div>
-      </div>
 
-      <div class="field">
-        <label>Date range (your local time)</label>
-        <div class="date-presets">
-          <button type="button" class="date-preset" data-preset="shift">Yesterday 7am → Today 7am</button>
-          <button type="button" class="date-preset" data-preset="24h">Last 24h</button>
-          <button type="button" class="date-preset" data-preset="7d">Last 7 days</button>
-          <button type="button" class="date-preset" data-preset="30d">Last 30 days</button>
-          <button type="button" class="date-preset" data-preset="month">This month</button>
+        <div class="field">
+          <label>Date range (your local time)</label>
+          <div class="date-presets">
+            <button type="button" class="date-preset" data-preset="shift">Yesterday 7am → Today 7am</button>
+            <button type="button" class="date-preset" data-preset="24h">Last 24h</button>
+            <button type="button" class="date-preset" data-preset="7d">Last 7 days</button>
+            <button type="button" class="date-preset" data-preset="30d">Last 30 days</button>
+            <button type="button" class="date-preset" data-preset="month">This month</button>
+          </div>
         </div>
-      </div>
 
-      <div class="field">
-        <label for="begin-picker">Begin</label>
-        <input type="datetime-local" id="begin-picker" step="1" required>
-        <input type="hidden" name="begin" id="begin">
-      </div>
-      <div class="field">
-        <label for="end-picker">End</label>
-        <input type="datetime-local" id="end-picker" step="1" required>
-        <input type="hidden" name="end" id="end">
-      </div>
+        <div class="field">
+          <label for="begin-picker-truck">Begin</label>
+          <input type="datetime-local" id="begin-picker-truck" step="1" required>
+          <input type="hidden" name="begin" id="begin-truck">
+        </div>
+        <div class="field">
+          <label for="end-picker-truck">End</label>
+          <input type="datetime-local" id="end-picker-truck" step="1" required>
+          <input type="hidden" name="end" id="end-truck">
+        </div>
 
-      <div class="field">
-        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-          <input type="checkbox" name="include_history">
-          Include 3-month history
-          <span style="color: #888; font-size: 0.8rem;">(uses ~15 extra API calls per truck)</span>
-        </label>
-      </div>
+        <div class="field">
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+            <input type="checkbox" name="include_history">
+            Include 3-month history
+            <span style="color: #888; font-size: 0.8rem;">(uses ~15 extra API calls per truck)</span>
+          </label>
+        </div>
 
-      <button type="submit">View results</button>
-    </form>
+        <button type="submit">View results</button>
+      </form>
+    </div>
+
+    {# ============ DRIVER MODE ============ #}
+    {% if can_use_drivers %}
+      <div class="mode-panel" id="panel-driver" hidden>
+        <form action="{{ url_for('drivers.trips_list') }}" method="post"
+              id="search-form-driver"
+              data-loading-overlay="Finding trips for the selected drivers… this can take a while.">
+
+          <div class="field">
+            <label for="driver-search">Drivers</label>
+            <div class="driver-chips" id="driver-chips"></div>
+            <input type="text" id="driver-search"
+                   placeholder="Search drivers by name or staff ID…"
+                   autocomplete="off" style="margin-top:0.4rem;">
+            <ul id="driver-listbox" hidden
+                role="listbox" aria-multiselectable="true"></ul>
+            <input type="hidden" name="drivers" id="drivers-value" value="[]">
+            <p class="muted" style="font-size:0.8rem; margin:0.35rem 0 0;">
+              Only shows drivers you have permission to search for.
+            </p>
+          </div>
+
+          <div class="field">
+            <label>Date range (your local time)</label>
+            <div class="date-presets">
+              <button type="button" class="date-preset" data-preset="shift">Yesterday 7am → Today 7am</button>
+              <button type="button" class="date-preset" data-preset="24h">Last 24h</button>
+              <button type="button" class="date-preset" data-preset="7d">Last 7 days</button>
+              <button type="button" class="date-preset" data-preset="30d">Last 30 days</button>
+              <button type="button" class="date-preset" data-preset="month">This month</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="begin-picker-driver">Begin</label>
+            <input type="datetime-local" id="begin-picker-driver" step="1" required>
+            <input type="hidden" name="begin" id="begin-driver">
+          </div>
+          <div class="field">
+            <label for="end-picker-driver">End</label>
+            <input type="datetime-local" id="end-picker-driver" step="1" required>
+            <input type="hidden" name="end" id="end-driver">
+          </div>
+
+          <div class="field">
+            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+              <input type="checkbox" name="include_history">
+              Include 3-month history
+              <span style="color: #888; font-size: 0.8rem;">(uses ~15 extra API calls per truck)</span>
+            </label>
+          </div>
+
+          <div class="field">
+            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+              <input type="checkbox" name="require_assignment" checked>
+              Require an active assignment during the date range
+              <span class="pill-note">recommended</span>
+            </label>
+            <p class="muted" style="font-size:0.78rem; margin:0.3rem 0 0;">
+              When on, a trip is attributed to a driver only if the driver
+              held that truck at the trip's start. Turn off if assignments
+              are incomplete and you want every trip the truck made.
+            </p>
+          </div>
+
+          <button type="submit">View results</button>
+        </form>
+      </div>
+    {% endif %}
   </div>
 
 {% endblock %}
@@ -76,16 +234,41 @@
 {% block scripts %}
   <script src="{{ url_for('static', filename='js/combobox.js') }}"></script>
   <script>
+    // ---------------- Mode toggle ----------------
     (function () {
-      const beginPicker = document.getElementById('begin-picker');
-      const endPicker   = document.getElementById('end-picker');
-      const beginHidden = document.getElementById('begin');
-      const endHidden   = document.getElementById('end');
+      const btnTruck  = document.getElementById('mode-truck');
+      const btnDriver = document.getElementById('mode-driver');
+      const panelTruck  = document.getElementById('panel-truck');
+      const panelDriver = document.getElementById('panel-driver');
+      function setMode(mode) {
+        if (btnTruck && btnDriver) {
+          btnTruck.classList.toggle('active', mode === 'truck');
+          btnDriver.classList.toggle('active', mode === 'driver');
+        }
+        if (panelTruck)  panelTruck.hidden  = (mode !== 'truck');
+        if (panelDriver) panelDriver.hidden = (mode !== 'driver');
+      }
+      if (btnTruck && btnDriver) {
+        btnTruck.addEventListener('click', () => setMode('truck'));
+        btnDriver.addEventListener('click', () => setMode('driver'));
+        setMode('truck');
+      }
+    })();
 
+    // ---------------- Truck mode: dates + submit ----------------
+    (function () {
+      const beginPicker = document.getElementById('begin-picker-truck');
+      const endPicker   = document.getElementById('end-picker-truck');
+      const beginHidden = document.getElementById('begin-truck');
+      const endHidden   = document.getElementById('end-truck');
+      const formTruck   = document.getElementById('search-form-truck');
+      if (!beginPicker || !formTruck) return;
+
+      function pad(n) { return String(n).padStart(2, '0'); }
       function utcString(d) {
-        const p = (n) => String(n).padStart(2, '0');
-        return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate())
-          + ' ' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds());
+        return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' +
+          pad(d.getUTCDate()) + ' ' + pad(d.getUTCHours()) + ':' +
+          pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
       }
       function localToUtcString(localValue) {
         if (!localValue) return '';
@@ -94,9 +277,9 @@
         return utcString(d);
       }
       function localPickerValue(d) {
-        const p = (n) => String(n).padStart(2, '0');
-        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
-          + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' +
+          pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' +
+          pad(d.getMinutes()) + ':' + pad(d.getSeconds());
       }
 
       (function initDefaults() {
@@ -106,13 +289,14 @@
         endPicker.value   = localPickerValue(now);
       })();
 
-      document.querySelectorAll('.date-preset').forEach(function (btn) {
+      document.querySelectorAll('#panel-truck .date-preset').forEach(function (btn) {
         btn.addEventListener('click', function () {
           const now = new Date();
           let begin, end;
           switch (btn.dataset.preset) {
             case 'shift': {
-              const today7 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 0, 0);
+              const today7 = new Date(now.getFullYear(), now.getMonth(),
+                                       now.getDate(), 7, 0, 0);
               if (now < today7) today7.setDate(today7.getDate() - 1);
               begin = new Date(today7.getTime() - 24 * 3600 * 1000);
               end = today7;
@@ -129,10 +313,9 @@
         });
       });
 
-      document.getElementById('search-form').addEventListener('submit', function (e) {
+      formTruck.addEventListener('submit', function (e) {
         beginHidden.value = localToUtcString(beginPicker.value);
         endHidden.value   = localToUtcString(endPicker.value);
-
         if (!beginHidden.value || !endHidden.value) {
           e.preventDefault();
           alert('Please pick both a begin and an end date.');
@@ -143,17 +326,195 @@
           alert('The begin date must be before the end date.');
           return;
         }
-
-        const trucksField = document.querySelector('.combobox-value');
+        const trucksField = formTruck.querySelector('.combobox-value');
         let trucks = [];
         try { trucks = JSON.parse(trucksField.value || '[]'); } catch (e) { trucks = []; }
         if (!Array.isArray(trucks) || trucks.length === 0) {
           e.preventDefault();
           alert('Please select at least one truck.');
           trucksField.focus();
-          return;
         }
       });
     })();
+
+    // ---------------- Driver mode: dates + submit ----------------
+    {% if can_use_drivers %}
+    (function () {
+      const beginPicker = document.getElementById('begin-picker-driver');
+      const endPicker   = document.getElementById('end-picker-driver');
+      const beginHidden = document.getElementById('begin-driver');
+      const endHidden   = document.getElementById('end-driver');
+      const formDriver  = document.getElementById('search-form-driver');
+      if (!beginPicker || !formDriver) return;
+
+      function pad(n) { return String(n).padStart(2, '0'); }
+      function utcString(d) {
+        return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' +
+          pad(d.getUTCDate()) + ' ' + pad(d.getUTCHours()) + ':' +
+          pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
+      }
+      function localToUtcString(localValue) {
+        if (!localValue) return '';
+        const d = new Date(localValue);
+        if (isNaN(d.getTime())) return '';
+        return utcString(d);
+      }
+      function localPickerValue(d) {
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' +
+          pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' +
+          pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+      }
+
+      (function initDefaults() {
+        const now = new Date();
+        const begin = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
+        beginPicker.value = localPickerValue(begin);
+        endPicker.value   = localPickerValue(now);
+      })();
+
+      document.querySelectorAll('#panel-driver .date-preset').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          const now = new Date();
+          let begin, end;
+          switch (btn.dataset.preset) {
+            case 'shift': {
+              const today7 = new Date(now.getFullYear(), now.getMonth(),
+                                       now.getDate(), 7, 0, 0);
+              if (now < today7) today7.setDate(today7.getDate() - 1);
+              begin = new Date(today7.getTime() - 24 * 3600 * 1000);
+              end = today7;
+              break;
+            }
+            case '24h':   begin = new Date(now.getTime() - 24 * 3600 * 1000); end = now; break;
+            case '7d':    begin = new Date(now.getTime() - 7 * 24 * 3600 * 1000); end = now; break;
+            case '30d':   begin = new Date(now.getTime() - 30 * 24 * 3600 * 1000); end = now; break;
+            case 'month': begin = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0); end = now; break;
+            default: return;
+          }
+          beginPicker.value = localPickerValue(begin);
+          endPicker.value   = localPickerValue(end);
+        });
+      });
+
+      // ---- Driver picker ----
+      const chips       = document.getElementById('driver-chips');
+      const searchInput = document.getElementById('driver-search');
+      const listbox     = document.getElementById('driver-listbox');
+      const hiddenField = document.getElementById('drivers-value');
+
+      let allDrivers = [];
+      let selected   = [];
+
+      function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+          '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+        }[c]));
+      }
+
+      function renderChips() {
+        chips.innerHTML = selected.map(d =>
+          '<span class="driver-chip">' +
+            esc(d.full_name || d.driver_id) +
+            (d.current_truck ? ' · ' + esc(d.current_truck) : '') +
+            '<button type="button" data-driver-id="' + esc(d.driver_id) +
+              '" aria-label="Remove">&times;</button>' +
+          '</span>'
+        ).join('');
+        chips.querySelectorAll('button[data-driver-id]').forEach(b => {
+          b.addEventListener('click', () => {
+            selected = selected.filter(x => x.driver_id !== b.dataset.driverId);
+            renderChips(); renderListbox();
+          });
+        });
+        hiddenField.value = JSON.stringify(
+          selected.map(d => ({ driver_id: d.driver_id, full_name: d.full_name || '' }))
+        );
+      }
+
+      function renderListbox() {
+        const q = (searchInput.value || '').trim().toLowerCase();
+        const selectedIds = new Set(selected.map(d => d.driver_id));
+        const matches = allDrivers.filter(d => {
+          if (selectedIds.has(d.driver_id)) return false;
+          if (!q) return true;
+          return (d.full_name || '').toLowerCase().includes(q) ||
+                 (d.staff_id  || '').toLowerCase().includes(q);
+        });
+        if (!matches.length) {
+          listbox.innerHTML = '<li class="drv-empty">' +
+            (allDrivers.length ? 'No more matching drivers.' : 'No drivers available.') +
+            '</li>';
+          listbox.hidden = false;
+          return;
+        }
+        listbox.innerHTML = matches.map(d =>
+          '<li data-driver-id="' + esc(d.driver_id) + '">' +
+            '<span>' + esc(d.full_name) +
+              (d.staff_id ? ' <span class="drv-meta">(' + esc(d.staff_id) + ')</span>' : '') +
+            '</span>' +
+            (d.current_truck ? '<span class="drv-meta">' + esc(d.current_truck) + '</span>' : '') +
+          '</li>'
+        ).join('');
+        listbox.querySelectorAll('li[data-driver-id]').forEach(li => {
+          li.addEventListener('click', () => {
+            const id = li.dataset.driverId;
+            const d = allDrivers.find(x => x.driver_id === id);
+            if (!d) return;
+            selected.push(d);
+            searchInput.value = '';
+            renderChips(); renderListbox();
+            searchInput.focus();
+          });
+        });
+        listbox.hidden = false;
+      }
+
+      async function loadDrivers() {
+        try {
+          const r = await fetch("{{ url_for('drivers.api_list') }}");
+          if (!r.ok) return;
+          const j = await r.json();
+          allDrivers = j.drivers || [];
+          if (searchInput.value || selected.length === 0) renderListbox();
+        } catch (e) { /* ignore */ }
+      }
+
+      searchInput.addEventListener('focus', () => {
+        if (!allDrivers.length) loadDrivers();
+        else renderListbox();
+      });
+      searchInput.addEventListener('input', renderListbox);
+      document.addEventListener('click', (e) => {
+        if (e.target !== searchInput && !listbox.contains(e.target)) {
+          listbox.hidden = true;
+        }
+      });
+
+      loadDrivers();
+      renderChips();
+
+      formDriver.addEventListener('submit', function (e) {
+        beginHidden.value = localToUtcString(beginPicker.value);
+        endHidden.value   = localToUtcString(endPicker.value);
+        if (!beginHidden.value || !endHidden.value) {
+          e.preventDefault();
+          alert('Please pick both a begin and an end date.');
+          return;
+        }
+        if (beginHidden.value >= endHidden.value) {
+          e.preventDefault();
+          alert('The begin date must be before the end date.');
+          return;
+        }
+        let chosen = [];
+        try { chosen = JSON.parse(hiddenField.value || '[]'); } catch (err) { chosen = []; }
+        if (!Array.isArray(chosen) || chosen.length === 0) {
+          e.preventDefault();
+          alert('Please select at least one driver.');
+          searchInput.focus();
+        }
+      });
+    })();
+    {% endif %}
   </script>
 {% endblock %}

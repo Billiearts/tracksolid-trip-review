@@ -21,6 +21,13 @@ Import note:
   dependency (app imports job_worker, job_worker imports app) that on
   Render's gunicorn post_fork could resolve to a partially-initialized
   module. Import from `services.prefetch` directly.
+
+Driver attribution:
+  Each job item now carries `driver_id` / `driver_name` (nullable).
+  Both are passed through to `compute_report` so the resulting
+  `computed` dict knows which driver it belongs to, which is what
+  `write_bulk_excel` and `report_excel.fill_sheet` use for the sheet
+  header and for driver-keyed naming.
 """
 from __future__ import annotations
 
@@ -52,9 +59,6 @@ def _int_env(name: str, default: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
 
 
-# 4 is the safe default on Windows (thread-local Supabase client removes
-# the WinError 10035 issue, but 16 threads still saturate a dev machine).
-# Override on Linux with JOB_WORKERS=16 in .env.
 JOB_WORKERS          = _int_env("JOB_WORKERS", 4, 1, 32)
 POLL_INTERVAL_SEC    = 5
 HEARTBEAT_INTERVAL_SEC = 30
@@ -89,6 +93,7 @@ def _compute_item(item: dict,
             imei=imei,
             truck_id=item["truck_id"],
             driver_name=item.get("driver_name") or "",
+            driver_id=item.get("driver_id"),
             begin=trip_start,
             end=trip_end,
             include_history=include_history,
@@ -129,11 +134,12 @@ def _run_preview_job(job: dict) -> None:
 
     items = report_jobs.get_job_items(job_id)
     trips = [{
-        "imei":  it["imei"],
-        "truck": it["truck_id"],
-        "driver": it.get("driver_name") or "",
-        "start": it["trip_start"],
-        "end":   it["trip_end"],
+        "imei":       it["imei"],
+        "truck":      it["truck_id"],
+        "driver":     it.get("driver_name") or "",
+        "driver_id":  it.get("driver_id"),
+        "start":      it["trip_start"],
+        "end":        it["trip_end"],
     } for it in items]
 
     prefetched_alarms: dict[str, list[dict]] = {}
@@ -282,13 +288,20 @@ def _run_export_job(job: dict) -> None:
 
     per_trip_manual = row.get("manual_json") or {}
 
+    # If every trip in the export carries a driver_id, the bulk workbook
+    # is named by driver instead of by truck.
+    naming_field = "truck"
+    if reports and all(r.get("driver_id") for r in reports):
+        naming_field = "driver"
+
     filename = row["filename"]
     out_path = OUTPUT_DIR / filename
 
     jobs_service.mark_running(reports_row_id)
     try:
         write_bulk_excel(reports, TEMPLATE_PATH, out_path,
-                         per_trip_manual=per_trip_manual)
+                         per_trip_manual=per_trip_manual,
+                         naming_field=naming_field)
         size = out_path.stat().st_size if out_path.exists() else None
     except Exception as exc:
         log.exception("bulk export build failed for job %s", job_id)

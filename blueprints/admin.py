@@ -29,7 +29,15 @@ bp = Blueprint("admin", __name__, url_prefix="/admin")
 
 
 _EXTRA_ROLE_KEYS = {
-    "extra_live_fleet_view": "live_fleet_view",
+    "extra_live_fleet_view":       "live_fleet_view",
+    "extra_drivers_view":          "drivers_view",
+    "extra_drivers_add":           "drivers_add",
+    "extra_drivers_edit":          "drivers_edit",
+    "extra_drivers_assign":        "drivers_assign",
+    # CHANGED: new role that lets a non-admin bypass the truck-state
+    # guard. Granting it to a dispatcher is equivalent to the admin
+    # "override" checkbox on the assign form.
+    "extra_drivers_override_trip": "drivers_override_trip",
 }
 
 
@@ -59,12 +67,19 @@ def index():
     except AuthError as exc:
         flash(str(exc), "error")
         result = {"users": [], "page": 1, "per_page": 50}
+
+    # Fetch last-seen for the users on this page in one query.
+    from services import sessions as sessions_svc
+    user_ids = [u.get("id") for u in result.get("users", []) if u.get("id")]
+    last_seen_map = sessions_svc.last_seen_for_users(user_ids)
+
     return render_template(
         "admin/index.html",
         result=result,
         caller_is_super=_caller_is_super(),
         caller_is_primary=_caller_is_primary(),
         primary_email=PRIMARY_SUPER_ADMIN_EMAIL,
+        last_seen_map=last_seen_map,
     )
 
 
@@ -263,7 +278,6 @@ def change_role(user_id):
     )
     return redirect(url_for("admin.index"))
 
-
 # ---------------------------------------------------------------------------
 # Usage — super-admin only
 # ---------------------------------------------------------------------------
@@ -271,13 +285,10 @@ def change_role(user_id):
 @bp.route("/usage")
 @super_admin_required
 def usage():
-    """Full Tracksolid quota page: current window, per-method counters,
-    reset time, and a manual reset button."""
     s = ratelimit_status()
     calls = s.get("calls", {})
     by_method = calls.get("by_method", {}) or {}
 
-    # Sort methods by call count descending for the table.
     method_rows = sorted(
         (
             {"method": m, "count": c}
@@ -300,10 +311,6 @@ def usage():
 @bp.route("/usage/reset", methods=["POST"])
 @super_admin_required
 def usage_reset():
-    """Zero the counters. Does NOT clear the rate-limit flag — if we're
-    actually rate limited, clearing it lets the next call fail again,
-    which is fine, but a manual reset of the counters is useful right
-    after deploy or when you've just proved quota has refreshed."""
     before = ratelimit_status().get("calls", {}).get("total", 0)
     ratelimit_reset()
     audit_svc.record(

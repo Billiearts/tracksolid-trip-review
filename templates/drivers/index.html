@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+
+{% block heading %}Drivers{% endblock %}
+
+{% block head %}
+<style>
+  .filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.6rem;
+    margin-bottom: 1rem;
+  }
+  .segmented {
+    display: inline-flex;
+    border: 1px solid #c9ced6;
+    border-radius: 6px;
+    overflow: hidden;
+    font-size: 0.82rem;
+    line-height: 1.2;
+  }
+  .segmented .seg-btn {
+    padding: 0.42rem 0.7rem;
+    color: #333;
+    background: #fff;
+    text-decoration: none;
+    border-right: 1px solid #e1e5eb;
+  }
+  .segmented .seg-btn:last-child { border-right: none; }
+  .segmented .seg-btn:hover { background: #f5f7fa; }
+  .segmented .seg-btn.active {
+    background: #eef2f8;
+    color: #111;
+    font-weight: 600;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:0.75rem; flex-wrap:wrap; margin-bottom:1rem;">
+    <h2 style="font-size:1.1rem; margin:0;">Driver registry</h2>
+    {% if can_add %}
+      <a href="{{ url_for('drivers.new_driver') }}" class="btn-download">+ New driver</a>
+    {% endif %}
+  </div>
+
+  {# Search is live-on-type (debounced in JS); the Filter button stays
+     as a no-JS fallback and also preserves view/inactive/deleted. #}
+  <form method="get" action="{{ url_for('drivers.index') }}"
+        class="filter-bar" id="driver-filter-form">
+
+    <div class="field-inline" style="flex:2 1 260px;">
+      <label for="q">Search</label>
+      <input type="text" id="q" name="q" value="{{ search }}"
+             placeholder="Name or staff ID"
+             autocomplete="off" autofocus>
+    </div>
+
+    {# Three-way segmented control. All / Assigned / Unassigned.
+       Rendered as links so the toggle is shareable/bookmarkable and
+       works without JS. #}
+    <div class="field-inline" style="flex:0 0 auto;">
+      <label>Assignment</label>
+      <div class="segmented" role="group" aria-label="Assignment filter">
+        <a class="seg-btn {% if view_filter == 'all' or not view_filter %}active{% endif %}"
+           href="{{ url_for('drivers.index', q=search,
+                            view='all',
+                            inactive='1' if include_inactive else None,
+                            deleted='1' if include_deleted else None) }}">All</a>
+        <a class="seg-btn {% if view_filter == 'assigned' %}active{% endif %}"
+           href="{{ url_for('drivers.index', q=search,
+                            view='assigned',
+                            inactive='1' if include_inactive else None,
+                            deleted='1' if include_deleted else None) }}">Assigned</a>
+        <a class="seg-btn {% if view_filter == 'unassigned' %}active{% endif %}"
+           href="{{ url_for('drivers.index', q=search,
+                            view='unassigned',
+                            inactive='1' if include_inactive else None,
+                            deleted='1' if include_deleted else None) }}">Unassigned</a>
+      </div>
+    </div>
+
+    <div class="field-inline">
+      <label style="display:flex; align-items:center; gap:0.4rem; cursor:pointer;">
+        <input type="checkbox" name="inactive" value="1"
+               {% if include_inactive %}checked{% endif %}>
+        Show inactive
+      </label>
+    </div>
+
+    {% if is_admin %}
+      <div class="field-inline">
+        <label style="display:flex; align-items:center; gap:0.4rem; cursor:pointer;">
+          <input type="checkbox" name="deleted" value="1"
+                 {% if include_deleted %}checked{% endif %}>
+          Show deleted (admin)
+        </label>
+      </div>
+    {% endif %}
+
+    {# Hidden view field so the form submit (fallback path) keeps the
+       current Assigned/Unassigned choice. #}
+    <input type="hidden" name="view" value="{{ view_filter }}">
+
+    <div class="field-inline" style="flex:0 0 auto;">
+      <label>&nbsp;</label>
+      <button type="submit">Filter</button>
+    </div>
+  </form>
+
+  {% if not result.drivers %}
+    <p class="muted">
+      {% if view_filter == 'assigned' %}
+        No assigned drivers match the current filters.
+      {% elif view_filter == 'unassigned' %}
+        No unassigned drivers match the current filters.
+      {% else %}
+        No drivers found.
+      {% endif %}
+    </p>
+  {% else %}
+    <div class="table-scroll">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Staff ID</th>
+            <th>Phone</th>
+            <th>Current truck</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in result.drivers %}
+            <tr>
+              <td>
+                <a href="{{ url_for('drivers.detail', driver_id=d.id) }}"
+                   style="color:var(--brand); text-decoration:none; font-weight:500;">
+                  {{ d.full_name }}
+                </a>
+              </td>
+              <td>{{ d.staff_id or '—' }}</td>
+              <td>{{ d.phone or '—' }}</td>
+              <td>
+                {% if d.current_assignment %}
+                  {{ d.current_assignment.truck_id or d.current_assignment.imei }}
+                {% else %}
+                  <span class="muted">Unassigned</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if d.deleted_at %}
+                  <span class="status status-failed">Deleted</span>
+                {% elif d.active %}
+                  <span class="status status-done">Active</span>
+                {% else %}
+                  <span class="status status-queued">Inactive</span>
+                {% endif %}
+              </td>
+              <td style="text-align:right; white-space:nowrap;">
+                {% if can_edit and not d.deleted_at %}
+                  <a class="btn-edit"
+                     href="{{ url_for('drivers.edit_driver', driver_id=d.id) }}">Edit</a>
+                {% endif %}
+                <a class="btn-edit"
+                   href="{{ url_for('drivers.detail', driver_id=d.id) }}">View</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="pagination">
+      <span>{{ result.total }} driver{{ 's' if result.total != 1 else '' }}</span>
+      {% if result.page > 1 %}
+        <a class="btn-edit"
+           href="{{ url_for('drivers.index', page=result.page - 1, q=search,
+                            view=view_filter,
+                            inactive='1' if include_inactive else None,
+                            deleted='1' if include_deleted else None) }}">← Prev</a>
+      {% endif %}
+      {% if result.has_more %}
+        <a class="btn-edit"
+           href="{{ url_for('drivers.index', page=result.page + 1, q=search,
+                            view=view_filter,
+                            inactive='1' if include_inactive else None,
+                            deleted='1' if include_deleted else None) }}">Next →</a>
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
+
+<script>
+(function () {
+  const form = document.getElementById('driver-filter-form');
+  const input = document.getElementById('q');
+  if (!form || !input) return;
+
+  // Debounced live search. We push the current query into the URL and
+  // navigate, preserving view / inactive / deleted so the user doesn't
+  // lose their filter context while typing. The Filter button remains
+  // for no-JS and for anyone who prefers pressing Enter.
+  let timer = null;
+  function submitLive() {
+    const url = new URL(window.location.href);
+    url.searchParams.set('q', input.value.trim());
+    // Drop the page param on a new search — page 1 is the natural
+    // starting point.
+    url.searchParams.delete('page');
+    window.location.href = url.toString();
+  }
+
+  input.addEventListener('input', function () {
+    clearTimeout(timer);
+    timer = setTimeout(submitLive, 250);   // 250 ms debounce
+  });
+})();
+</script>
+{% endblock %}

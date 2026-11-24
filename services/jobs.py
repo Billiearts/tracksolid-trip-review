@@ -1,5 +1,10 @@
 """
 services/jobs.py — orchestrator for report rows.
+
+Thin wrapper around `services.reports_repo`. Every row now carries an
+optional `driver_id` / `driver_name` pair, populated when the report
+came from a driver search. `add_job()` and `all_jobs_sorted_for()` are
+the two call sites that needed extending; everything else is unchanged.
 """
 from __future__ import annotations
 
@@ -25,7 +30,9 @@ _TRIP_REVIEW_RE = re.compile(
 def add_job(*, truck_id: str, imei: str | None, filename: str,
             trip_start: datetime | None, trip_end: datetime | None,
             created_by: str | None, created_by_email: str | None,
-            manual: dict | None = None) -> str:
+            manual: dict | None = None,
+            driver_id: str | None = None,
+            driver_name: str | None = None) -> str:
     return reports_repo.insert_queued(
         filename=filename,
         truck_id=truck_id,
@@ -35,6 +42,8 @@ def add_job(*, truck_id: str, imei: str | None, filename: str,
         created_by=created_by,
         created_by_email=created_by_email,
         manual=manual,
+        driver_id=driver_id,
+        driver_name=driver_name,
     )
 
 
@@ -89,15 +98,21 @@ def _disk_legacy_reports(known: set[str]) -> list[dict]:
             imei = meta.get("imei") or ""
             trip_start = meta.get("trip_start")
             trip_end = meta.get("trip_end")
+            driver_id = meta.get("driver_id")
+            driver_name = meta.get("driver_name") or ""
         else:
             m = _TRIP_REVIEW_RE.match(p.name)
             truck = m.group("truck") if m else p.name
             imei = ""
             trip_start = trip_end = None
+            driver_id = None
+            driver_name = ""
         out.append({
             "id":               None,
             "truck":            truck,
             "imei":             imei,
+            "driver_id":        driver_id,
+            "driver_name":      driver_name,
             "status":           "done",
             "filename":         p.name,
             "queued_at":        mtime,
@@ -128,9 +143,6 @@ def all_jobs_sorted_for(user_id: str | None, show_all: bool) -> list[dict]:
 
 
 def count_pending(user_id: str | None) -> int:
-    """Number of queued/running jobs for a user (all jobs if user_id is None
-    AND show_all was implied — this helper is used by the nav context, so
-    non-admins only see their own)."""
     try:
         rows = reports_repo.list_for(user_id, show_all=False)
         return sum(1 for r in rows if r.get("status") in ("queued", "running"))

@@ -38,15 +38,6 @@
     {% set y   = c.yard %}
     {% set m   = manual or {} %}
 
-    {#
-      Defensive accessors for behaviour fields.
-
-      Older saved reports (computed_json written before hard_acceleration
-      was added) have no `hard_acceleration` key at all — the raw Jinja
-      `ev.max_speed.hard_acceleration` resolves to Undefined and
-      `Undefined | round(1)` throws TypeError. These helpers coerce
-      missing values to 0 so every report — old or new — renders.
-    #}
     {% macro ev_count(kind) -%}
       {{ ev.counts.get(kind, 0) if ev and ev.counts else 0 }}
     {%- endmacro %}
@@ -65,9 +56,8 @@
     {%- endmacro %}
 
     {% set unique_trucks = reports | map(attribute='truck_id') | unique | list %}
-    {% set same_truck_count = reports | selectattr('truck_id', 'equalto', c.truck_id) | list | length %}
+    {% set unique_drivers = reports | map(attribute='driver_name') | reject('equalto', '') | unique | list %}
 
-    {# ---------- Header ---------- #}
     <div class="card">
       <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap;">
         <div>
@@ -78,11 +68,14 @@
                 {{ reports | length }} trip{{ 's' if reports | length != 1 else '' }}
                 across {{ unique_trucks | length }}
                 truck{{ 's' if unique_trucks | length != 1 else '' }}
+                {% if unique_drivers %}· {{ unique_drivers | length }}
+                  driver{{ 's' if unique_drivers | length != 1 else '' }}{% endif %}
               </span>
             </h2>
             <p style="color: #666; font-size: 0.9rem; margin: 0;">
               Viewing trip {{ current_index + 1 }} of {{ reports | length }} —
-              <strong>{{ c.truck_id }}</strong> ·
+              <strong>{{ c.truck_id }}</strong>{% if c.driver_name %} ·
+                <strong>{{ c.driver_name }}</strong>{% endif %} ·
               {% if c.trip_start %}{{ c.trip_start.strftime('%Y-%m-%d %H:%M') }}{% endif %}
               →
               {% if c.trip_end %}{{ c.trip_end.strftime('%Y-%m-%d %H:%M') }}{% endif %}
@@ -92,7 +85,8 @@
               {{ c.truck_id }}{% if view_mode %} <span class="meta-note">(saved report)</span>{% endif %}
             </h2>
             <p style="color: #666; font-size: 0.9rem; margin: 0;">
-              IMEI {{ c.imei }} &middot;
+              IMEI {{ c.imei }}
+              {% if c.driver_name %} · Driver: <strong>{{ c.driver_name }}</strong>{% endif %} ·
               {% if c.trip_start %}{{ c.trip_start.strftime('%Y-%m-%d %H:%M') }}{% endif %}
               →
               {% if c.trip_end %}{{ c.trip_end.strftime('%Y-%m-%d %H:%M') }}{% endif %}
@@ -116,7 +110,6 @@
       </div>
     </div>
 
-    {# ---------- Trip selector ---------- #}
     {% if reports | length > 1 %}
       <div class="card" style="padding: 0.85rem 1.25rem;">
         <label for="trip-select" style="margin-bottom: 0.4rem;">
@@ -129,7 +122,8 @@
           {% for r in reports %}
             <option value="{{ loop.index0 }}"
                     {% if loop.index0 == current_index %}selected{% endif %}>
-              {{ r.truck_id }} — {{ r.trip_start.strftime('%Y-%m-%d %H:%M') }} → {{ r.trip_end.strftime('%Y-%m-%d %H:%M') }}
+              {{ r.truck_id }}{% if r.driver_name %} — {{ r.driver_name }}{% endif %} —
+              {{ r.trip_start.strftime('%Y-%m-%d %H:%M') }} → {{ r.trip_end.strftime('%Y-%m-%d %H:%M') }}
               ({{ '%.1fh' | format((r.trip_end - r.trip_start).total_seconds() / 3600) }})
             </option>
           {% endfor %}
@@ -137,13 +131,12 @@
       </div>
     {% endif %}
 
-    {# ---------- Manual metadata ---------- #}
     {% if view_mode %}
       <div class="card">
         <details open>
           <summary style="cursor: pointer; font-size: 1rem; font-weight: 500; padding: 0.25rem 0;">
             Report details — editing trip {{ current_index + 1 }} of {{ reports | length }}
-            ({{ c.truck_id }})
+            ({{ c.truck_id }}{% if c.driver_name %} · {{ c.driver_name }}{% endif %})
           </summary>
           <p class="muted" style="margin: 0.5rem 0 1rem;">
             {% if is_bulk %}
@@ -159,10 +152,35 @@
                 action="{{ url_for('report_edit_meta', report_id=report_id) }}" method="post">
             <input type="hidden" name="trip_index" value="{{ current_index }}">
             <div class="field">
-              <label for="meta_driver_name">Driver's Name</label>
-              <input type="text" id="meta_driver_name" name="meta_driver_name"
-                     value="{{ m.driver_name if m.driver_name else c.driver_name }}"
-                     placeholder="Optional">
+              <label for="meta_driver_id">Driver's Name</label>
+
+              {% if driver_locked %}
+                {# Non-admin: read-only, always shows the resolved name. #}
+                <input type="text" id="meta_driver_id_display"
+                       value="{{ m.driver_name or c.driver_name or '—' }}"
+                       readonly
+                       style="background:#f5f7fa; color:#555; cursor:not-allowed;">
+                <p class="muted" style="font-size:0.78rem; margin:0.25rem 0 0;">
+                  Driver is set automatically from the truck's assignment at
+                  the trip's start. Only admins can override it.
+                </p>
+              {% else %}
+                {# Admin: pick from the driver list, not free text. #}
+                <select id="meta_driver_id" name="meta_driver_id">
+                  <option value="">— keep automatic —</option>
+                  {% for d in driver_choices %}
+                    <option value="{{ d.driver_id }}"
+                            {% if d.selected %}selected{% endif %}>
+                      {{ d.full_name }}{% if d.staff_id %} ({{ d.staff_id }}){% endif %}
+                    </option>
+                  {% endfor %}
+                </select>
+                <p class="muted" style="font-size:0.78rem; margin:0.25rem 0 0;">
+                  Selecting a driver here overrides the automatic assignment
+                  for <strong>this report only</strong>. Leaving it blank
+                  keeps the auto-resolved driver.
+                </p>
+              {% endif %}
             </div>
             <div class="field">
               <label for="meta_out_of_fuel">Out of fuel event</label>
@@ -189,7 +207,6 @@
                      placeholder="e.g. 0, 1, None">
             </div>
 
-            {# ---- Board additions ---- #}
             <div class="field">
               <label for="meta_comments">Comments</label>
               <textarea id="meta_comments" name="meta_comments" rows="3"
@@ -231,7 +248,6 @@
               </p>
             </div>
 
-            {# ---- Officer signature ---- #}
             <div class="field signature-field">
               <label>Officer's Signature</label>
               {% if m.officer_signature %}
@@ -289,9 +305,32 @@
             <input type="hidden" name="preview_job_id" value="{{ job_id or '' }}">
 
             <div class="field">
-              <label for="meta_driver_name">Driver's Name</label>
-              <input type="text" id="meta_driver_name" name="meta_driver_name"
-                     value="{{ c.driver_name }}" placeholder="Optional">
+              <label for="meta_driver_id_export">Driver's Name</label>
+
+              {% if driver_locked %}
+                <input type="text" id="meta_driver_id_export"
+                       value="{{ c.driver_name or '—' }}"
+                       readonly
+                       style="background:#f5f7fa; color:#555; cursor:not-allowed;">
+                <p class="muted" style="font-size:0.78rem; margin:0.25rem 0 0;">
+                  Driver is set automatically from the truck's assignment at
+                  the trip's start. Only admins can override it.
+                </p>
+              {% else %}
+                <select id="meta_driver_id_export" name="meta_driver_id">
+                  <option value="">— keep automatic —</option>
+                  {% for d in driver_choices %}
+                    <option value="{{ d.driver_id }}"
+                            {% if d.selected %}selected{% endif %}>
+                      {{ d.full_name }}{% if d.staff_id %} ({{ d.staff_id }}){% endif %}
+                    </option>
+                  {% endfor %}
+                </select>
+                <p class="muted" style="font-size:0.78rem; margin:0.25rem 0 0;">
+                  Selecting a driver here overrides the automatic assignment
+                  for this export only.
+                </p>
+              {% endif %}
             </div>
             <div class="field">
               <label for="meta_out_of_fuel">Out of fuel event</label>
@@ -314,16 +353,15 @@
                      placeholder="e.g. 0, 1, None">
             </div>
 
-            {# ---- Board additions ---- #}
             <div class="field">
               <label for="meta_comments">Comments</label>
               <textarea id="meta_comments" name="meta_comments" rows="3"
-                        placeholder="General comments,include anyting found during maintenance here."></textarea>
+                        placeholder="General comments, include anything found during maintenance here."></textarea>
             </div>
             <div class="field">
               <label for="meta_maintenance_issues">Maintenance</label>
               <textarea id="meta_maintenance_issues" name="meta_maintenance_issues" rows="3"
-                        placeholder="Mechanical issues, maintenance notes……"></textarea>
+                        placeholder="Mechanical issues, maintenance notes…"></textarea>
             </div>
 
             <div class="field signature-field">
@@ -340,7 +378,6 @@
               </p>
             </div>
 
-            {# ---- Officer signature ---- #}
             <div class="field signature-field">
               <label>Officer's Signature</label>
               <div class="signature-pad" data-sig-pad="officer">
@@ -362,7 +399,6 @@
       </div>
     {% endif %}
 
-    {# ---------- Tabs ---------- #}
     <div class="card">
       <div class="tabs" role="tablist">
         <button type="button" class="tab active" data-tab="summary" role="tab">Summary</button>
@@ -377,7 +413,6 @@
         </button>
       </div>
 
-      {# ======================= SUMMARY ======================= #}
       <div class="tab-panel" data-panel="summary">
 
         <div class="summary-section">
@@ -456,7 +491,6 @@
           </table>
         </div>
 
-        {# ---------------- Driver Behaviour (this trip) ---------------- #}
         <div class="summary-section">
           <h3>Driver Behaviour</h3>
           <table class="preview-table">
@@ -580,7 +614,6 @@
               </tbody>
             </table>
 
-            {# ------------- Driver Behaviour (previous 3 months) ------------- #}
             <h3 style="margin-top: 1.5rem;">Driver Behaviour</h3>
             <table class="preview-table">
               <thead>
@@ -639,7 +672,6 @@
         {% endif %}
       </div>
 
-      {# ======================= TRIPS ======================= #}
       <div class="tab-panel" data-panel="trips" hidden>
         {% if c.trips %}
           <table class="preview-table">
@@ -662,7 +694,6 @@
         {% endif %}
       </div>
 
-      {# ======================= STOPS & RESTS ======================= #}
       <div class="tab-panel" data-panel="stops" hidden>
         <h3>Mandatory Rest Breaks &ge; 2 hrs ({{ cur.rest_break_count or 0 }})</h3>
         {% if cur.rest_intervals %}
@@ -749,7 +780,6 @@
         {% endif %}
       </div>
 
-      {# ======================= EVENTS ======================= #}
       <div class="tab-panel" data-panel="events" hidden>
         {% if ev.events %}
           <table class="preview-table">
@@ -802,7 +832,6 @@
       </p>
     {% endif %}
 
-    {# ---------- Event map popup ---------- #}
     <div class="event-map-backdrop" id="event-map-backdrop" hidden></div>
     <div class="event-map-modal" id="event-map-modal" hidden
          role="dialog" aria-modal="true" aria-labelledby="event-map-title">
@@ -1165,7 +1194,6 @@
       })();
       {% endif %}
 
-      // ---------------- Event map popup ----------------
       (function () {
         const backdrop = document.getElementById('event-map-backdrop');
         const modal    = document.getElementById('event-map-modal');
@@ -1181,7 +1209,6 @@
         let current = { lat: null, lng: null, label: '', time: '', kind: '' };
 
         function googleSatLayer() {
-          // Google Satellite tiles. `lyrs=s` = satellite, `h` = hybrid labels.
           return L.tileLayer(
             'https://{s}.google.com/vt/lyrs=s,h&x={x}&y={y}&z={z}&hl=en',
             {
@@ -1231,7 +1258,7 @@
           if (marker) { map.removeLayer(marker); marker = null; }
         }
 
-                function openInNewPage() {
+        function openInNewPage() {
           if (current.lat == null || current.lng == null) return;
           const lat = current.lat;
           const lng = current.lng;

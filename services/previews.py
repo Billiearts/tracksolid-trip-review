@@ -3,6 +3,13 @@ services/previews.py — in-memory store for computed previews.
 
 State lives for the life of the process. Oldest previews are evicted once
 _PREVIEW_LIMIT is exceeded.
+
+A preview state dict now carries driver attribution when it was created
+from a driver search:
+    driver_id   — str | None
+    driver_name — str
+These are read back by templates that show the driver header, and by
+app.py when it constructs the eventual reports row.
 """
 from __future__ import annotations
 
@@ -36,7 +43,6 @@ def get_preview(preview_id: str) -> dict | None:
 
 
 def mark_ready(preview_id: str, data: dict) -> None:
-    """Mark a preview as successfully computed."""
     with _previews_lock:
         state = _previews.get(preview_id)
         if state is None:
@@ -47,7 +53,6 @@ def mark_ready(preview_id: str, data: dict) -> None:
 
 
 def mark_failed(preview_id: str, error: str) -> None:
-    """Mark a preview as failed with an error string."""
     with _previews_lock:
         state = _previews.get(preview_id)
         if state is None:
@@ -55,6 +60,7 @@ def mark_failed(preview_id: str, error: str) -> None:
         state["status"] = "failed"
         state["error"] = error
         state["finished_at"] = datetime.now(timezone.utc)
+
 
 def mark_ready_reports(preview_id: str, reports: list) -> None:
     """Mark a multi-trip preview as successfully computed."""

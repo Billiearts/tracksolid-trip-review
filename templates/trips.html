@@ -213,7 +213,7 @@
               <h3 style="font-size: 0.95rem; margin: 0; color: #1e5f9e;">
                 {{ g.truck }}
                 <span style="color: #888; font-weight: 400; font-size: 0.8rem;">
-                  &middot; IMEI {{ g.imei }}
+                  {% if g.imei %}&middot; IMEI {{ g.imei }}{% endif %}
                   &middot; {{ g.trips | length }} trip{{ 's' if g.trips | length != 1 else '' }}
                 </span>
               </h3>
@@ -250,7 +250,7 @@
                       <td>
                         <input type="checkbox" class="trip-checkbox"
                                data-truck="{{ g.truck }}"
-                               data-imei="{{ g.imei }}"
+                               data-imei="{{ t.imei or g.imei }}"
                                data-driver="{{ g.driver_name or '' }}"
                                data-start="{{ t.start.strftime('%Y-%m-%d %H:%M:%S') }}"
                                data-end="{{ t.end.strftime('%Y-%m-%d %H:%M:%S') }}"

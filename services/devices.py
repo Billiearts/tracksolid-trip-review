@@ -10,6 +10,10 @@ If the API rejects page/page_size, we log and accept the single page.
 
 Truck classification (regular / operational / ambiguous) is used by the
 live fleet feature to hide non-corridor trucks from the map.
+
+get_devices_cached_only() is the fast path for endpoints that need a
+response now — it returns the cached snapshot or None and never triggers
+a Tracksolid call.
 """
 from __future__ import annotations
 
@@ -29,13 +33,11 @@ _PAGE_SIZE = 500
 _MAX_PAGES = 50
 
 
-# Tier 1 — strict "regular fleet truck" name pattern.
 _REGULAR_TRUCK_RE = re.compile(
     r"^\s*(?:GT|GN|GR|GE|GC)\s*\d{3,5}\s*-\s*\d{2}\s*$",
     re.IGNORECASE,
 )
 
-# Tier 2 — known operational-fleet keywords (case-insensitive substring).
 _OPERATIONAL_KEYWORDS = (
     "canteen",
     "service van",
@@ -50,7 +52,6 @@ _OPERATIONAL_KEYWORDS = (
 
 
 def _extract_batch_and_total(response: dict) -> tuple[list[dict], int | None]:
-    """Return (batch, total) from whatever shape the API sends."""
     result = response.get("result")
     if result is None:
         result = response.get("data")
@@ -118,7 +119,10 @@ def _fetch_all_devices() -> list[dict]:
 
 
 def get_devices() -> list[dict]:
-    """Return the raw device list, cached for 5 minutes."""
+    """Return the raw device list, cached for 5 minutes.
+
+    Never returns None. May block on a cold cache.
+    """
     now = time.time()
     if _devices_cache["data"] is not None and now < _devices_cache["expires_at"]:
         return _devices_cache["data"]
@@ -127,6 +131,19 @@ def get_devices() -> list[dict]:
     _devices_cache["data"] = devices
     _devices_cache["expires_at"] = now + _DEVICES_TTL_SECONDS
     return devices
+
+
+def get_devices_cached_only() -> list[dict] | None:
+    """Return the device list only if the cache is warm, else None.
+
+    Never triggers a Tracksolid call. Use from endpoints that must
+    respond quickly and can degrade to a smaller fallback when the
+    device list isn't available yet.
+    """
+    now = time.time()
+    if _devices_cache["data"] is not None and now < _devices_cache["expires_at"]:
+        return _devices_cache["data"]
+    return None
 
 
 def classify_device(device_name: str) -> str:
@@ -176,3 +193,15 @@ def resolve_device(query: str) -> tuple[dict | None, list[dict]]:
     if len(matches) == 1:
         return matches[0], matches
     return None, matches
+
+
+def lookup_device(imei: str) -> dict | None:
+    """Fast exact-IMEI lookup against the cache (does not trigger a
+    Tracksolid call). Returns the raw device dict or None."""
+    imei = (imei or "").strip()
+    if not imei:
+        return None
+    for d in get_devices():
+        if d.get("imei") == imei:
+            return d
+    return None

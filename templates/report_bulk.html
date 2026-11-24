@@ -12,6 +12,7 @@
       <span class="meta-note" style="font-size: 0.8rem; color: #666;">
         {{ items|length }} trip{{ 's' if items|length != 1 else '' }}
         {% if trucks %}· {{ trucks|length }} truck{{ 's' if trucks|length != 1 else '' }}{% endif %}
+        {% if drivers %}· {{ drivers|length }} driver{{ 's' if drivers|length != 1 else '' }}{% endif %}
       </span>
     </h2>
     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
@@ -35,11 +36,12 @@
       <select id="item-filter">
         <option value="">All</option>
         <option value="truck">By truck</option>
+        <option value="driver">By driver</option>
       </select>
     </div>
     <div class="field-inline">
       <label>Search</label>
-      <input type="text" id="item-search" placeholder="truck, IMEI, or date">
+      <input type="text" id="item-search" placeholder="truck, driver, IMEI, or date">
     </div>
     <button type="button" class="btn-edit" id="item-clear">Clear</button>
   </div>
@@ -49,6 +51,7 @@
       <thead>
         <tr>
           <th>Truck</th>
+          <th>Driver</th>
           <th>IMEI</th>
           <th>Trip start</th>
           <th>Trip end</th>
@@ -60,9 +63,11 @@
         {% for it in items %}
           {% set dur_s = (it.trip_end - it.trip_start).total_seconds() if it.trip_start and it.trip_end else 0 %}
           <tr data-truck="{{ it.truck_id|lower }}"
+              data-driver="{{ (it.driver_name or '')|lower }}"
               data-imei="{{ it.imei|lower }}"
               data-start="{{ it.trip_start.strftime('%Y-%m-%d %H:%M') if it.trip_start else '' }}">
             <td>{{ it.truck_id }}</td>
+            <td>{{ it.driver_name or '' }}</td>
             <td><code style="font-size:0.8rem;">{{ it.imei }}</code></td>
             <td style="white-space:nowrap;">
               {{ it.trip_start.strftime('%Y-%m-%d %H:%M') if it.trip_start else '' }}
@@ -102,6 +107,7 @@
     tbody.querySelectorAll('tr[data-truck]').forEach(function (tr) {
       const haystack = (
         tr.getAttribute('data-truck') + ' ' +
+        tr.getAttribute('data-driver') + ' ' +
         tr.getAttribute('data-imei') + ' ' +
         tr.getAttribute('data-start')
       ).toLowerCase();

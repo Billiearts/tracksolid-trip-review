@@ -1,58 +1,55 @@
 {% extends "base.html" %}
 
-{% block body_class %}wide{% endblock %}
+{% block heading %}Admin — users{% endblock %}
 
 {% block content %}
   <div class="card">
-    <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem;">
-      <h2 style="font-size: 1.1rem; margin: 0;">
-        Users ({{ result.users | length }})
-      </h2>
-      <a href="{{ url_for('admin.new_user') }}"
-         style="font-size: 0.9rem;">+ New user</a>
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.6rem; margin-bottom:1rem;">
+      <h2 style="font-size:1.1rem; margin:0;">Users</h2>
+      <a href="{{ url_for('admin.new_user') }}" class="btn-download">+ New user</a>
     </div>
-      <div style="display: flex; gap: 0.5rem;">
-        <a href="{{ url_for('admin.usage') }}"
-           class="btn-edit" style="text-decoration: none;">API usage</a>
-        <a href="{{ url_for('admin.new_user') }}"
-           style="font-size: 0.9rem;">+ New user</a>
-      </div>
-    {% if result.users %}
-      <div class="table-scroll">
+
+    <div class="table-scroll">
       <table class="admin-table">
         <thead>
           <tr>
             <th>Name</th>
             <th>Email</th>
             <th>Role</th>
-            <th>Registered</th>
-            <th>Last sign-in</th>
+            <th>Last login</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
           {% for u in result.users %}
-            {% set is_primary = u.is_primary_super_admin %}
-            {% set protected = is_primary and not caller_is_primary %}
+            {% set uid = u.id %}
+            {% set ls  = last_seen_map.get(uid) %}
             <tr>
-              <td>{{ u.full_name }}</td>
+              <td>{{ u.full_name or '—' }}</td>
+              <td>{{ u.email }}</td>
               <td>
-                {{ u.email }}
-                {% if is_primary and caller_is_primary %}
-                  <span class="role-pill role-admin" style="margin-left: 0.3rem;">primary</span>
+                {# Display super_admin as admin for everyone except the
+                   primary super-admin, who gets a small "primary" tag. #}
+                {% if u.role == 'super_admin' %}
+                  <span class="role-pill role-admin">admin</span>
+                  {% if u.is_primary_super_admin %}
+                    <span class="muted" style="font-size:0.75rem;"></span>
+                  {% endif %}
+                {% elif u.role == 'admin' %}
+                  <span class="role-pill role-admin">admin</span>
+                {% else %}
+                  <span class="role-pill role-user">user</span>
                 {% endif %}
               </td>
               <td>
-                <span class="role-pill role-{{ 'admin' if u.role in ('admin', 'super_admin') else 'user' }}">
-                  {{ 'admin' if u.role == 'super_admin' and not caller_is_primary else u.role }}
-                </span>
-              </td>
-              <td style="white-space: nowrap;">{{ u.created_at or '—' }}</td>
-              <td style="white-space: nowrap;">{{ u.last_sign_in_at or '—' }}</td>
-              <td style="text-align: right; white-space: nowrap;">
-                {% if protected %}
-                  <span class="muted" style="font-size: 0.78rem;">protected</span>
+                {% if ls %}
+                  {{ ls.strftime('%Y-%m-%d %H:%M') }}
                 {% else %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
+              <td style="text-align:right; white-space:nowrap;">
+                {% if not (u.is_primary_super_admin and u.id != session.get('user_id')) %}
                   <a class="btn-edit"
                      href="{{ url_for('admin.edit_user', user_id=u.id) }}">Edit</a>
                 {% endif %}
@@ -61,25 +58,18 @@
           {% endfor %}
         </tbody>
       </table>
-      </div>
+    </div>
 
-      <div class="pagination">
-        {% if result.page > 1 %}
-          <a class="role-btn" style="text-decoration: none;"
-             href="{{ url_for('admin.index', page=result.page - 1) }}">← Prev</a>
-        {% else %}
-          <button class="role-btn" disabled>← Prev</button>
-        {% endif %}
-        <span>Page {{ result.page }}</span>
-        {% if result.users | length == result.per_page %}
-          <a class="role-btn" style="text-decoration: none;"
-             href="{{ url_for('admin.index', page=result.page + 1) }}">Next →</a>
-        {% else %}
-          <button class="role-btn" disabled>Next →</button>
-        {% endif %}
-      </div>
-    {% else %}
-      <p class="muted">No users yet.</p>
-    {% endif %}
+    <div class="pagination">
+      <span>{{ result.users|length }} user{{ 's' if result.users|length != 1 else '' }}</span>
+      {% if result.page > 1 %}
+        <a class="btn-edit"
+           href="{{ url_for('admin.index', page=result.page - 1) }}">← Prev</a>
+      {% endif %}
+      {% if result.has_more %}
+        <a class="btn-edit"
+           href="{{ url_for('admin.index', page=result.page + 1) }}">Next →</a>
+      {% endif %}
+    </div>
   </div>
 {% endblock %}

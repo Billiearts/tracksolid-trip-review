@@ -120,11 +120,7 @@ YARD_WRAPPER_NAMES = frozenset({
 YARD_LOOKBACK = timedelta(hours=48)
 YARD_TRIP_TOLERANCE = timedelta(minutes=5)
 
-# Tracksolid caps a single jimi.device.track.list request at 7 days.
-# Higher values raise code=1001 'Time span over specified range'.
 _TRACK_CHUNK_DAYS = 7
-
-# Number of parallel workers for history fan-out.
 _HISTORY_WORKERS = 4
 
 
@@ -148,7 +144,6 @@ def _to_float(x) -> float:
 
 
 def _to_float_or_none(x) -> float | None:
-    """Tolerant float coercion for coordinates. Returns None on failure."""
     if x is None:
         return None
     try:
@@ -217,13 +212,6 @@ def _alarm_time(alarm: dict) -> datetime | None:
 
 
 def _alarm_coords(alarm: dict) -> tuple[float | None, float | None]:
-    """Pull a usable (lat, lng) from an alarm payload.
-
-    Tracksolid documents `lat` and `lng` on alarm.list responses, but the
-    field names have been seen in a few shapes (`lat`/`lng`, `lat`/`lon`,
-    and occasionally as the raw strings). Try all of them, coerce, and
-    treat 0/0 or out-of-range values as "no coordinate".
-    """
     lat = _to_float_or_none(alarm.get("lat"))
     lng = _to_float_or_none(alarm.get("lng"))
     if lng is None:
@@ -301,21 +289,6 @@ def find_trips(imei: str, begin: datetime, end: datetime) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Track fetch — 7-day chunk cache
 # ---------------------------------------------------------------------------
-#
-# Two caching layers:
-#
-#   1. _track_cache: per-(imei, begin_str, end_str) LRU, 15 min TTL. This
-#      is the existing per-request cache. compute_report() uses it for the
-#      "current trip" fetch — a single call that's usually <24h.
-#
-#   2. _track_chunk_cache: per-(imei, chunk_start_str) LRU, 60 min TTL.
-#      Holds 7-day chunks aligned to chunk_start_str (which is derived
-#      from an epoch-based rounding so chunks are stable across calls).
-#      build_history() uses this — a 3-month window becomes ~13 chunks,
-#      each fetched once and reused across every trip that overlaps it.
-#
-# Together they mean: the current trip's track is fetched once, and each
-# 7-day history chunk is fetched once, no matter how many trips fall in it.
 
 _track_cache: dict = {}
 _track_cache_lock = threading.Lock()
@@ -361,18 +334,12 @@ def _chunk_cache_put(key, points):
         _track_chunk_cache[key] = (
             time.time() + _TRACK_CHUNK_CACHE_TTL, points,
         )
-        # Evict oldest if over cap.
         while len(_track_chunk_cache) > _TRACK_CHUNK_CACHE_MAX:
             oldest = next(iter(_track_chunk_cache))
             _track_chunk_cache.pop(oldest, None)
 
 
 def _chunk_start_of(dt: datetime) -> datetime:
-    """Return the start of the 7-day bucket containing `dt`.
-
-    Chunks are aligned to midnight UTC days, so two calls with the same
-    day-7-multiple boundary share a chunk key.
-    """
     day_start = dt.replace(hour=0, minute=0, second=0, microsecond=0)
     days_since_epoch = (day_start - datetime(1970, 1, 1, tzinfo=timezone.utc)).days
     bucket_index = days_since_epoch // _TRACK_CHUNK_DAYS
@@ -382,7 +349,6 @@ def _chunk_start_of(dt: datetime) -> datetime:
 
 
 def _fetch_track_chunk(imei: str, chunk_start: datetime) -> list[dict]:
-    """Fetch one 7-day chunk. Cached for 60 minutes per (imei, chunk_start)."""
     chunk_end = chunk_start + timedelta(days=_TRACK_CHUNK_DAYS) - timedelta(seconds=1)
     key = (imei, utc_str(chunk_start))
     cached = _chunk_cache_get(key)
@@ -403,19 +369,12 @@ def _fetch_track_chunk(imei: str, chunk_start: datetime) -> list[dict]:
 
 
 def fetch_track(imei: str, begin: datetime, end: datetime) -> list[dict]:
-    """Fetch track points for [begin, end], cached for 15 min.
-
-    If the window exceeds 7 days (the Tracksolid cap), it's automatically
-    split into 7-day chunks and merged. Chunks are individually cached
-    for 60 min so overlapping calls reuse the same data.
-    """
     key = (imei, utc_str(begin), utc_str(end))
     cached = _track_cache_get(key)
     if cached is not None:
         return cached
 
     if (end - begin) <= timedelta(days=_TRACK_CHUNK_DAYS):
-        # Single-chunk fast path.
         response = api_call("jimi.device.track.list", {
             "imei":       imei,
             "begin_time": utc_str(begin),
@@ -428,7 +387,6 @@ def fetch_track(imei: str, begin: datetime, end: datetime) -> list[dict]:
         _track_cache_put(key, points)
         return points
 
-    # Multi-chunk path: walk chunk boundaries, fetch each, merge, filter.
     log.info(
         "fetch_track: %.1f-day window exceeds 7-day cap; chunking",
         (end - begin).total_seconds() / 86400,
@@ -437,8 +395,6 @@ def fetch_track(imei: str, begin: datetime, end: datetime) -> list[dict]:
     cursor = begin
     while cursor < end:
         chunk_start = _chunk_start_of(cursor)
-        # If begin is mid-chunk, we still need this chunk from `begin`.
-        # Use the aligned chunk from chunk_start, but filter to cursor..end.
         points = _fetch_track_chunk(imei, chunk_start)
         for p in points:
             ts = p.get("gpsTime")
@@ -510,7 +466,6 @@ def _track_stop_intervals(track: list[dict],
         dur = (end - start).total_seconds()
         if dur < MIN_STOP_SECONDS:
             continue
-        # Use the first stationary point's fix as the "where" coordinate.
         lat, lng = points[i0][2], points[i0][3]
         intervals.append({
             "start": start, "end": end, "seconds": dur, "address": "",
@@ -742,26 +697,6 @@ def summarise_yard(alarms: list[dict], trip_start: datetime | None) -> dict | No
 # ---------------------------------------------------------------------------
 # Events
 # ---------------------------------------------------------------------------
-#
-# Every event dict now carries:
-#   time       — raw `alertTime` string (unchanged)
-#   type       — human label
-#   kind       — one of the bucket keys below
-#   speed      — km/h at the alarm
-#   lat / lng  — coordinates, if Tracksolid provided them
-#
-# Alert matching
-# --------------
-# Tracksolid's `jimi.device.alarm.list` returns `alertTypeId` as a string
-# (not a number) on this account, e.g. `suddenAcceleration`,
-# `suddenDeceleration`, `sharpTurnLeft`, `sharpTurnRight`, `overSpeed`.
-# Older firmware / docs use numeric ids (`41`, `43`, `48`). Device
-# firmware also varies `alarmTypeName` ("Sudden Acceleration Alert" vs
-# "Harsh Acceleration" vs "Sudden Acceleration Alarm").
-#
-# `_classify_alarm()` below matches on ALL of those so no event is ever
-# silently dropped. If Tracksolid changes its vocabulary again, add the
-# new substring to the appropriate branch and redeploy.
 
 _BRAKE_IDS = frozenset({"48", "suddendeceleration", "suddenbraking",
                         "harshbraking", "hardbraking"})
@@ -774,17 +709,9 @@ _OVERSPEED_IDS = frozenset({"overspeed", "overspeeding"})
 
 
 def _classify_alarm(alert_type_id: str, alarm_name: str) -> str | None:
-    """Map a Tracksolid alarm to one of our bucket keys, or None.
-
-    Returns one of: 'hard_braking', 'hard_acceleration',
-    'hard_cornering', 'speeding'. Returns None if the alarm isn't a
-    driver-behaviour event (geofence in/out, parking, idling, etc.).
-    """
     a = (alert_type_id or "").strip().lower()
     n = (alarm_name or "").lower()
 
-    # Overspeed fires by name reliably across all firmwares; match first
-    # so "overSpeed" never falls through to a different branch.
     if a in _OVERSPEED_IDS or "overspeed" in n or "over speed" in n:
         return "speeding"
 
@@ -904,26 +831,13 @@ def _aggregate_yard(visits: list[dict]) -> dict | None:
 
 
 def _fetch_one_history_trip(imei: str, t: dict, parking: list[dict] | None):
-    """Fetch the track for one historical trip and filter the batched
-    parking rows to it.
-
-    - track: uses fetch_track(), which auto-chunks >7-day windows and
-      reuses the 7-day chunk cache.
-    - parking: pre-fetched once for the whole window; we just filter
-      to [t.start, t.end].
-
-    Returns (trip, parking_for_trip, track_for_trip). Either may be None
-    on failure, which just means that trip's stop stats are skipped.
-    """
     try:
         track = fetch_track(imei, t["start"], t["end"])
     except RateLimitExceeded as exc:
-        log.warning("history: track rate-limited for %s: %s",
-                    t["start"], exc)
+        log.warning("history: track rate-limited for %s: %s", t["start"], exc)
         track = None
     except Exception as exc:
-        log.warning("history: track fetch failed for %s: %s",
-                    t["start"], exc)
+        log.warning("history: track fetch failed for %s: %s", t["start"], exc)
         track = None
 
     parking_for_trip: list[dict] | None
@@ -943,27 +857,6 @@ def build_history(imei: str, reference: datetime, *,
                   alarms: list[dict] | None = None,
                   hist_begin: datetime | None = None,
                   hist_end: datetime | None = None) -> dict | None:
-    """Build 3-month history.
-
-    Performance strategy (Nov 2026):
-
-      * Parking is fetched ONCE across the full history window via a single
-        `fetch_parking()` call. The API has no window cap on parking, so
-        this replaces N_trips parking calls (typically 60–70) with 1.
-
-      * Track is fetched per-trip via `fetch_track()`, which auto-splits
-        windows >7 days into 7-day chunks. Each 7-day chunk is cached for
-        60 min per (imei, chunk_start), so overlapping trips reuse the same
-        underlying API responses. For a 3-month window with 60+ trips this
-        reduces ~67 track calls to ~13 chunk calls, with 100% accuracy.
-
-      * Behaviour events and yard stats use ALL trips — they're derived
-        from alarms, which are already in hand.
-
-    The result is identical to the pre-Nov-2026 algorithm in terms of
-    accuracy — average, max, min, and total are all computed across every
-    trip. Only the number of HTTP calls drops (by roughly 10×).
-    """
     import time as _time
     t0 = _time.monotonic()
 
@@ -971,7 +864,6 @@ def build_history(imei: str, reference: datetime, *,
         hist_begin, hist_end = history_window(reference)
 
     if alarms is None:
-        # CLI / standalone path — fetch once.
         try:
             alarms = fetch_alarms_chunked(imei, hist_begin, hist_end)
         except RateLimitExceeded as exc:
@@ -989,7 +881,6 @@ def build_history(imei: str, reference: datetime, *,
     trips = [t for t in trips if hist_begin <= t["start"] < hist_end]
     log.info("%d trip(s) starting in window", len(trips))
 
-    # ---- batched parking across the whole history window ----
     t_fetch_parking = _time.monotonic()
     try:
         parking_full = fetch_parking(imei, hist_begin, hist_end)
@@ -1002,7 +893,6 @@ def build_history(imei: str, reference: datetime, *,
         log.warning("history: parking fetch failed: %s", exc)
         parking_full = None
 
-    # ---- parallel per-trip track fetch (chunk cache does the dedup) ----
     t_fetch0 = _time.monotonic()
     fetched = parallel_call(
         lambda t: _fetch_one_history_trip(imei, t, parking_full),

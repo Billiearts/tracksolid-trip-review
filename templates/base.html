@@ -720,6 +720,19 @@
           {% endif %}
         </a>
 
+        {% if can_use_drivers %}
+          <a href="{{ url_for('drivers.index') }}"
+             class="topbar-link {{ 'active' if request.endpoint and request.endpoint.startswith('drivers.') else '' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="9" cy="7" r="4"></circle>
+              <path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"></path>
+              <path d="M16 11a4 4 0 0 0 0-8"></path>
+            </svg>
+            Drivers
+          </a>
+        {% endif %}
+
         {% if 'live_fleet_view' in (session.get('extra_roles') or []) %}
           <a href="{{ url_for('live_fleet.index') }}"
              class="topbar-link {{ 'active' if request.endpoint and request.endpoint.startswith('live_fleet.') else '' }}">
@@ -815,6 +828,19 @@
                 Manage users
               </a>
             {% endif %}
+
+            {% if can_use_drivers %}
+              <a href="{{ url_for('drivers.index') }}" role="menuitem">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="9" cy="7" r="4"></circle>
+                  <path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"></path>
+                  <path d="M16 11a4 4 0 0 0 0-8"></path>
+                </svg>
+                Drivers
+              </a>
+            {% endif %}
+
             <a href="{{ url_for('auth.logout') }}" role="menuitem" class="danger">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

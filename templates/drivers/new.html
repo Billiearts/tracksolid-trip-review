@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block heading %}New driver{% endblock %}
+
+{% block content %}
+<div class="card" style="max-width:640px;">
+  <h2 style="font-size:1.1rem; margin:0 0 1rem;">Register a driver</h2>
+  <form method="post" action="{{ url_for('drivers.new_driver') }}">
+    <div class="field">
+      <label for="full_name">Full name</label>
+      <input type="text" id="full_name" name="full_name" required
+             value="{{ form.get('full_name', '') }}">
+    </div>
+    <div class="field">
+      <label for="staff_id">Staff ID</label>
+      <input type="text" id="staff_id" name="staff_id"
+             value="{{ form.get('staff_id', '') }}"
+             placeholder="Optional, must be unique">
+    </div>
+    <div class="field">
+      <label for="phone">Phone</label>
+      <input type="text" id="phone" name="phone"
+             value="{{ form.get('phone', '') }}">
+    </div>
+    <div class="field">
+      <label for="license_number">License number</label>
+      <input type="text" id="license_number" name="license_number"
+             value="{{ form.get('license_number', '') }}">
+    </div>
+    <div class="field">
+      <label for="license_expiry">License expiry</label>
+      <input type="date" id="license_expiry" name="license_expiry"
+             value="{{ form.get('license_expiry', '') }}">
+    </div>
+    <div class="field">
+      <label style="display:flex; align-items:center; gap:0.4rem; cursor:pointer;">
+        <input type="checkbox" name="active" value="on"
+               {% if form.get('active', 'on') != 'off' %}checked{% endif %}>
+        Active
+      </label>
+    </div>
+    <div class="field">
+      <label for="notes">Notes</label>
+      <textarea id="notes" name="notes" rows="3">{{ form.get('notes', '') }}</textarea>
+    </div>
+    <div style="display:flex; gap:0.6rem;">
+      <button type="submit">Create driver</button>
+      <a class="btn-edit" href="{{ url_for('drivers.index') }}">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

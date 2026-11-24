@@ -57,12 +57,49 @@
 
       <div class="field">
         <label>Additional roles</label>
+
         <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.9rem;cursor:pointer;margin-bottom:0.35rem;">
           <input type="checkbox" name="extra_live_fleet_view"
                  {% if 'live_fleet_view' in (user.extra_roles or []) %}checked{% endif %}>
           Live fleet view
           <span class="muted" style="font-size:0.8rem;">(access the Live tab)</span>
         </label>
+
+        <div style="border-top:1px solid #eee; margin:0.5rem 0; padding-top:0.5rem;"></div>
+
+        <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.9rem;cursor:pointer;margin-bottom:0.35rem;">
+          <input type="checkbox" name="extra_drivers_view"
+                 {% if 'drivers_view' in (user.extra_roles or []) %}checked{% endif %}>
+          Drivers — view
+          <span class="muted" style="font-size:0.8rem;">(browse drivers, search trips by driver)</span>
+        </label>
+
+        <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.9rem;cursor:pointer;margin-bottom:0.35rem;">
+          <input type="checkbox" name="extra_drivers_add"
+                 {% if 'drivers_add' in (user.extra_roles or []) %}checked{% endif %}>
+          Drivers — add
+          <span class="muted" style="font-size:0.8rem;">(register new drivers)</span>
+        </label>
+
+        <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.9rem;cursor:pointer;margin-bottom:0.35rem;">
+          <input type="checkbox" name="extra_drivers_edit"
+                 {% if 'drivers_edit' in (user.extra_roles or []) %}checked{% endif %}>
+          Drivers — edit / delete
+          <span class="muted" style="font-size:0.8rem;">(modify existing drivers)</span>
+        </label>
+
+        <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.9rem;cursor:pointer;margin-bottom:0.35rem;">
+          <input type="checkbox" name="extra_drivers_assign"
+                 {% if 'drivers_assign' in (user.extra_roles or []) %}checked{% endif %}>
+          Drivers — assign / release trucks
+          <span class="muted" style="font-size:0.8rem;">(assign a truck to a driver)</span>
+        </label>
+
+        <p class="muted" style="font-size:0.78rem; margin:0.35rem 0 0;">
+          Admins and super-admins always have all Drivers permissions.
+          Grant the specific capabilities here to individual users who
+          need them without full admin access.
+        </p>
       </div>
       <button type="submit" style="width: 100%;">Save changes</button>
     </form>

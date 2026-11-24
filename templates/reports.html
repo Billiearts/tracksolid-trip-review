@@ -35,6 +35,10 @@
         <input type="text" id="filter-truck" placeholder="Filter by truck ID">
       </div>
       <div class="field-inline">
+        <label for="filter-driver">Driver</label>
+        <input type="text" id="filter-driver" placeholder="Filter by driver">
+      </div>
+      <div class="field-inline">
         <label for="filter-date">Trip date from</label>
         <input type="date" id="filter-date">
       </div>
@@ -46,6 +50,7 @@
         <thead>
           <tr>
             <th>Truck</th>
+            <th>Driver</th>
             <th>Trip</th>
             {% if is_admin %}<th>Created by</th>{% endif %}
             <th>Status</th>
@@ -57,6 +62,7 @@
           {% for j in jobs %}
             <tr>
               <td>{{ j.truck }}</td>
+              <td>{{ j.driver_name or '' }}</td>
               <td>{{ (j.trip_start or '')[:10] }}</td>
               {% if is_admin %}
                 <td>{{ j.created_by_email or ('(legacy)' if j.from_disk else '—') }}</td>
@@ -106,22 +112,23 @@
 
       const state = {
         jobs: [], page: 1, pageSize: 25,
-        status: '', truck: '', dateFrom: '',
+        status: '', truck: '', driver: '', dateFrom: '',
         scope: isAdmin ? 'all' : 'mine',
       };
 
       const els = {
-        body:      document.getElementById('jobs-body'),
-        empty:     document.getElementById('empty-msg'),
+        body:         document.getElementById('jobs-body'),
+        empty:        document.getElementById('empty-msg'),
         filterScope:  document.getElementById('filter-scope'),
         filterStatus: document.getElementById('filter-status'),
         filterTruck:  document.getElementById('filter-truck'),
+        filterDriver: document.getElementById('filter-driver'),
         filterDate:   document.getElementById('filter-date'),
         filterClear:  document.getElementById('filter-clear'),
-        prevPage:  document.getElementById('prev-page'),
-        nextPage:  document.getElementById('next-page'),
-        pageInfo:  document.getElementById('page-info'),
-        pageSize:  document.getElementById('page-size'),
+        prevPage:     document.getElementById('prev-page'),
+        nextPage:     document.getElementById('next-page'),
+        pageInfo:     document.getElementById('page-info'),
+        pageSize:     document.getElementById('page-size'),
       };
 
       function esc(s) {
@@ -131,10 +138,12 @@
       }
 
       function filtered() {
-        const truckQ = state.truck.trim().toLowerCase();
+        const truckQ  = state.truck.trim().toLowerCase();
+        const driverQ = state.driver.trim().toLowerCase();
         return state.jobs.filter(j => {
           if (state.status && j.status !== state.status) return false;
           if (truckQ && !String(j.truck || '').toLowerCase().includes(truckQ)) return false;
+          if (driverQ && !String(j.driver_name || '').toLowerCase().includes(driverQ)) return false;
           if (state.dateFrom) {
             const tripDay = (j.trip_start || '').slice(0, 10);
             if (!tripDay || tripDay < state.dateFrom) return false;
@@ -176,6 +185,7 @@
               : '';
             return '<tr>' +
               '<td>' + esc(j.truck) + '</td>' +
+              '<td>' + esc(j.driver_name || '') + '</td>' +
               '<td>' + trip + '</td>' +
               ownerCol +
               '<td><span class="status status-' + esc(j.status) + '">' +
@@ -219,12 +229,18 @@
       els.filterTruck.addEventListener('input', () => {
         state.truck = els.filterTruck.value; state.page = 1; render();
       });
+      els.filterDriver.addEventListener('input', () => {
+        state.driver = els.filterDriver.value; state.page = 1; render();
+      });
       els.filterDate.addEventListener('change', () => {
         state.dateFrom = els.filterDate.value; state.page = 1; render();
       });
       els.filterClear.addEventListener('click', () => {
-        els.filterStatus.value = ''; els.filterTruck.value = ''; els.filterDate.value = '';
-        state.status = ''; state.truck = ''; state.dateFrom = '';
+        els.filterStatus.value = '';
+        els.filterTruck.value = '';
+        els.filterDriver.value = '';
+        els.filterDate.value = '';
+        state.status = ''; state.truck = ''; state.driver = ''; state.dateFrom = '';
         state.page = 1; render();
       });
       els.prevPage.addEventListener('click', () => {

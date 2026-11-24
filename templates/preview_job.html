@@ -27,7 +27,6 @@
         </form>
       {% endif %}
 
-      {# Partial export: show whenever at least one trip is done. #}
       {% if can_partial_export %}
         <form method="post"
               action="{{ url_for('preview_job_export_partial', job_id=job.id) }}"
@@ -41,7 +40,6 @@
         </form>
       {% endif %}
 
-      {# Full export: only when the job completed with all done. #}
       {% if can_export %}
         <form method="post" action="{{ url_for('export_job_start') }}" style="display:inline;">
           <input type="hidden" name="preview_job_id" value="{{ job.id }}">
@@ -97,7 +95,7 @@
     </div>
     <div class="field-inline">
       <label>Search</label>
-      <input type="text" id="item-search" placeholder="truck or IMEI">
+      <input type="text" id="item-search" placeholder="truck, driver, or IMEI">
     </div>
   </div>
 
@@ -106,6 +104,7 @@
       <thead>
         <tr>
           <th>Truck</th>
+          <th>Driver</th>
           <th>Trip start</th>
           <th>Trip end</th>
           <th>Status</th>
@@ -114,9 +113,12 @@
       </thead>
       <tbody id="items-tbody">
         {% for it in items %}
-          <tr data-truck="{{ it.truck_id|lower }}" data-imei="{{ it.imei }}"
+          <tr data-truck="{{ it.truck_id|lower }}"
+              data-driver="{{ (it.driver_name or '')|lower }}"
+              data-imei="{{ it.imei }}"
               data-status="{{ it.status }}">
             <td>{{ it.truck_id }}</td>
+            <td>{{ it.driver_name or '' }}</td>
             <td>{{ it.trip_start[:16].replace('T', ' ') if it.trip_start else '' }}</td>
             <td>{{ it.trip_end[:16].replace('T', ' ') if it.trip_end else '' }}</td>
             <td>
@@ -166,9 +168,11 @@
     tbody.querySelectorAll('tr[data-truck]').forEach(tr => {
       const status = tr.getAttribute('data-status');
       const truck = tr.getAttribute('data-truck');
+      const driver = tr.getAttribute('data-driver') || '';
       const imei = tr.getAttribute('data-imei');
       const okStatus = !f || status === f;
-      const okSearch = !q || truck.includes(q) || imei.includes(q);
+      const okSearch = !q || truck.includes(q) || imei.includes(q) ||
+        driver.includes(q);
       tr.style.display = (okStatus && okSearch) ? '' : 'none';
     });
   }
@@ -196,12 +200,10 @@
       bar.style.width = pct + '%';
 
       if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') {
-        // Reload once so the server-rendered buttons reflect the new counts.
         setTimeout(() => location.reload(), 500);
         return;
       }
 
-      // Rebuild the tbody from the new items.
       tbody.innerHTML = items.map(it => {
         const statusClass = it.status === 'done' ? 'done'
                           : it.status === 'running' ? 'running'
@@ -215,9 +217,11 @@
             esc(it.error || '') + '">failed</span>'
           : '';
         return '<tr data-truck="' + esc(it.truck_id.toLowerCase()) + '" ' +
+               'data-driver="' + esc((it.driver_name || '').toLowerCase()) + '" ' +
                'data-imei="' + esc(it.imei) + '" ' +
                'data-status="' + esc(it.status) + '">' +
                '<td>' + esc(it.truck_id) + '</td>' +
+               '<td>' + esc(it.driver_name || '') + '</td>' +
                '<td>' + esc((it.trip_start || '').slice(0,16).replace('T',' ')) + '</td>' +
                '<td>' + esc((it.trip_end   || '').slice(0,16).replace('T',' ')) + '</td>' +
                '<td><span class="status status-' + statusClass + '">' + esc(it.status) + '</span></td>' +

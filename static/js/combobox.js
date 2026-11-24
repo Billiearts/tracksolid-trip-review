@@ -5,8 +5,12 @@
   const MAX_TRUCKS     = 200;
 
   class TruckMultiCombobox {
-    constructor(root) {
+    constructor(root, opts) {
+      opts = opts || {};
       this.root       = root;
+      this.multi      = opts.multi !== false;   // default true
+      this.manual     = !!opts.manual;          // skip /api/devices fetch
+
       this.hiddenIn   = root.querySelector('input[type="hidden"].combobox-value');
       this.chipsEl    = root.querySelector('.combobox-chips');
       this.input      = root.querySelector('.combobox-input');
@@ -78,6 +82,7 @@
     }
 
     async _loadDevices() {
+      if (this.manual) return;              // caller will setOptions()
       if (this.devices !== null) return;
       this.loading = true;
       this.error = null;
@@ -100,7 +105,7 @@
     async open() {
       this.listbox.hidden = false;
       this.input.setAttribute('aria-expanded', 'true');
-      if (this.devices === null && !this.loading) {
+      if (this.devices === null && !this.loading && !this.manual) {
         await this._loadDevices();
       }
       this._filter();
@@ -138,10 +143,6 @@
       } else if (e.key === 'Escape') {
         this.close();
       }
-      // NOTE: Backspace on an empty input no longer removes the last chip.
-      // Users remove chips via the × button (or "Clear all" in the listbox
-      // header). The old shortcut conflicted with the "clear the search,
-      // type a new truck, keep the old one" workflow.
     }
 
     _move(dir) {
@@ -197,6 +198,11 @@
         this._remove(device.imei);
         return;
       }
+      if (!this.multi) {
+        // Single-select: clear whatever is there, then set.
+        this.selected.clear();
+        this.order.length = 0;
+      }
       if (this.selected.size >= MAX_TRUCKS) {
         this._flashWarn('You can select at most ' + MAX_TRUCKS + ' trucks per search.');
         return;
@@ -233,6 +239,9 @@
       this.hiddenIn.value = JSON.stringify(this.order.map((imei) => {
         const d = this.selected.get(imei);
         return { imei, name: d.name, driver: d.driver || '' };
+      }));
+      this.root.dispatchEvent(new CustomEvent('combobox:change', {
+        detail: { value: this.hiddenIn.value, order: this.order.slice() }
       }));
     }
 
@@ -466,9 +475,33 @@
         if (drop.has(imei)) this._remove(imei);
       }
     }
+
+    // ---------------- public API ----------------
+    setOptions(options) {
+      // options: [{ value, label, raw? }, ...]
+      this.devices = (options || []).map(function (o) {
+        return {
+          imei:   String(o.value),
+          name:   o.label != null ? String(o.label) : String(o.value),
+          driver: o.raw && o.raw.current_driver_name ? o.raw.current_driver_name : '',
+          raw:    o.raw || null,
+        };
+      });
+      this.error = null;
+      this.loading = false;
+      this._filter();
+    }
+
+    getSelection() {
+      return this.order.map((imei) => this.selected.get(imei));
+    }
   }
 
-  document.querySelectorAll('[data-combobox-multi]').forEach(function (el) {
-    new TruckMultiCombobox(el);
+  // ---------------- auto-attach ----------------
+  document.querySelectorAll('[data-combobox-multi], [data-combobox-single]').forEach(function (el) {
+    const multi  = el.hasAttribute('data-combobox-multi');
+    const manual = el.hasAttribute('data-manual');
+    const cb = new TruckMultiCombobox(el, { multi, manual });
+    el._combobox = cb;
   });
 })();

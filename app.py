@@ -6,10 +6,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
@@ -28,6 +30,7 @@ from services import jobs
 from services import reports_repo
 from services import sessions as sessions_svc
 from services import storage
+from services import drivers as drivers_svc
 from services.previews import (
     store_preview, get_preview, mark_ready_reports, mark_failed,
 )
@@ -107,17 +110,18 @@ _preview_pool = ThreadPoolExecutor(max_workers=_PREVIEW_WORKERS,
 executor = ThreadPoolExecutor(max_workers=2)
 
 MAX_TRUCKS          = 200
-# Server-hosted build: no preview cap.
-MAX_TRIPS_PER_TRUCK   = None
+MAX_TRIPS_PER_TRUCK = None
 
 
 from blueprints.auth       import bp as auth_bp
 from blueprints.admin      import bp as admin_bp
 from blueprints.live_fleet import bp as live_fleet_bp
+from blueprints.drivers    import bp as drivers_bp
 
 app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
 app.register_blueprint(live_fleet_bp)
+app.register_blueprint(drivers_bp)
 
 
 try:
@@ -166,6 +170,18 @@ def _is_bulk_payload(stored) -> bool:
     return isinstance(stored, list)
 
 
+def _has_driver_access() -> bool:
+    """True if the current session can see the Driver search mode.
+
+    Admins and super_admins always can. Others need either the
+    `drivers_view` or `drivers_manage` extra_role.
+    """
+    if session.get("role") in ("admin", "super_admin"):
+        return True
+    roles = session.get("extra_roles") or []
+    return ("drivers_view" in roles) or ("drivers_manage" in roles)
+
+
 @app.template_filter("fmt_duration")
 def fmt_duration(seconds):
     try:
@@ -180,19 +196,27 @@ def fmt_duration(seconds):
 
 # ---------------------------------------------------------------------------
 # Manual metadata — board additions (Nov 2026)
-#
-#   comments             — free-form; use for anything (incl. drugs/refuse)
-#   maintenance_issues   — maintenance side / mechanical issues
-#   officer_signature    — image (data URL), same shape as driver signature
-#   officer_signature_kind
 # ---------------------------------------------------------------------------
 
 def _collect_manual_from_form():
+    """Build the manual dict from the report edit-meta form.
+
+    Driver-name rules (Nov 2026):
+      * Non-admins cannot change the driver name; the form's field is
+        rendered read-only and the server ignores `meta_driver_id` for
+        them.
+      * Admins change it by picking from the driver list, not by typing
+        a free-form name. The form posts `meta_driver_id` (a UUID), and
+        we resolve the display name here so a renamed driver doesn't
+        leave a stale string on old reports.
+      * The override is one-time and per-report: once set, we tag
+        `driver_override_locked` so regenerating the Excel doesn't
+        re-resolve the driver from assignments.
+    """
     signature   = (request.form.get("meta_signature") or "").strip()
     officer_sig = (request.form.get("meta_officer_signature") or "").strip()
 
     raw = {
-        "driver_name":        (request.form.get("meta_driver_name")        or "").strip(),
         "out_of_fuel":        (request.form.get("meta_out_of_fuel")        or "").strip(),
         "accidents":          (request.form.get("meta_accidents")          or "").strip(),
         "tyres_damaged":      (request.form.get("meta_tyres")              or "").strip(),
@@ -201,6 +225,25 @@ def _collect_manual_from_form():
         "maintenance_issues": (request.form.get("meta_maintenance_issues") or "").strip(),
     }
     out = {k: v for k, v in raw.items() if v}
+
+    # Driver: admin-only, from the dropdown, locked to this report.
+    if session.get("role") in ("admin", "super_admin"):
+        driver_id = (request.form.get("meta_driver_id") or "").strip()
+        if driver_id:
+            try:
+                drv = drivers_svc.get_driver(driver_id)
+            except Exception:
+                log.exception("_collect_manual_from_form: get_driver failed")
+                drv = None
+            if drv and not drv.get("deleted_at"):
+                out["driver_id"]             = drv["id"]
+                out["driver_name"]           = drv["full_name"]
+                out["driver_override_locked"] = True
+            else:
+                out["driver_override_locked"] = False
+                out["driver_id"]              = None
+                out["driver_name"]            = None
+
     if signature:
         out["signature"] = signature
         out["signature_kind"] = "image"
@@ -208,6 +251,38 @@ def _collect_manual_from_form():
         out["officer_signature"] = officer_sig
         out["officer_signature_kind"] = "image"
     return out
+
+
+def _resolve_report_driver(computed: dict, manual: dict | None) -> tuple[str | None, str | None]:
+    """Resolve (driver_id, driver_name) for a computed report.
+
+    Order of precedence:
+      1. Manual override, locked to this report (admin picked from the
+         driver list). Stored in manual_json with
+         `driver_override_locked: true`.
+      2. Assignment resolved from `truck_assignments` at the trip's start.
+         This is the "auto" driver — it starts from when the driver feature
+         was added, so reports predating it fall through to (3).
+      3. Tracksolid's `driverName` from the device record (legacy).
+    """
+    manual = manual or {}
+
+    if manual.get("driver_override_locked"):
+        return (manual.get("driver_id"), manual.get("driver_name"))
+
+    imei = computed.get("imei")
+    trip_start = computed.get("trip_start")
+    if imei and trip_start:
+        try:
+            resolved = drivers_svc.resolve_trip_driver(imei, trip_start)
+        except Exception:
+            log.exception("_resolve_report_driver: resolve_trip_driver failed")
+            resolved = None
+        if resolved:
+            return (resolved["driver_id"], resolved["driver_name"])
+
+    # Fallback: the original Tracksolid driverName carried on computed.
+    return (computed.get("driver_id"), computed.get("driver_name"))
 
 
 def _parse_requested_trucks():
@@ -248,6 +323,19 @@ def _unique_trucks_from_reports(reports: list[dict]) -> list[str]:
     return out
 
 
+def _unique_drivers_from_reports(reports: list[dict]) -> list[str]:
+    out = []
+    seen = set()
+    for r in reports:
+        if not isinstance(r, dict):
+            continue
+        dn = (r.get("driver_name") or "").strip()
+        if dn and dn not in seen:
+            seen.add(dn)
+            out.append(dn)
+    return out
+
+
 def _bulk_truck_label(reports: list[dict]) -> str:
     trucks = _unique_trucks_from_reports(reports)
     if not trucks:
@@ -267,6 +355,44 @@ def _bulk_safe_filename_label(reports: list[dict]) -> str:
         label = f"Bulk {len(trucks)} trucks"
     return "".join(ch if ch.isalnum() or ch in " -" else "_"
                    for ch in label).strip()
+
+
+def _bulk_driver_label(reports: list[dict]) -> str:
+    drivers = _unique_drivers_from_reports(reports)
+    if not drivers:
+        return "Bulk"
+    if len(drivers) == 1:
+        return drivers[0]
+    return f"Bulk ({len(drivers)} drivers)"
+
+
+def _bulk_safe_driver_filename_label(reports: list[dict]) -> str:
+    drivers = _unique_drivers_from_reports(reports)
+    if not drivers:
+        return "Bulk"
+    if len(drivers) == 1:
+        label = drivers[0]
+    else:
+        label = f"Bulk {len(drivers)} drivers"
+    return "".join(ch if ch.isalnum() or ch in " -" else "_"
+                   for ch in label).strip()
+
+
+def _is_driver_export(reports: list[dict]) -> bool:
+    """True when every report in the set carries a driver_id.
+
+    Used to switch single-export filenames and bulk sheet names from
+    truck-keyed to driver-keyed when the whole set came from a driver
+    search.
+    """
+    if not reports:
+        return False
+    for r in reports:
+        if not isinstance(r, dict):
+            return False
+        if not r.get("driver_id"):
+            return False
+    return True
 
 
 def _merge_manual(old: dict | None, new: dict) -> dict:
@@ -395,6 +521,7 @@ def _safe_compute_report(trip, include_history, alarms=None):
         imei=trip["imei"],
         truck_id=trip["truck"],
         driver_name=trip.get("driver") or "",
+        driver_id=trip.get("driver_id"),
         begin=t_start, end=t_end,
         include_history=include_history,
         alarms=alarms,
@@ -413,6 +540,7 @@ def _run_preview_single(preview_id, trip, include_history):
             imei=trip["imei"],
             truck_id=trip["truck"],
             driver_name=trip.get("driver") or "",
+            driver_id=trip.get("driver_id"),
             begin=t_start, end=t_end,
             include_history=include_history,
         )
@@ -430,6 +558,18 @@ def _run_export(job_id, computed, out_path, manual):
     try:
         write_excel(computed, TEMPLATE_PATH, out_path, manual=manual)
         size = out_path.stat().st_size if out_path.exists() else None
+
+        # Auto-release the driver from the truck on a finished trip.
+        try:
+            imei = computed.get("imei")
+            te = computed.get("trip_end")
+            if imei and te is not None:
+                n = drivers_svc.auto_release_finished_assignments([(imei, te)])
+                if n:
+                    log.info("auto-released %d driver assignment(s) on "
+                             "finished trip", n)
+        except Exception:
+            log.exception("auto-release on export raised; not fatal")
     except Exception as exc:
         log.exception("export failed")
         jobs.mark_failed(job_id, error=f"{type(exc).__name__}: {exc}")
@@ -459,12 +599,30 @@ def _run_export(job_id, computed, out_path, manual):
         log.exception("could not save computed/manual for %s", job_id)
 
 
-def _run_bulk_export(job_id, reports, out_path, per_trip_manual):
+def _run_bulk_export(job_id, reports, out_path, per_trip_manual,
+                     naming_field="truck"):
     jobs.mark_running(job_id)
     try:
         write_bulk_excel(reports, TEMPLATE_PATH, out_path,
-                         per_trip_manual=per_trip_manual)
+                         per_trip_manual=per_trip_manual,
+                         naming_field=naming_field)
         size = out_path.stat().st_size if out_path.exists() else None
+
+        # Auto-release any driver still holding a truck whose trip has
+        # ended. Idempotent; safe to run on every export.
+        try:
+            pairs = []
+            for r in reports:
+                imei = r.get("imei")
+                te = r.get("trip_end")
+                if imei and te is not None:
+                    pairs.append((imei, te))
+            n = drivers_svc.auto_release_finished_assignments(pairs)
+            if n:
+                log.info("auto-released %d driver assignment(s) on "
+                         "finished trips", n)
+        except Exception:
+            log.exception("auto-release on export raised; not fatal")
     except Exception as exc:
         log.exception("bulk export failed")
         jobs.mark_failed(job_id, error=f"{type(exc).__name__}: {exc}")
@@ -497,7 +655,12 @@ _NAV_CACHE_TTL = 10.0
 
 @app.context_processor
 def _inject_nav_context():
-    ctx = {"nav_unacked_alerts": 0, "nav_pending_jobs": 0}
+    ctx = {
+        "nav_unacked_alerts": 0,
+        "nav_pending_jobs":   0,
+        "can_use_drivers":    False,
+        "can_manage_drivers": False,
+    }
     if not session.get("user_id"):
         return ctx
     try:
@@ -518,6 +681,15 @@ def _inject_nav_context():
             _nav_jobs_cache["user_id"] = uid
             _nav_jobs_cache["value"] = ctx["nav_pending_jobs"]
             _nav_jobs_cache["expires_at"] = now + _NAV_CACHE_TTL
+
+        is_admin = session.get("role") in ("admin", "super_admin")
+        roles = session.get("extra_roles") or []
+        ctx["can_use_drivers"] = (
+            is_admin
+            or ("drivers_view" in roles)
+            or ("drivers_manage" in roles)
+        )
+        ctx["can_manage_drivers"] = is_admin or ("drivers_manage" in roles)
     except Exception:
         pass
     return ctx
@@ -547,7 +719,8 @@ def forbidden(e):
 @app.route("/")
 @login_required
 def index():
-    return render_template("index.html")
+    return render_template("index.html",
+                           can_use_drivers=_has_driver_access())
 
 
 @app.route("/api/usage")
@@ -724,6 +897,8 @@ def trips_list():
         "trips.html",
         truck_groups=groups, total_trips=total, not_found=not_found,
         begin_str=begin_s, end_str=end_s, include_history=include_history,
+        group_by="truck",
+        warnings=[],
     )
 
 
@@ -748,13 +923,17 @@ def preview_start():
                 flash("Invalid trip selection.", "error")
                 return redirect(url_for("index"))
 
+    any_driver = any(s.get("driver_id") for s in selected)
+
     audit.record(
         "preview.start",
         target=", ".join(sorted({s["truck"] for s in selected}))[:200],
         detail=(f"trips={len(selected)}, include_history={include_history}, "
+                f"driver_mode={any_driver}, "
                 f"mode={'sync' if len(selected) == 1 else 'job'}"),
         meta={"trip_count": len(selected),
-              "include_history": include_history},
+              "include_history": include_history,
+              "driver_mode": any_driver},
     )
 
     if len(selected) == 1:
@@ -765,6 +944,7 @@ def preview_start():
             "queued_at":       datetime.now(timezone.utc),
             "truck":           trip["truck"],
             "imei":            trip["imei"],
+            "driver_id":       trip.get("driver_id"),
             "driver_name":     trip.get("driver") or "",
             "trips":           selected,
             "reports":         None,
@@ -778,11 +958,12 @@ def preview_start():
 
     job_id = report_jobs.create_preview_job(
         trips=[{
-            "imei":   s["imei"],
-            "truck":  s["truck"],
-            "driver": s.get("driver") or "",
-            "start":  s["start"],
-            "end":    s["end"],
+            "imei":      s["imei"],
+            "truck":     s["truck"],
+            "driver":    s.get("driver") or "",
+            "driver_id": s.get("driver_id"),
+            "start":     s["start"],
+            "end":       s["end"],
         } for s in selected],
         include_history=include_history,
         created_by=session.get("user_id"),
@@ -842,13 +1023,15 @@ def api_preview_job(job_id):
     return jsonify({
         "job":  job,
         "items": [{
-            "id":         it["id"],
-            "truck_id":   it["truck_id"],
-            "imei":       it["imei"],
-            "trip_start": it["trip_start"],
-            "trip_end":   it["trip_end"],
-            "status":     it["status"],
-            "error":      it["error"],
+            "id":          it["id"],
+            "truck_id":    it["truck_id"],
+            "imei":        it["imei"],
+            "driver_id":   it.get("driver_id"),
+            "driver_name": it.get("driver_name") or "",
+            "trip_start":  it["trip_start"],
+            "trip_end":    it["trip_end"],
+            "status":      it["status"],
+            "error":       it["error"],
         } for it in items],
     })
 
@@ -883,6 +1066,16 @@ def preview_job_trip(job_id, item_id):
         reports = [item["computed"]]
         current_index = 0
 
+    is_admin = session.get("role") in ("admin", "super_admin")
+    try:
+        from blueprints.drivers import _driver_choices_for_admin
+        driver_choices = _driver_choices_for_admin(
+            selected_id=(reports[current_index] or {}).get("driver_id")
+        )
+    except Exception:
+        log.exception("preview_job_trip: could not build driver choices")
+        driver_choices = []
+
     return render_template(
         "preview.html",
         loading=False, view_mode=False, is_bulk=(len(reports) > 1),
@@ -895,6 +1088,8 @@ def preview_job_trip(job_id, item_id):
         report_id=None,
         job_id=job_id,
         item_id=item_id,
+        driver_choices=driver_choices,
+        driver_locked=not is_admin,
     )
 
 
@@ -974,11 +1169,23 @@ def preview_show(preview_id):
         current_index = 0
     current_index = max(0, min(current_index, len(reports) - 1))
 
+    is_admin = session.get("role") in ("admin", "super_admin")
+    try:
+        from blueprints.drivers import _driver_choices_for_admin
+        driver_choices = _driver_choices_for_admin(
+            selected_id=(reports[current_index] or {}).get("driver_id")
+        )
+    except Exception:
+        log.exception("preview_show: could not build driver choices")
+        driver_choices = []
+
     return render_template(
         "preview.html", loading=False, view_mode=False, is_bulk=False,
         preview_id=preview_id, state=state, reports=reports,
         current_index=current_index, computed=reports[current_index],
         manual={}, report_id=None,
+        driver_choices=driver_choices,
+        driver_locked=not is_admin,
     )
 
 
@@ -1011,8 +1218,26 @@ def export():
 
     manual = _collect_manual_from_form()
 
+    # Apply the driver precedence: locked manual override → assignment
+    # resolved at trip start → Tracksolid driverName. compute_report
+    # already resolved the assignment, so this only matters when an
+    # admin has set a one-time override via edit-meta.
+    drv_id, drv_name = _resolve_report_driver(computed, manual)
+    if drv_id or drv_name:
+        computed = dict(computed)          # don't mutate the preview state
+        computed["driver_id"]   = drv_id
+        computed["driver_name"] = drv_name
+
+    is_driver = bool(computed.get("driver_id"))
+    if is_driver:
+        primary = (computed.get("driver_name") or "").strip()
+        if not primary:
+            primary = computed["truck_id"]
+    else:
+        primary = computed["truck_id"]
+
     safe_name = "".join(ch if ch.isalnum() or ch in " -" else "_"
-                        for ch in computed["truck_id"]).strip()
+                        for ch in primary).strip()
     run_stamp = datetime.now(timezone.utc).strftime("%H%M%S")
     date_str  = (computed["trip_start"].date()
                  if computed["trip_start"] else datetime.now(timezone.utc).date())
@@ -1026,6 +1251,8 @@ def export():
             trip_end=computed["trip_end"],
             created_by=session.get("user_id"),
             created_by_email=session.get("email"), manual=manual,
+            driver_id=computed.get("driver_id"),
+            driver_name=computed.get("driver_name"),
         )
     except Exception as exc:
         log.exception("could not create report row")
@@ -1050,13 +1277,15 @@ def export():
         "report.export",
         target=computed["truck_id"],
         detail=(f"filename={filename}, trip_index={trip_index}, "
+                f"driver={'yes' if is_driver else 'no'}, "
                 f"trip_start={utc_str(computed['trip_start']) if computed['trip_start'] else ''}"),
         meta={"job_id": job_id, "filename": filename,
               "trip_index": trip_index, "imei": computed["imei"],
+              "driver_id": computed.get("driver_id"),
               "manual_keys": list(manual.keys()),
               "preview_job_id": preview_job_id},
     )
-    flash(f"Export queued for {computed['truck_id']} "
+    flash(f"Export queued for {primary} "
           f"(trip {trip_index + 1} of {len(reports)}). "
           f"Download from the Reports page.", "success")
 
@@ -1104,8 +1333,16 @@ def _do_export_job_start(preview_job_id: str, mode: str):
                   or len(done_items) < total_items)
 
     done_reports = [it["computed"] for it in done_items]
-    bulk_label = _bulk_truck_label(done_reports)
-    safe_label = _bulk_safe_filename_label(done_reports)
+
+    is_driver = _is_driver_export(done_reports)
+    if is_driver:
+        bulk_label  = _bulk_driver_label(done_reports)
+        safe_label  = _bulk_safe_driver_filename_label(done_reports)
+        naming_field = "driver"
+    else:
+        bulk_label  = _bulk_truck_label(done_reports)
+        safe_label  = _bulk_safe_filename_label(done_reports)
+        naming_field = "truck"
 
     suffix = ""
     if is_partial:
@@ -1131,6 +1368,20 @@ def _do_export_job_start(preview_job_id: str, mode: str):
     job_trip_start = min(starts) if starts else None
     job_trip_end   = max(ends)   if ends   else None
 
+    # Driver column on the reports row: fill it when the whole set is
+    # one driver's. Multi-driver bulk exports leave it blank, matching
+    # what reports.html expects.
+    bulk_driver_id = None
+    bulk_driver_name = None
+    if is_driver:
+        drivers = _unique_drivers_from_reports(done_reports)
+        if len(drivers) == 1:
+            bulk_driver_name = drivers[0]
+            for r in done_reports:
+                if r.get("driver_name") == bulk_driver_name:
+                    bulk_driver_id = r.get("driver_id")
+                    break
+
     try:
         reports_row_id = jobs.add_job(
             truck_id=bulk_label, imei=None, filename=filename,
@@ -1140,7 +1391,10 @@ def _do_export_job_start(preview_job_id: str, mode: str):
             manual={"preview_job_id": preview_job_id,
                     "export_mode": mode,
                     "trips_exported": len(done_items),
-                    "trips_total": total_items},
+                    "trips_total": total_items,
+                    "naming_field": naming_field},
+            driver_id=bulk_driver_id,
+            driver_name=bulk_driver_name,
         )
     except Exception as exc:
         log.exception("could not create reports row for export")
@@ -1165,10 +1419,11 @@ def _do_export_job_start(preview_job_id: str, mode: str):
         severity="notice" if not is_partial else "warning",
         detail=(f"export job {export_job_id}, mode={mode}, "
                 f"{len(done_items)}/{total_items} trips, "
-                f"filename={filename}"),
+                f"naming={naming_field}, filename={filename}"),
         meta={"export_job_id": export_job_id,
               "preview_job_id": preview_job_id,
               "mode": mode,
+              "naming_field": naming_field,
               "trips_exported": len(done_items),
               "trips_total": total_items,
               "is_partial": is_partial},
@@ -1248,10 +1503,55 @@ def api_export_job(job_id):
 @login_required
 def reports():
     is_admin = session.get("role") in ("admin", "super_admin")
-    jobs_list = jobs.all_jobs_sorted_for(
+
+    q      = (request.args.get("q") or "").strip()
+    status = (request.args.get("status") or "").strip()
+    try:
+        page = int(request.args.get("page", 1))
+    except (ValueError, TypeError):
+        page = 1
+    page = max(1, page)
+
+    per_page = 25
+
+    # Pull all reports visible to this user, then filter/paginate in
+    # Python. `jobs.all_jobs_sorted_for` already returns newest-first.
+    all_jobs = jobs.all_jobs_sorted_for(
         session.get("user_id"), show_all=is_admin
     )
-    return render_template("reports.html", jobs=jobs_list, is_admin=is_admin)
+
+    def _haystack(j):
+        return " ".join(str(j.get(k) or "") for k in (
+            "id", "truck", "imei", "driver_name", "driver_id", "filename",
+        )).lower()
+
+    filtered = all_jobs
+    if q:
+        ql = q.lower()
+        filtered = [j for j in filtered if ql in _haystack(j)]
+    if status:
+        filtered = [j for j in filtered if (j.get("status") or "") == status]
+
+    total    = len(filtered)
+    start    = (page - 1) * per_page
+    end      = start + per_page
+    page_rows = filtered[start:end]
+    has_more = end < total
+
+    result = SimpleNamespace(
+        reports=page_rows,
+        total=total,
+        page=page,
+        has_more=has_more,
+    )
+    filters = SimpleNamespace(q=q, status=status)
+
+    return render_template(
+        "reports.html",
+        result=result,
+        filters=filters,
+        is_admin=is_admin,
+    )
 
 
 # --- report detail views --------------------------------------------------
@@ -1312,9 +1612,21 @@ def report_view(report_id):
             "report.view",
             target=row.get("truck_id") or report_id,
             detail=f"filename={row.get('filename')}, bulk={is_bulk}, "
-                   f"trips={len(reports)}",
-            meta={"report_id": report_id, "is_bulk": is_bulk},
+                   f"trips={len(reports)}, "
+                   f"driver={'yes' if row.get('driver_id') else 'no'}",
+            meta={"report_id": report_id, "is_bulk": is_bulk,
+                  "driver_id": row.get("driver_id")},
         )
+
+    is_admin = session.get("role") in ("admin", "super_admin")
+    try:
+        from blueprints.drivers import _driver_choices_for_admin
+        driver_choices = _driver_choices_for_admin(
+            selected_id=(current_manual or {}).get("driver_id")
+        )
+    except Exception:
+        log.exception("report_view: could not build driver choices")
+        driver_choices = []
 
     return render_template(
         "preview.html", loading=False, view_mode=True, is_bulk=is_bulk,
@@ -1322,6 +1634,8 @@ def report_view(report_id):
         state={"truck": row.get("truck_id"), "imei": row.get("imei")},
         reports=reports, current_index=current_index,
         computed=reports[current_index], manual=current_manual,
+        driver_choices=driver_choices,
+        driver_locked=not is_admin,
     )
 
 
@@ -1350,14 +1664,17 @@ def report_bulk_view(report_id):
     items = []
     for i, r in enumerate(reports):
         items.append({
-            "index":      i,
-            "truck_id":   r.get("truck_id") or "",
-            "imei":       r.get("imei") or "",
-            "trip_start": r.get("trip_start"),
-            "trip_end":   r.get("trip_end"),
+            "index":       i,
+            "truck_id":    r.get("truck_id") or "",
+            "imei":        r.get("imei") or "",
+            "driver_id":   r.get("driver_id"),
+            "driver_name": r.get("driver_name") or "",
+            "trip_start":  r.get("trip_start"),
+            "trip_end":    r.get("trip_end"),
         })
 
-    trucks = sorted({it["truck_id"] for it in items if it["truck_id"]})
+    trucks  = sorted({it["truck_id"] for it in items if it["truck_id"]})
+    drivers = sorted({it["driver_name"] for it in items if it["driver_name"]})
 
     if report_id:
         audit.record(
@@ -1373,6 +1690,7 @@ def report_bulk_view(report_id):
         report_id=report_id,
         items=items,
         trucks=trucks,
+        drivers=drivers,
     )
 
 
@@ -1412,7 +1730,14 @@ def report_edit_meta(report_id):
         return redirect(url_for("report_view", report_id=report_id))
     computed = reports[trip_index]
 
+    # Keep computed_json's driver fields in sync with the manual override
+    # so the view page and the regenerated Excel agree. If the admin
+    # locked an override, it wins; otherwise keep the auto-resolved
+    # driver (which compute_report already put on `computed`).
     incoming = _collect_manual_from_form()
+    if incoming.get("driver_override_locked"):
+        computed["driver_id"]   = incoming.get("driver_id")
+        computed["driver_name"] = incoming.get("driver_name")
 
     filename = row.get("filename")
     if not filename:
@@ -1440,8 +1765,10 @@ def report_edit_meta(report_id):
                     per_trip_manual[key] = {}
             before_manual = (existing.get(str(trip_index)) or {})
             after_manual  = per_trip_manual.get(str(trip_index), {})
+            naming = "driver" if _is_driver_export(reports) else "truck"
             write_bulk_excel(reports, TEMPLATE_PATH, out_path,
-                             per_trip_manual=per_trip_manual)
+                             per_trip_manual=per_trip_manual,
+                             naming_field=naming)
             size = out_path.stat().st_size if out_path.exists() else None
             reports_repo.update_manual(report_id, per_trip_manual,
                                        filesize_bytes=size)
@@ -1499,6 +1826,8 @@ def api_jobs():
     return jsonify([{
         "id":               j["id"],
         "truck":            j["truck"],
+        "driver_id":        j.get("driver_id"),
+        "driver_name":      j.get("driver_name") or "",
         "status":           j["status"],
         "filename":         j["filename"],
         "queued_at":        utc_str(j["queued_at"]) if j["queued_at"] else None,
@@ -1567,7 +1896,7 @@ def download(filename):
 
 # ---------------------------------------------------------------------------
 # Worker startup
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 def _start_worker():
     try:
@@ -1575,6 +1904,20 @@ def _start_worker():
         log.info("job worker thread started")
     except Exception as exc:
         log.error("could not start job worker: %s", exc)
+
+    # Warm the device cache once on startup so the first user who opens
+    # a page with a truck dropdown doesn't pay the Tracksolid round trip
+    # on a cold cache.
+    def _warm_devices():
+        try:
+            from services.devices import get_devices
+            devs = get_devices()
+            log.info("device cache warmed on startup (%d devices)", len(devs))
+        except Exception as exc:
+            log.warning("device cache warm failed: %s", exc)
+
+    threading.Thread(target=_warm_devices, daemon=True,
+                     name="device-warm").start()
 
 
 if __name__ == "__main__":

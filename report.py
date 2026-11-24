@@ -17,15 +17,11 @@ This module ties them together with `compute_report()` / `write_excel()` /
         utc_str, find_trips,
     )
 
-...and `app.py`'s lazy `from report import fill_sheet, _sanitise_sheet_name`
-inside `report_edit_meta()` continues to work.
-
-Prefetched alarms:
-    `compute_report()` accepts an optional `alarms` list and optional
-    `prefetch_begin` / `prefetch_end` bounds. The preview job worker
-    fetches the union-of-search-and-history alarms once per IMEI and
-    passes them in, so a 390-trip job with history on only fetches the
-    3-month alarm window once per truck instead of once per trip.
+Driver attribution:
+    compute_report() accepts an optional `driver_id` alongside the existing
+    `driver_name`. It is stored on the returned dict so write_excel(),
+    report_excel.fill_sheet(), and write_bulk_excel() can use it for
+    driver-keyed filenames/sheet names and header text.
 """
 
 from __future__ import annotations
@@ -37,19 +33,14 @@ from pathlib import Path
 
 from jimi import RateLimitExceeded
 
-# --- re-exports from report_analysis ---------------------------------------
 from report_analysis import (  # noqa: F401
-    # constants
     GBC_GEOIDS, MIN_STOP_SECONDS, MIN_REST_SECONDS,
     YARD_STATIONS, YARD_LOOKBACK, FMT,
-    # helpers
     utc_str, parse_utc, history_window,
-    # public entry points
     find_trips, fetch_track, summarise_stops,
     summarise_yard, summarise_events, build_history,
 )
 
-# --- re-exports from report_excel ------------------------------------------
 from report_excel import (  # noqa: F401
     fill_sheet, fill_template, write_bulk_excel, _sanitise_sheet_name,
 )
@@ -58,25 +49,19 @@ from report_excel import (  # noqa: F401
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Top-level pipeline
-# ---------------------------------------------------------------------------
-
 def compute_report(*, imei: str, truck_id: str, driver_name: str,
                    begin: datetime, end: datetime,
                    include_history: bool = True,
                    alarms: list[dict] | None = None,
                    prefetch_begin: datetime | None = None,
-                   prefetch_end: datetime | None = None) -> dict:
+                   prefetch_end: datetime | None = None,
+                   driver_id: str | None = None) -> dict:
     """Compute one trip's report.
 
-    `alarms` / `prefetch_begin` / `prefetch_end`:
-        When the preview job worker calls this, it passes the union of
-        search-and-history alarms it already fetched (once per IMEI) plus
-        the [prefetch_begin, prefetch_end] window those alarms cover. If
-        the prefetch covers the union this compute needs, we reuse it
-        verbatim and skip the fetch. Otherwise we fall back to fetching
-        our own — that's the CLI path and the 1-trip preview path.
+    `driver_id` is optional: driver-first searches carry it, truck-first
+    searches leave it None. It's recorded on the returned dict (and thus
+    persisted into computed_json) so write_excel() / write_bulk_excel()
+    can key filenames and sheet names off it.
     """
     t_start_wall = time.monotonic()
     timings: dict[str, float] = {}
@@ -90,7 +75,6 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
         union_begin = begin - YARD_LOOKBACK
         union_end   = end
 
-    # ---- stage 1: alarms (reuse if the prefetch covers the union) ----
     if alarms is not None and prefetch_begin is not None and prefetch_end is not None:
         if prefetch_begin <= union_begin and prefetch_end >= union_end:
             all_alarms = alarms
@@ -143,7 +127,6 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
     else:
         trip_start = trip_end = None
 
-    # ---- stage 2: track ----
     t0 = time.monotonic()
     log.info("[2/6] Fetching track ...")
     try:
@@ -155,7 +138,6 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
     log.info("      %d track points (%.1fs)",
              len(track), timings["track"])
 
-    # ---- stage 3: parking ----
     t0 = time.monotonic()
     log.info("[3/6] Fetching parking events ...")
     try:
@@ -167,7 +149,6 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
     log.info("      %d parking events (%.1fs)",
              len(parking), timings["parking"])
 
-    # ---- stage 4: filter alarms ----
     log.info("[4/6] Filtering alarms for trip window ...")
     if trip_start and trip_end:
         alarms_in_trip = [
@@ -179,7 +160,6 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
         alarms_in_trip = []
     log.info("      %d alarms in trip", len(alarms_in_trip))
 
-    # ---- stage 5: summarise ----
     t0 = time.monotonic()
     log.info("[5/6] Summarising ...")
     stops  = summarise_stops(track, parking, trip_start, trip_end, debug=False)
@@ -201,7 +181,6 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
     else:
         log.info("      yard visit: none before this trip")
 
-    # ---- stage 6: history ----
     history = None
     if include_history and trip_start:
         t0 = time.monotonic()
@@ -235,9 +214,27 @@ def compute_report(*, imei: str, truck_id: str, driver_name: str,
         timings["total"],
     )
 
+    # Auto-resolve the driver from assignments if the caller didn't pass
+    # one explicitly. This is how the feature starts "from when it was
+    # added": older trips have no assignment history, so resolve returns
+    # None and we fall back to the Tracksolid driverName (the caller's
+    # `driver_name` argument).
+    resolved_driver_id   = driver_id
+    resolved_driver_name = driver_name
+    if trip_start and not driver_id:
+        try:
+            from services import drivers as _drivers_svc
+            _resolved = _drivers_svc.resolve_trip_driver(imei, trip_start)
+            if _resolved:
+                resolved_driver_id   = _resolved["driver_id"]
+                resolved_driver_name = _resolved["driver_name"]
+        except Exception:
+            log.exception("compute_report: resolve_trip_driver failed")
+
     return {
         "truck_id":      truck_id,
-        "driver_name":   driver_name,
+        "driver_id":     resolved_driver_id,
+        "driver_name":   resolved_driver_name,
         "imei":          imei,
         "query_begin":   begin,
         "query_end":     end,
@@ -281,6 +278,7 @@ def write_excel(computed: dict, template_path: Path, output_path: Path,
     yard = computed.get("yard")
     meta = {
         "truck_id":         computed["truck_id"],
+        "driver_id":        computed.get("driver_id"),
         "driver_name":      computed["driver_name"],
         "imei":             computed["imei"],
         "trip_start":       utc_str(ts) if ts else None,
@@ -317,9 +315,11 @@ def build_report(*, imei: str, truck_id: str, driver_name: str,
                  begin: datetime, end: datetime,
                  template_path: Path, output_path: Path,
                  include_history: bool = True,
-                 manual: dict | None = None) -> dict:
+                 manual: dict | None = None,
+                 driver_id: str | None = None) -> dict:
     computed = compute_report(
         imei=imei, truck_id=truck_id, driver_name=driver_name,
+        driver_id=driver_id,
         begin=begin, end=end, include_history=include_history,
     )
     write_excel(computed, template_path, output_path, manual=manual)

@@ -1,0 +1,579 @@
+{% extends "base.html" %}
+
+{% block heading %}{{ driver.full_name }}{% endblock %}
+
+{% block head %}
+<style>
+  .truck-warning {
+    display: flex; align-items: center; gap: 0.45rem;
+    background: #fde7e7; color: #7a1c1c;
+    border: 1px solid #f5b5b5; border-radius: 6px;
+    padding: 0.5rem 0.75rem; font-size: 0.85rem;
+    margin-top: 0.5rem;
+  }
+  .truck-warning[hidden] { display: none; }
+  .truck-warning.warn-soft {
+    background: #fff7e6; color: #8a5a00; border-color: #f0d9a8;
+  }
+  .truck-warning .icon { font-size: 1.1rem; line-height: 1; }
+  .override-box {
+    display: flex; align-items: center; gap: 0.4rem;
+    margin-top: 0.4rem; font-size: 0.82rem;
+    color: #8a5a00;
+  }
+  .override-box[hidden] { display: none; }
+  .staff-id-badge {
+    display: inline-block;
+    font-size: 0.75rem;
+    background: #f0f2f5;
+    color: #555;
+    padding: 1px 7px;
+    border-radius: 8px;
+    font-family: monospace;
+    margin-left: 0.35rem;
+  }
+  #truck-input { width: 100%; }
+
+  /* ---- Custom truck combobox (replaces the native datalist) ---- */
+  .truck-combo { position: relative; }
+  .truck-combo-list {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    right: 0;
+    z-index: 50;
+    max-height: 260px;
+    overflow-y: auto;
+    margin: 0;
+    padding: 4px 0;
+    list-style: none;
+    background: #ffffff;
+    color: #222222;
+    border: 1px solid #c9ced6;
+    border-radius: 6px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.14);
+  }
+  .truck-combo-list[hidden] { display: none; }
+  .truck-combo-list li {
+    padding: 0.4rem 0.65rem;
+    font-size: 0.88rem;
+    color: #222222;
+    background: #ffffff;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .truck-combo-list li.active,
+  .truck-combo-list li:hover {
+    background: #eef2f8;
+    color: #111111;
+  }
+  .truck-combo-list li.empty {
+    color: #8a8f98;
+    cursor: default;
+    font-style: italic;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.6rem; margin-bottom:1rem;">
+    <h2 style="font-size:1.1rem; margin:0;">
+      Driver
+      {% if driver.staff_id %}
+        <span class="staff-id-badge">{{ driver.staff_id }}</span>
+      {% endif %}
+    </h2>
+    <div style="display:flex; gap:0.4rem;">
+      {% if can_edit and not driver.deleted_at %}
+        <a class="btn-edit"
+           href="{{ url_for('drivers.edit_driver', driver_id=driver.id) }}">Edit</a>
+        <form method="post"
+              action="{{ url_for('drivers.delete_driver', driver_id=driver.id) }}"
+              onsubmit="return confirm('Delete this driver? Their historical assignments will be preserved, but no new assignments can be made.');"
+              style="display:inline;">
+          <button type="submit" class="btn-edit"
+                  style="background:#fde7e7; color:#a02525; border-color:#e2b3b3;">
+            Delete
+          </button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if driver.deleted_at %}
+    <div class="flash info" style="margin-bottom:1rem;">
+      This driver was deleted on {{ driver.deleted_at.strftime('%Y-%m-%d %H:%M') }}.
+      Their history is preserved; no new assignments can be made.
+    </div>
+  {% endif %}
+
+  <table class="admin-table" style="max-width:560px;">
+    <tbody>
+      <tr><th style="width:160px;">Staff ID</th>
+          <td>{{ driver.staff_id or '—' }}</td></tr>
+      <tr><th>Phone</th><td>{{ driver.phone or '—' }}</td></tr>
+      <tr><th>License</th><td>{{ driver.license_number or '—' }}
+        {% if driver.license_expiry %}<span class="muted">(expires {{ driver.license_expiry }})</span>{% endif %}
+      </td></tr>
+      <tr><th>Status</th><td>
+        {% if driver.deleted_at %}
+          <span class="status status-failed">Deleted</span>
+        {% elif driver.active %}
+          <span class="status status-done">Active</span>
+        {% else %}
+          <span class="status status-queued">Inactive</span>
+        {% endif %}
+      </td></tr>
+      <tr><th>Notes</th><td>{{ driver.notes or '—' }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3 style="font-size:0.95rem; margin:0 0 0.75rem;">Current assignment</h3>
+  {% if current %}
+    <p>
+      <strong>{{ current.truck_id or current.imei }}</strong><br>
+      Since {{ current.assigned_at.strftime('%Y-%m-%d %H:%M:%S') }}
+    </p>
+    {% if open_trip %}
+      <div class="truck-warning">
+        <span class="icon">⚠</span>
+        <span>{{ open_trip.reason == 'trip_time'
+                  and 'This truck is currently on an open trip. The assignment will auto-release when the trip ends.'
+                  or 'This truck is not currently at the yard. The assignment will auto-release when the trip ends.' }}</span>
+      </div>
+    {% endif %}
+    {% if can_assign %}
+      <form method="post"
+            action="{{ url_for('drivers.release', assignment_id=current.id) }}"
+            style="margin-top:0.75rem;">
+        <button type="submit" class="btn-edit"
+                style="background:#fde7e7; color:#a02525; border-color:#e2b3b3;">
+          Release
+        </button>
+      </form>
+    {% endif %}
+  {% elif not driver.deleted_at and can_assign %}
+    <p class="muted">Not currently assigned to a truck.</p>
+    <form method="post"
+          action="{{ url_for('drivers.assign', driver_id=driver.id) }}"
+          id="assign-form"
+          style="display:block;">
+
+      <div class="field" style="margin-bottom:0.6rem;">
+        <label for="truck-input">Assign to truck</label>
+        <div class="truck-combo">
+          <input type="text" id="truck-input" name="truck_pick"
+                 placeholder="Type to search free trucks…"
+                 autocomplete="off"
+                 aria-autocomplete="list"
+                 aria-controls="truck-options">
+          <ul id="truck-options" class="truck-combo-list" hidden
+              role="listbox"></ul>
+        </div>
+        {# Only the truck_id is submitted. IMEI is resolved server-side. #}
+        <input type="hidden" name="truck_id" id="truck-name" value="">
+        <p class="muted" id="truck-loading-hint"
+           style="font-size:0.8rem; margin:0.35rem 0 0;">
+          Loading trucks…
+        </p>
+      </div>
+      <div style="display:flex; gap:0.6rem; align-items:center; margin-bottom:0.6rem;">
+        <button type="submit">Assign</button>
+      </div>
+
+      <div class="truck-warning" id="truck-warning" hidden>
+        <span class="icon">⚠</span>
+        <span id="truck-warning-text"></span>
+      </div>
+
+      {% if can_override %}
+        <label class="override-box" id="override-box" hidden>
+          <input type="checkbox" name="override_active_trip" id="override-active-trip">
+          <span>Override the truck-state check for this assignment (admin / override-role)</span>
+        </label>
+      {% endif %}
+
+      <div class="field" style="margin-top:0.6rem;">
+        <label for="notes">Notes</label>
+        <input type="text" id="notes" name="notes"
+               placeholder="Optional — e.g. shift handover">
+      </div>
+    </form>
+    <p class="muted" style="margin-top:0.5rem;">
+      A driver can only be assigned to one truck at a time. Assignments
+      are recorded with timestamps so past trips can still be attributed
+      to this driver months later.
+    </p>
+  {% else %}
+    <p class="muted">No current assignment.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3 style="font-size:0.95rem; margin:0 0 0.75rem;">Assignment history</h3>
+  {% if assignments %}
+    <div class="table-scroll">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>Truck</th>
+            <th>Assigned</th>
+            <th>Released</th>
+            <th>Reason</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in assignments %}
+            <tr>
+              <td>{{ a.truck_id }}</td>
+              <td>{{ a.assigned_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+              <td>
+                {% if a.released_at %}
+                  {{ a.released_at.strftime('%Y-%m-%d %H:%M:%S') }}
+                {% else %}
+                  <span class="status status-running">Current</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if a.released_reason == 'trip_ended' %}
+                  <span class="muted">auto (trip ended)</span>
+                {% elif a.released_reason == 'manual' %}
+                  <span class="muted">manual</span>
+                {% else %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
+              <td>{{ a.notes or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="muted">No assignments yet.</p>
+  {% endif %}
+</div>
+
+{% if not current and not driver.deleted_at and can_assign %}
+<script>
+(function () {
+  const input       = document.getElementById('truck-input');
+  const listEl      = document.getElementById('truck-options');
+  const hiddenName  = document.getElementById('truck-name');   // truck_id
+  const loadingHint = document.getElementById('truck-loading-hint');
+  const warn        = document.getElementById('truck-warning');
+  const warnText    = document.getElementById('truck-warning-text');
+  const overrideBox = document.getElementById('override-box');
+  const overrideChk = document.getElementById('override-active-trip');
+  const form        = document.getElementById('assign-form');
+  if (!input || !listEl || !form) return;
+
+  let trucks      = [];          // { truck_id, name, category }
+  let canOverride = false;
+  let filtered    = [];
+  let activeIdx   = -1;
+  const statusCache = {};        // truck_id -> { payload, _ts }
+
+  const STATUS_TTL_MS = 30000;   // 30s — catches a trip that starts mid-form
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+
+  // The dropdown only lists free trucks now, so the label is just
+  // the truck name — no "→ driver" suffix.
+  function labelFor(t) {
+    return (t.name && t.name.trim()) ? t.name.trim() : t.truck_id;
+  }
+
+  // ---------- Dropdown rendering ----------
+
+  function filterTrucks(q) {
+    const needle = (q || '').trim().toLowerCase();
+    if (!needle) return trucks.slice();
+    return trucks.filter(t => {
+      const label = labelFor(t).toLowerCase();
+      const tid   = (t.truck_id || '').toLowerCase();
+      return label.includes(needle) || tid.includes(needle);
+    });
+  }
+
+  function renderList() {
+    if (!filtered.length) {
+      listEl.innerHTML = '<li class="empty">No matching trucks</li>';
+      listEl.hidden = false;
+      activeIdx = -1;
+      return;
+    }
+    const parts = [];
+    filtered.forEach((t, i) => {
+      parts.push(
+        '<li role="option" data-idx="' + i + '"' +
+        (i === activeIdx ? ' class="active"' : '') + '>' +
+        esc(labelFor(t)) +
+        '</li>'
+      );
+    });
+    listEl.innerHTML = parts.join('');
+    listEl.hidden = false;
+  }
+
+  function closeList() {
+    listEl.hidden = true;
+    activeIdx = -1;
+  }
+
+  function choose(t) {
+    input.value = labelFor(t);
+    hiddenName.value = t.truck_id;
+    closeList();
+    refreshStatusForTruck(t.truck_id);
+  }
+
+  function highlight(idx) {
+    const items = listEl.querySelectorAll('li[data-idx]');
+    items.forEach(li => li.classList.remove('active'));
+    if (idx < 0 || idx >= items.length) { activeIdx = -1; return; }
+    activeIdx = idx;
+    items[idx].classList.add('active');
+    items[idx].scrollIntoView({ block: 'nearest' });
+  }
+
+  // ---------- Per-truck status ----------
+
+  function applyStatus(status) {
+    let blocked = false;
+    let reason  = '';
+    let soft    = false;
+
+    if (status.error) {
+      blocked = true;
+      reason  = status.message || 'Cannot check this truck right now.';
+    } else if (status.state_reason === 'trip_time') {
+      blocked = true;
+      reason  = status.state_message || 'Truck is on an open trip.';
+    } else if (status.state_reason === 'off_yard') {
+      blocked = true;
+      reason  = status.state_message || 'Truck is not at the yard.';
+    } else if (status.state_reason === 'stale') {
+      blocked = true;
+      reason  = status.state_message
+             || 'Truck has not entered or left a tracked fence recently.';
+    } else if (status.state_reason === 'lookup_failed') {
+      blocked = true;
+      reason  = status.state_message
+             || 'Could not verify the truck\'s state right now.';
+    } else if (status.blocked && status.can_override) {
+      soft    = true;
+      reason  = status.state_message || 'Truck cannot be assigned freely.';
+    }
+
+    if (reason) {
+      warn.hidden = false;
+      warn.classList.toggle('warn-soft', soft);
+      warnText.textContent = reason;
+    } else {
+      warn.hidden = true;
+      warn.classList.remove('warn-soft');
+    }
+
+    if (overrideBox) {
+      overrideBox.hidden = !(canOverride && status.blocked);
+    }
+
+    form.dataset.blocked = blocked ? '1' : '0';
+  }
+
+  function clearStatus() {
+    warn.hidden = true;
+    warn.classList.remove('warn-soft');
+    if (overrideBox) overrideBox.hidden = true;
+    form.dataset.blocked = '0';
+  }
+
+  async function refreshStatusForTruck(truckId) {
+    if (!truckId) {
+      clearStatus();
+      return;
+    }
+    warn.hidden = false;
+    warn.classList.remove('warn-soft');
+    warnText.textContent = 'Checking truck state…';
+    form.dataset.blocked = '1';
+
+    const cached = statusCache[truckId];
+    if (cached && (Date.now() - cached._ts) < STATUS_TTL_MS) {
+      canOverride = !!cached.payload.can_override;
+      applyStatus(cached.payload);
+      return;
+    }
+
+    const ctrl = new AbortController();
+    const kill = setTimeout(() => ctrl.abort(), 10000);
+    try {
+      const r = await fetch(
+        "{{ url_for('drivers.api_truck_status') }}?truck_id=" +
+          encodeURIComponent(truckId),
+        { signal: ctrl.signal, credentials: 'same-origin' }
+      );
+      clearTimeout(kill);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const status = await r.json();
+      statusCache[truckId] = { payload: status, _ts: Date.now() };
+      canOverride = !!status.can_override;
+      applyStatus(status);
+    } catch (e) {
+      clearTimeout(kill);
+      warn.hidden = false;
+      warn.classList.remove('warn-soft');
+      warnText.textContent = 'Could not check truck state. Try again, or refresh.';
+      form.dataset.blocked = '1';
+    }
+  }
+
+  // ---------- Selection sync (typed text -> hidden field) ----------
+
+  function syncFromInput() {
+    const raw = (input.value || '').trim();
+    if (!raw) {
+      hiddenName.value = '';
+      clearStatus();
+      return;
+    }
+    const chosen = trucks.find(t => labelFor(t) === raw) ||
+                   trucks.find(t => t.truck_id === raw);
+    if (chosen) {
+      hiddenName.value = chosen.truck_id;
+      refreshStatusForTruck(chosen.truck_id);
+    } else {
+      hiddenName.value = '';
+      clearStatus();
+    }
+  }
+
+  // ---------- Event wiring ----------
+
+  input.addEventListener('input', function () {
+    filtered = filterTrucks(input.value);
+    activeIdx = -1;
+    renderList();
+    syncFromInput();
+  });
+
+  input.addEventListener('keydown', function (e) {
+    if (listEl.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      filtered = filterTrucks(input.value);
+      activeIdx = -1;
+      renderList();
+      e.preventDefault();
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      highlight(activeIdx + 1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      highlight(activeIdx - 1);
+    } else if (e.key === 'Enter') {
+      if (!listEl.hidden && activeIdx >= 0 && filtered[activeIdx]) {
+        e.preventDefault();
+        choose(filtered[activeIdx]);
+      }
+    } else if (e.key === 'Escape') {
+      closeList();
+    }
+  });
+
+  listEl.addEventListener('mousedown', function (e) {
+    const li = e.target.closest('li[data-idx]');
+    if (!li) return;
+    e.preventDefault();
+    const idx = parseInt(li.dataset.idx, 10);
+    if (filtered[idx]) choose(filtered[idx]);
+  });
+
+  input.addEventListener('blur', function () {
+    setTimeout(closeList, 120);
+  });
+
+  input.addEventListener('focus', function () {
+    filtered = filterTrucks(input.value);
+    activeIdx = -1;
+    renderList();
+  });
+
+  // ---------- Load ----------
+
+  async function loadTrucks() {
+    const url = "{{ url_for('drivers.api_available_trucks') }}?include_operational=0";
+    const ctrl = new AbortController();
+    const kill = setTimeout(() => ctrl.abort(), 12000);
+    try {
+      const r = await fetch(url, { signal: ctrl.signal, credentials: 'same-origin' });
+      clearTimeout(kill);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      if (j.error) throw new Error(j.error);
+
+      trucks      = j.trucks || [];
+      canOverride = !!j.can_override;
+
+      if (loadingHint) loadingHint.hidden = true;
+
+      if (j.degraded && j.message) {
+        if (loadingHint) {
+          loadingHint.hidden = false;
+          loadingHint.textContent = j.message;
+        }
+      }
+
+      if (!trucks.length) {
+        listEl.innerHTML = '<li class="empty">No free trucks available</li>';
+        return;
+      }
+    } catch (e) {
+      clearTimeout(kill);
+      listEl.innerHTML = '<li class="empty">Could not load trucks</li>';
+      if (loadingHint) {
+        loadingHint.hidden = false;
+        loadingHint.textContent = (e && e.name === 'AbortError')
+          ? 'Truck list took too long to load (12s). Try refreshing.'
+          : 'Could not load trucks (' +
+            (e && e.message ? e.message : 'network error') +
+            '). Try refreshing.';
+      }
+    }
+  }
+
+  // ---------- Submit gate ----------
+
+  form.addEventListener('submit', function (e) {
+    syncFromInput();
+    if (!hiddenName.value) {
+      e.preventDefault();
+      alert('Please pick a truck from the list.');
+      input.focus();
+      return;
+    }
+    if (form.dataset.blocked === '1') {
+      const overrideOn = overrideChk && overrideChk.checked;
+      if (!overrideOn) {
+        e.preventDefault();
+        alert('This truck cannot be assigned right now — see the warning above.');
+      }
+    }
+  });
+
+  loadTrucks();
+})();
+</script>
+{% endif %}
+{% endblock %}

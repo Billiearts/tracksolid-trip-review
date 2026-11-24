@@ -1,5 +1,13 @@
 """
 services/reports_repo.py — Postgres CRUD for the reports table.
+
+Two nullable columns carry driver attribution:
+    driver_id     — FK to public.drivers(id), set when the report was
+                    generated from a driver search.
+    driver_name   — denormalised snapshot of the driver's full name at
+                    generation time, kept even if the driver is later
+                    renamed or soft-deleted, so a saved report's header
+                    doesn't silently change under the user's feet.
 """
 from __future__ import annotations
 
@@ -28,13 +36,6 @@ def _parse_ts(s) -> datetime | None:
 
 
 def _to_iso(value) -> str | None:
-    """Normalise datetime | str | None to an ISO 8601 string for Postgres.
-
-    `export_job_start` passes `min(it["trip_start"] for it in done_items)`
-    — but `it["trip_start"]` is a string (straight out of the DB row), so
-    the old `trip_start.isoformat() if trip_start else None` raised
-    `'str' object has no attribute 'isoformat'`. Accept both.
-    """
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -49,6 +50,8 @@ def _row_to_dict(row: dict) -> dict:
         "id":               row["id"],
         "truck":            row.get("truck_id") or "(unknown)",
         "imei":             row.get("imei") or "",
+        "driver_id":        row.get("driver_id"),
+        "driver_name":      row.get("driver_name") or "",
         "status":           row.get("status") or "queued",
         "filename":         row.get("filename"),
         "queued_at":        _parse_ts(row.get("queued_at")),
@@ -71,7 +74,9 @@ def _row_to_dict(row: dict) -> dict:
 def insert_queued(*, filename: str, truck_id: str, imei: str | None,
                   trip_start, trip_end,
                   created_by: str | None, created_by_email: str | None,
-                  manual: dict | None = None) -> str:
+                  manual: dict | None = None,
+                  driver_id: str | None = None,
+                  driver_name: str | None = None) -> str:
     client = admin_client()
     payload = {
         "filename":         filename,
@@ -84,6 +89,10 @@ def insert_queued(*, filename: str, truck_id: str, imei: str | None,
         "created_by_email": created_by_email,
         "manual_json":      manual or {},
     }
+    if driver_id:
+        payload["driver_id"] = driver_id
+    if driver_name:
+        payload["driver_name"] = driver_name
     resp = client.table("reports").insert(payload).execute()
     rows = resp.data or []
     if not rows:
@@ -121,8 +130,6 @@ def mark_failed(report_id: str, error: str) -> None:
 
 
 def save_computed(report_id: str, data) -> None:
-    """Persist `computed_json`. `data` is a dict for single-trip reports and
-    a list of dicts for bulk reports."""
     client = admin_client()
     client.table("reports").update({
         "computed_json": data,
