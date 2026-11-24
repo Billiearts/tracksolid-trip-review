@@ -17,6 +17,16 @@
              value="{{ form.get('staff_id', driver.staff_id) }}">
     </div>
     <div class="field">
+      <label for="driver_role">Role</label>
+      <select id="driver_role" name="driver_role">
+        {% set selected_role = form.get('driver_role', driver.driver_role) %}
+        {% for rc in role_choices %}
+          <option value="{{ rc.value }}"
+                  {% if selected_role == rc.value %}selected{% endif %}>{{ rc.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
       <label for="phone">Phone</label>
       <input type="text" id="phone" name="phone"
              value="{{ form.get('phone', driver.phone) }}">

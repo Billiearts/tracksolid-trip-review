@@ -32,6 +32,19 @@
     font-family: monospace;
     margin-left: 0.35rem;
   }
+  .role-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    margin-left: 0.35rem;
+  }
+  .role-badge-driver       { background: #f0f0f0; color: #555; }
+  .role-badge-chief_driver { background: #e7f5e9; color: #256b2a; }
+  .role-badge-trainee      { background: #fff7e6; color: #8a5a00; }
   #truck-input { width: 100%; }
 
   /* ---- Custom truck combobox (replaces the native datalist) ---- */
@@ -85,6 +98,9 @@
       {% if driver.staff_id %}
         <span class="staff-id-badge">{{ driver.staff_id }}</span>
       {% endif %}
+      <span class="role-badge role-badge-{{ driver.driver_role }}">
+        {{ driver.driver_role_label }}
+      </span>
     </h2>
     <div style="display:flex; gap:0.4rem;">
       {% if can_edit and not driver.deleted_at %}
@@ -114,6 +130,8 @@
     <tbody>
       <tr><th style="width:160px;">Staff ID</th>
           <td>{{ driver.staff_id or '—' }}</td></tr>
+      <tr><th>Role</th>
+          <td>{{ driver.driver_role_label }}</td></tr>
       <tr><th>Phone</th><td>{{ driver.phone or '—' }}</td></tr>
       <tr><th>License</th><td>{{ driver.license_number or '—' }}
         {% if driver.license_expiry %}<span class="muted">(expires {{ driver.license_expiry }})</span>{% endif %}
@@ -139,13 +157,27 @@
       <strong>{{ current.truck_id or current.imei }}</strong><br>
       Since {{ current.assigned_at.strftime('%Y-%m-%d %H:%M:%S') }}
     </p>
+    {% if current.assigned_by_name or current.assigned_by_email %}
+      <p class="muted" style="font-size:0.82rem; margin-top:0.2rem;">
+        Assigned by
+        {% if current.assigned_by_name %}
+          <strong>{{ current.assigned_by_name }}</strong>
+        {% endif %}
+        {% if current.assigned_by_email %}
+          ({{ current.assigned_by_email }})
+        {% endif %}
+      </p>
+    {% endif %}
     {% if open_trip %}
       <div class="truck-warning">
         <span class="icon">⚠</span>
-        <span>{{ open_trip.reason == 'trip_time'
-                  and 'This truck is currently on an open trip. The assignment will auto-release when the trip ends.'
-                  or 'This truck is not currently at the yard. The assignment will auto-release when the trip ends.' }}</span>
+        <span>This truck is currently on an open trip. The assignment
+          will auto-release when the trip ends.</span>
       </div>
+    {% elif state_note %}
+      <p class="muted" style="font-size:0.8rem; margin-top:0.4rem;">
+        {{ state_note }}
+      </p>
     {% endif %}
     {% if can_assign %}
       <form method="post"
@@ -225,6 +257,7 @@
             <th>Assigned</th>
             <th>Released</th>
             <th>Reason</th>
+            <th>Assigned by</th>
             <th>Notes</th>
           </tr>
         </thead>
@@ -249,6 +282,20 @@
                   <span class="muted">—</span>
                 {% endif %}
               </td>
+              <td>
+                {% if a.assigned_by_name %}
+                  {{ a.assigned_by_name }}
+                  {% if a.assigned_by_email %}
+                    <br><span class="muted" style="font-size:0.78rem;">
+                      {{ a.assigned_by_email }}
+                    </span>
+                  {% endif %}
+                {% elif a.assigned_by_email %}
+                  {{ a.assigned_by_email }}
+                {% else %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
               <td>{{ a.notes or '—' }}</td>
             </tr>
           {% endfor %}
@@ -265,7 +312,7 @@
 (function () {
   const input       = document.getElementById('truck-input');
   const listEl      = document.getElementById('truck-options');
-  const hiddenName  = document.getElementById('truck-name');   // truck_id
+  const hiddenName  = document.getElementById('truck-name');
   const loadingHint = document.getElementById('truck-loading-hint');
   const warn        = document.getElementById('truck-warning');
   const warnText    = document.getElementById('truck-warning-text');
@@ -274,13 +321,13 @@
   const form        = document.getElementById('assign-form');
   if (!input || !listEl || !form) return;
 
-  let trucks      = [];          // { truck_id, name, category }
+  let trucks      = [];
   let canOverride = false;
   let filtered    = [];
   let activeIdx   = -1;
-  const statusCache = {};        // truck_id -> { payload, _ts }
+  const statusCache = {};
 
-  const STATUS_TTL_MS = 30000;   // 30s — catches a trip that starts mid-form
+  const STATUS_TTL_MS = 30000;
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
@@ -288,13 +335,9 @@
     }[c]));
   }
 
-  // The dropdown only lists free trucks now, so the label is just
-  // the truck name — no "→ driver" suffix.
   function labelFor(t) {
     return (t.name && t.name.trim()) ? t.name.trim() : t.truck_id;
   }
-
-  // ---------- Dropdown rendering ----------
 
   function filterTrucks(q) {
     const needle = (q || '').trim().toLowerCase();
@@ -346,8 +389,6 @@
     items[idx].classList.add('active');
     items[idx].scrollIntoView({ block: 'nearest' });
   }
-
-  // ---------- Per-truck status ----------
 
   function applyStatus(status) {
     let blocked = false;
@@ -439,8 +480,6 @@
     }
   }
 
-  // ---------- Selection sync (typed text -> hidden field) ----------
-
   function syncFromInput() {
     const raw = (input.value || '').trim();
     if (!raw) {
@@ -458,8 +497,6 @@
       clearStatus();
     }
   }
-
-  // ---------- Event wiring ----------
 
   input.addEventListener('input', function () {
     filtered = filterTrucks(input.value);
@@ -510,8 +547,6 @@
     renderList();
   });
 
-  // ---------- Load ----------
-
   async function loadTrucks() {
     const url = "{{ url_for('drivers.api_available_trucks') }}?include_operational=0";
     const ctrl = new AbortController();
@@ -552,8 +587,6 @@
       }
     }
   }
-
-  // ---------- Submit gate ----------
 
   form.addEventListener('submit', function (e) {
     syncFromInput();

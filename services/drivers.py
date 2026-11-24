@@ -18,6 +18,18 @@ Semantics
   state is AWASO (parked in the yard). A truck inside TRIP TIME is blocked
   as "on an open trip"; a truck outside both fences is blocked as "not at
   the yard". See `current_fence_state()` below.
+
+Driver positions
+----------------
+`driver_role` is one of 'driver', 'chief_driver', 'trainee' — enforced by
+a CHECK constraint in the DB and validated here. Use `DRIVER_ROLES` for
+the allowed set.
+
+Assignment actor
+----------------
+Every assignment records `created_by` (the auth user who made it). The
+list functions resolve this to an email via a nested select so the UI
+can show "assigned by X" without a second round-trip per row.
 """
 from __future__ import annotations
 
@@ -33,6 +45,16 @@ log = logging.getLogger(__name__)
 
 class DriverError(RuntimeError):
     pass
+
+
+# Allowed driver positions. Kept in sync with the CHECK constraint in
+# sql/2026_11_23_driver_roles.sql.
+DRIVER_ROLES = ("driver", "chief_driver", "trainee")
+_ROLE_LABELS = {
+    "driver":       "Driver",
+    "chief_driver": "Chief driver",
+    "trainee":      "Trainee",
+}
 
 
 # Fences used by the truck-state guard. TRIP TIME is matched by geoid
@@ -71,6 +93,14 @@ def _blank(v) -> str | None:
     return s or None
 
 
+def _normalise_role(v) -> str:
+    """Coerce any input to a valid DRIVER_ROLES value."""
+    s = (str(v).strip().lower() if v is not None else "") or "driver"
+    if s not in DRIVER_ROLES:
+        s = "driver"
+    return s
+
+
 def _resolve_imei_for_truck(truck_id: str) -> str | None:
     """truck display name -> device IMEI.
 
@@ -105,6 +135,9 @@ def _parse_dt(v):
 
 
 def _row_to_driver(row: dict) -> dict:
+    role = row.get("driver_role") or "driver"
+    if role not in DRIVER_ROLES:
+        role = "driver"
     return {
         "id":             row.get("id"),
         "full_name":      row.get("full_name") or "",
@@ -114,6 +147,8 @@ def _row_to_driver(row: dict) -> dict:
         "license_expiry": row.get("license_expiry"),
         "active":         bool(row.get("active", True)),
         "notes":          row.get("notes") or "",
+        "driver_role":    role,
+        "driver_role_label": _ROLE_LABELS[role],
         "created_at":     _parse_dt(row.get("created_at")),
         "updated_at":     _parse_dt(row.get("updated_at")),
         "deleted_at":     _parse_dt(row.get("deleted_at")),
@@ -121,16 +156,31 @@ def _row_to_driver(row: dict) -> dict:
 
 
 def _row_to_assignment(row: dict) -> dict:
+    """Normalise an assignment row.
+
+    `creator` is the nested select of profiles on created_by — a dict
+    with email/full_name when present, or None. We surface it as
+    `assigned_by_email` / `assigned_by_name` so templates don't have
+    to reach into nested dicts.
+    """
+    creator = row.get("creator") or {}
+    if isinstance(creator, list):
+        creator = creator[0] if creator else {}
+    if not isinstance(creator, dict):
+        creator = {}
+
     return {
-        "id":              row.get("id"),
-        "driver_id":       row.get("driver_id"),
-        "imei":            row.get("imei") or "",
-        "truck_id":        row.get("truck_id") or "",
-        "assigned_at":     _parse_dt(row.get("assigned_at")),
-        "released_at":     _parse_dt(row.get("released_at")),
-        "released_reason": row.get("released_reason") or "",
-        "notes":           row.get("notes") or "",
-        "created_by":      row.get("created_by"),
+        "id":                  row.get("id"),
+        "driver_id":           row.get("driver_id"),
+        "imei":                row.get("imei") or "",
+        "truck_id":            row.get("truck_id") or "",
+        "assigned_at":         _parse_dt(row.get("assigned_at")),
+        "released_at":         _parse_dt(row.get("released_at")),
+        "released_reason":     row.get("released_reason") or "",
+        "notes":               row.get("notes") or "",
+        "created_by":          row.get("created_by"),
+        "assigned_by_email":   creator.get("email") or "",
+        "assigned_by_name":    creator.get("full_name") or "",
     }
 
 
@@ -141,7 +191,8 @@ def _row_to_assignment(row: dict) -> dict:
 def list_drivers(*, search: str = "", page: int = 1, per_page: int = 50,
                  include_inactive: bool = False,
                  include_deleted: bool = False,
-                 view: str = "all") -> dict:
+                 view: str = "all",
+                 driver_role: str | None = None) -> dict:
     """List drivers, optionally filtered by open-assignment status.
 
     `view` is one of:
@@ -149,15 +200,16 @@ def list_drivers(*, search: str = "", page: int = 1, per_page: int = 50,
       * "assigned"   — drivers with an open truck_assignment
       * "unassigned" — drivers with no open truck_assignment
 
-    When `view != "all"` we query the `drivers_open_status` view (see
-    sql/2026_11_23_drivers_open_status.sql) so the filter and count are
-    evaluated in Postgres. That keeps `count="exact"` and range()
-    pagination correct — a Python-side filter would only page over the
-    unfiltered set and give wrong totals.
+    `driver_role`, when set to a value in DRIVER_ROLES, adds a second
+    filter. Both filters compose: e.g. `view="assigned",
+    driver_role="chief_driver"` returns assigned chief drivers.
     """
     page = max(1, int(page or 1))
     per_page = max(1, min(200, int(per_page or 50)))
     view = view if view in ("all", "assigned", "unassigned") else "all"
+    role_filter = None
+    if driver_role in DRIVER_ROLES:
+        role_filter = driver_role
 
     table = "drivers" if view == "all" else "drivers_open_status"
     q = _client().table(table).select("*", count="exact")
@@ -166,16 +218,12 @@ def list_drivers(*, search: str = "", page: int = 1, per_page: int = 50,
         q = q.is_("deleted_at", "null")
     if not include_inactive:
         q = q.eq("active", True)
+    if role_filter:
+        q = q.eq("driver_role", role_filter)
 
     s = _blank(search)
     if s:
         safe = s.replace(",", " ").replace("%", "")
-        # Match either staff_id or employee_id — whichever column the
-        # install actually has. The patch migration renames one to the
-        # other, so only one of these will hit, but PostgREST tolerates
-        # an OR over a missing column with the same name only if the
-        # column exists; we therefore stick to staff_id and rely on
-        # `_row_to_driver` to fall back to employee_id on old installs.
         q = q.or_(
             f"full_name.ilike.%{safe}%,staff_id.ilike.%{safe}%"
         )
@@ -253,6 +301,7 @@ def create_driver(*, full_name: str, staff_id: str | None = None,
                   license_number: str | None = None,
                   license_expiry: str | None = None,
                   active: bool = True, notes: str | None = None,
+                  driver_role: str = "driver",
                   created_by: str | None = None) -> dict:
     name = _blank(full_name)
     if not name:
@@ -269,6 +318,7 @@ def create_driver(*, full_name: str, staff_id: str | None = None,
         "license_expiry": _blank(license_expiry),
         "active":         bool(active),
         "notes":          _blank(notes),
+        "driver_role":    _normalise_role(driver_role),
         "created_by":     created_by,
     }
     try:
@@ -287,7 +337,7 @@ def update_driver(driver_id: str, **fields) -> dict:
         raise DriverError("Missing driver id.")
 
     allowed = {"full_name", "staff_id", "phone", "license_number",
-               "license_expiry", "active", "notes"}
+               "license_expiry", "active", "notes", "driver_role"}
     payload = {}
     for k, v in fields.items():
         if k not in allowed:
@@ -299,6 +349,8 @@ def update_driver(driver_id: str, **fields) -> dict:
             payload[k] = name
         elif k == "active":
             payload[k] = bool(v)
+        elif k == "driver_role":
+            payload[k] = _normalise_role(v)
         elif k == "staff_id":
             sid = _blank(v)
             if sid:
@@ -329,14 +381,7 @@ def update_driver(driver_id: str, **fields) -> dict:
 
 
 def soft_delete_driver(driver_id: str) -> None:
-    """Mark the driver deleted. Historical assignments are left intact.
-
-    Deleting a driver only removes them from list views and stops new
-    assignments. Existing `truck_assignments` rows are untouched so a
-    super-admin can still see who drove what, when. The auto-release and
-    manual-release paths both key off `released_at`, so an in-flight
-    trip on a driver who's just been soft-deleted keeps its row.
-    """
+    """Mark the driver deleted. Historical assignments are left intact."""
     if not driver_id:
         raise DriverError("Missing driver id.")
     now = datetime.now(timezone.utc).isoformat()
@@ -355,11 +400,19 @@ def soft_delete_driver(driver_id: str) -> None:
 # Assignments
 # ---------------------------------------------------------------------------
 
+_ASSIGNMENT_SELECT = (
+    "id,driver_id,imei,truck_id,assigned_at,released_at,"
+    "released_reason,notes,created_by,"
+    "creator:created_by(email,full_name)"
+)
+
+
 def list_assignments(*, driver_id: str | None = None,
                      imei: str | None = None,
                      active_only: bool = False,
                      limit: int = 200) -> list[dict]:
-    q = _client().table("truck_assignments").select("*")
+    q = (_client().table("truck_assignments")
+         .select(_ASSIGNMENT_SELECT))
     if driver_id:
         q = q.eq("driver_id", driver_id)
     if imei:
@@ -390,11 +443,10 @@ def current_assignment_for_driver(driver_id: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Truck-state guard — fence-based
+# Truck-state guard — fence-based (unchanged from previous version)
 # ---------------------------------------------------------------------------
 
 def _fence_matches_trip_time(alarm: dict) -> bool:
-    """True if the alarm's fence is the TRIP TIME GBC fence."""
     try:
         from report_analysis import GBC_GEOIDS, _alarm_fence_name
     except Exception:
@@ -407,7 +459,6 @@ def _fence_matches_trip_time(alarm: dict) -> bool:
 
 
 def _fence_matches_awaso(alarm: dict) -> bool:
-    """True if the alarm's fence is the GBC AWASO / GBC AWASO 2 fence."""
     try:
         from report_analysis import _alarm_fence_name
     except Exception:
@@ -418,22 +469,8 @@ def _fence_matches_awaso(alarm: dict) -> bool:
 
 def current_fence_state(imei: str,
                         now: datetime | None = None) -> dict:
-    """Return the truck's current fence state from the last 72 h of alarms.
-
-    Shape:
-        {
-            "in_trip_time":  bool,
-            "in_awaso":      bool,
-            "last_event":    {"fence": str, "event": "in"|"out",
-                              "at": datetime} | None,
-            "lookback_hours": int,
-        }
-
-    Raises on lookup failure; callers decide whether to fail closed
-    (assign) or fail open (status endpoint).
-    """
     from jimi import fetch_alarms
-    from report_analysis import _alarm_boundary_event, _alarm_time, _alarm_fence_name
+    from report_analysis import _alarm_boundary_event, _alarm_time
 
     now = _utc(now) or datetime.now(timezone.utc)
     begin = now - timedelta(hours=_FENCE_LOOKBACK_HOURS)
@@ -483,25 +520,14 @@ def current_fence_state(imei: str,
 
 
 def _truck_has_open_trip(truck_id: str) -> dict | None:
-    """Return the truck-state dict for `truck_id`.
-
-    Kept as the public surface used by the blueprint's `/assign` and
-    `/api/truck_status` endpoints. Returns None when the truck is free
-    to assign (i.e. its current fence state is AWASO). Returns a dict
-    describing the blocking condition otherwise. Raises on lookup
-    failure; callers decide whether to fail open or closed.
-    """
     imei = _resolve_imei_for_truck(truck_id)
     if not imei:
-        # Can't resolve → the service's assign_driver() will raise a
-        # clear error; the blueprint fails closed on the open-trip
-        # check. Return None so the resolution error reaches the user.
         return None
 
     state = current_fence_state(imei)
 
     if state["in_awaso"] and not state["in_trip_time"]:
-        return None  # free to assign
+        return None
 
     last = state.get("last_event")
 
@@ -530,14 +556,6 @@ def _truck_has_open_trip(truck_id: str) -> dict | None:
 
 
 def describe_block(block: dict) -> str:
-    """Human-readable message for a `_truck_has_open_trip` result.
-
-    Deliberately timestamp-free and fence-name-free: users only need to
-    know the truck isn't available. The precise fence + time is already
-    captured in the audit meta via the `driver.assign` block.override
-    event, and in the JSON returned by /api/truck_status under
-    `last_event` / `open_trip_start` for whoever needs it.
-    """
     reason = block.get("reason")
     if reason == "trip_time":
         return "Truck is on an open trip."
@@ -588,7 +606,6 @@ def assign_driver(*, driver_id: str, truck_id: str,
             f"Release that assignment first."
         )
 
-    # ---- Refuse to assign a truck that isn't parked in AWASO ----
     if not override_active_trip:
         block = _truck_has_open_trip(tid)
         if block is not None:
@@ -603,7 +620,10 @@ def assign_driver(*, driver_id: str, truck_id: str,
         "created_by":  created_by,
     }
     try:
-        resp = _client().table("truck_assignments").insert(payload).execute()
+        resp = (_client().table("truck_assignments")
+                .insert(payload)
+                .select(_ASSIGNMENT_SELECT)
+                .execute())
     except Exception as exc:
         log.exception("assign_driver failed")
         raise DriverError(f"{type(exc).__name__}: {exc}") from exc
@@ -627,6 +647,7 @@ def release_assignment(assignment_id: str,
                 })
                 .eq("id", assignment_id)
                 .is_("released_at", "null")
+                .select(_ASSIGNMENT_SELECT)
                 .execute())
     except Exception as exc:
         log.exception("release_assignment failed for %s", assignment_id)
@@ -639,15 +660,6 @@ def release_assignment(assignment_id: str,
 
 def auto_release_finished_assignments(imei_trip_ends: Iterable[tuple[str, datetime]],
                                       reason: str = "trip_ended") -> int:
-    """For each (imei, trip_end) pair, release the assignment that was
-    active at trip_end with `released_reason=reason`.
-
-    Idempotent: rows already released before trip_end are untouched; rows
-    released after trip_end are pulled back to trip_end and tagged. Rows
-    with no released_at at all get released at trip_end.
-
-    Returns the number of rows updated.
-    """
     by_imei: dict[str, datetime] = {}
     for imei, te in imei_trip_ends:
         if not imei or te is None:
@@ -663,8 +675,6 @@ def auto_release_finished_assignments(imei_trip_ends: Iterable[tuple[str, dateti
     total = 0
     for imei, trip_end in by_imei.items():
         try:
-            # Select every assignment for this imei whose window overlaps
-            # the trip.
             resp = (_client().table("truck_assignments")
                     .select("*")
                     .eq("imei", imei)
@@ -696,7 +706,7 @@ def auto_release_finished_assignments(imei_trip_ends: Iterable[tuple[str, dateti
 
 
 # ---------------------------------------------------------------------------
-# Resolution — "who drove what, when"
+# Resolution — "who drove what, when" (unchanged)
 # ---------------------------------------------------------------------------
 
 def _windows_overlapping(rows: Iterable[dict],
@@ -735,11 +745,6 @@ def imeis_for_driver_during(driver_id: str, begin: datetime,
 
 def trucks_for_driver_during(driver_id: str, begin: datetime,
                              end: datetime) -> list[dict]:
-    """Alias of imeis_for_driver_during, keyed by truck_id for the UI.
-
-    The driver-first search path (blueprints/drivers.py::trips_list)
-    calls this; each entry carries truck_id + imei + active windows.
-    """
     return imeis_for_driver_during(driver_id, begin, end)
 
 

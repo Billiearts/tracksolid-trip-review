@@ -32,16 +32,17 @@ The guard can be bypassed with the `override_active_trip` form field.
 The caller must be either an admin / super-admin OR hold the
 `drivers_override_trip` extra-role.
 
-Driver-first search
--------------------
-The driver dropdown on the Reports page posts here to `/drivers/trips`.
-The assign form on `/drivers/<id>` posts to `/drivers/<id>/assign`.
+Driver positions
+----------------
+`driver_role` is one of 'driver', 'chief_driver', 'trainee'. The
+`?role=` query param on /drivers/ filters the list; the new/edit
+forms set it. Validation lives in services.drivers.
 
-Speed
------
-`/drivers/api/available_trucks` never blocks on Tracksolid: it uses only
-the 5-minute device cache when warm, otherwise serves the assignments
-table as a fallback while a background refresh runs.
+Assignment actor
+----------------
+Every assignment records the caller's user id in `created_by`. The
+list views resolve it to an email/name via a nested select, so the
+UI can show "assigned by …".
 """
 from __future__ import annotations
 
@@ -99,11 +100,6 @@ def _can_assign() -> bool:
 
 
 def _can_override() -> bool:
-    """Who may bypass the truck-state guard.
-
-    Admins / super-admins always can. Otherwise the caller must hold
-    the `drivers_override_trip` extra-role.
-    """
     if session.get("role") in ("admin", "super_admin"):
         return True
     return "drivers_override_trip" in (session.get("extra_roles") or [])
@@ -138,7 +134,6 @@ def _caller_id() -> str | None:
 
 
 def _svc_client():
-    """Lazy admin_client alias — keeps this module importable from tests."""
     from services.supabase_client import admin_client
     return admin_client()
 
@@ -180,23 +175,11 @@ def _parse_requested_drivers() -> list[dict] | None:
 
 
 def _truck_state_block(truck_id: str) -> dict | None:
-    """Return the truck-state block dict, or None if assignable.
-
-    Single source of truth for both the status endpoint and the
-    assignment endpoint. Takes a *truck_id* (not an IMEI) and lets the
-    service resolve the IMEI internally, so the browser never dictates
-    which device is checked. Raises on lookup failure; callers decide
-    whether to fail open (status) or closed (assign).
-    """
     return drivers_svc._truck_has_open_trip(truck_id)
 
-def _driver_choices_for_admin(selected_id: str | None = None) -> list[dict]:
-    """Active, non-deleted drivers for the edit-meta <select>.
 
-    Kept tiny and uncached: the edit-meta page is low-traffic and the list
-    is ~150 rows, so a single query per page load is fine. If it ever gets
-    hot, wrap in a 60s cache keyed on `selected_id`.
-    """
+def _driver_choices_for_admin(selected_id: str | None = None) -> list[dict]:
+    """Active, non-deleted drivers for the edit-meta <select>."""
     try:
         result = drivers_svc.list_drivers(
             page=1, per_page=200,
@@ -209,13 +192,23 @@ def _driver_choices_for_admin(selected_id: str | None = None) -> list[dict]:
     out = []
     for d in result["drivers"]:
         out.append({
-            "driver_id": d["id"],
-            "full_name": d["full_name"],
-            "staff_id":  d["staff_id"],
-            "selected":  (selected_id is not None and d["id"] == selected_id),
+            "driver_id":    d["id"],
+            "full_name":    d["full_name"],
+            "staff_id":     d["staff_id"],
+            "driver_role":  d.get("driver_role") or "driver",
+            "selected":     (selected_id is not None and d["id"] == selected_id),
         })
     out.sort(key=lambda x: x["full_name"].lower())
     return out
+
+
+def _role_choices() -> list[dict]:
+    """Human-readable role options for the new/edit <select>."""
+    return [
+        {"value": "driver",       "label": "Driver"},
+        {"value": "chief_driver", "label": "Chief driver"},
+        {"value": "trainee",      "label": "Trainee"},
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -238,12 +231,17 @@ def index():
     if view_filter not in ("all", "assigned", "unassigned"):
         view_filter = "all"
 
+    role_filter = (request.args.get("role") or "all").strip()
+    if role_filter not in ("all",) + tuple(drivers_svc.DRIVER_ROLES):
+        role_filter = "all"
+
     try:
         result = drivers_svc.list_drivers(
             search=search, page=page, per_page=50,
             include_inactive=include_inactive,
             include_deleted=include_deleted,
             view=view_filter,
+            driver_role=(None if role_filter == "all" else role_filter),
         )
     except drivers_svc.DriverError as exc:
         flash(str(exc), "error")
@@ -260,6 +258,8 @@ def index():
         include_inactive=include_inactive,
         include_deleted=include_deleted,
         view_filter=view_filter,
+        role_filter=role_filter,
+        role_choices=_role_choices(),
         can_add=_can_add(),
         can_edit=_can_edit(),
         can_assign=_can_assign(),
@@ -282,6 +282,7 @@ def new_driver():
                 license_expiry=(request.form.get("license_expiry") or "").strip() or None,
                 active=request.form.get("active") != "off",
                 notes=(request.form.get("notes") or "").strip() or None,
+                driver_role=(request.form.get("driver_role") or "driver").strip(),
                 created_by=_caller_id(),
             )
         except drivers_svc.DriverError as exc:
@@ -289,19 +290,26 @@ def new_driver():
             return render_template(
                 "drivers/new.html",
                 form=request.form,
+                role_choices=_role_choices(),
             )
 
         audit.record(
             "driver.create",
             target=created["full_name"],
-            detail=f"staff_id={created.get('staff_id') or ''}",
+            detail=(f"staff_id={created.get('staff_id') or ''}, "
+                    f"role={created.get('driver_role')}"),
             meta={"driver_id": created["id"],
-                  "staff_id": created.get("staff_id")},
+                  "staff_id": created.get("staff_id"),
+                  "driver_role": created.get("driver_role")},
         )
         flash(f"Driver {created['full_name']} created.", "success")
         return redirect(url_for("drivers.index"))
 
-    return render_template("drivers/new.html", form={})
+    return render_template(
+        "drivers/new.html",
+        form={},
+        role_choices=_role_choices(),
+    )
 
 
 @bp.route("/<driver_id>/edit", methods=["GET", "POST"])
@@ -324,11 +332,15 @@ def edit_driver(driver_id):
                 license_expiry=(request.form.get("license_expiry") or "").strip() or None,
                 active=request.form.get("active") != "off",
                 notes=(request.form.get("notes") or "").strip() or None,
+                driver_role=(request.form.get("driver_role") or "driver").strip(),
             )
         except drivers_svc.DriverError as exc:
             flash(str(exc), "error")
             return render_template(
-                "drivers/edit.html", driver=driver, form=request.form,
+                "drivers/edit.html",
+                driver=driver,
+                form=request.form,
+                role_choices=_role_choices(),
             )
 
         audit.record_diff(
@@ -341,7 +353,10 @@ def edit_driver(driver_id):
         return redirect(url_for("drivers.detail", driver_id=driver_id))
 
     return render_template(
-        "drivers/edit.html", driver=driver, form={},
+        "drivers/edit.html",
+        driver=driver,
+        form={},
+        role_choices=_role_choices(),
     )
 
 
@@ -383,9 +398,6 @@ def detail(driver_id):
     assignments = drivers_svc.list_assignments(driver_id=driver_id, limit=500)
     current = next((a for a in assignments if a["released_at"] is None), None)
 
-    # Only a genuine trip is a blocking warning on the driver page.
-    # off_yard / stale are informational — the assignment already exists,
-    # nothing is going to auto-release, so they render as a muted note.
     open_trip = None
     state_note = None
     if current and current.get("truck_id"):
@@ -426,7 +438,6 @@ def assign(driver_id):
         flash("Driver not found.", "error")
         return redirect(url_for("drivers.index"))
 
-    # The form posts only truck_id. IMEI is resolved server-side.
     truck_id = (request.form.get("truck_id") or "").strip()
     notes = (request.form.get("notes") or "").strip() or None
     want_override = request.form.get("override_active_trip") == "on"
@@ -437,17 +448,14 @@ def assign(driver_id):
 
     override = want_override and _can_override()
 
-    # Authoritative truck-state check. Fail closed: if we can't verify,
-    # we refuse the assignment even if the driver/truck slots are free.
     if not override:
         try:
             block = _truck_state_block(truck_id)
         except Exception as exc:
             log.exception(
                 "assign: truck-state lookup failed truck=%s: %s", truck_id, exc)
-            flash(
-                "Could not verify the truck's state. "
-                "Try again in a moment.", "error")
+            flash("Could not verify the truck's state. "
+                  "Try again in a moment.", "error")
             return redirect(url_for("drivers.detail", driver_id=driver_id))
 
         if block is not None:
@@ -475,6 +483,7 @@ def assign(driver_id):
                 + (" [override: truck-state guard]" if override else "")),
         meta={"driver_id": driver_id, "assignment_id": a["id"],
               "truck_id": truck_id, "imei": a.get("imei"),
+              "assigned_by": _caller_id(),
               "override_active_trip": override},
         severity="warning" if override else "info",
     )
@@ -498,7 +507,8 @@ def release(assignment_id):
         detail=f"driver={a['driver_id']}",
         meta={"assignment_id": assignment_id,
               "driver_id": a["driver_id"], "imei": a["imei"],
-              "reason": "manual"},
+              "reason": "manual",
+              "released_by": _caller_id()},
     )
     flash("Assignment released.", "success")
     return redirect(url_for("drivers.detail", driver_id=a["driver_id"]))
@@ -531,6 +541,7 @@ def api_list():
             "full_name":     d["full_name"],
             "staff_id":      d["staff_id"],
             "active":        d["active"],
+            "driver_role":   d.get("driver_role") or "driver",
             "current_truck": cur["truck_id"] if cur else "",
         })
     return jsonify({"drivers": out})
@@ -542,14 +553,7 @@ def api_available_trucks():
     """Trucks the current driver can be assigned to.
 
     Only **unassigned** trucks are returned: any truck with an open
-    `truck_assignments` row is omitted, because the assign form's job
-    is to pick a free truck. The driver's own current truck never
-    appears either (that path is handled by the `current` block on
-    the detail page, which shows Release instead of Assign).
-
-    Keyed by `truck_id` (the display name). IMEI is included only so
-    the client can label unnamed devices; the assign form never posts
-    it back.
+    `truck_assignments` row is omitted.
     """
     from services import devices as devices_svc
 
@@ -569,10 +573,6 @@ def api_available_trucks():
             "message": "You do not have permission to view the truck list.",
         }), 200
 
-    # Collect the set of currently-assigned truck ids so we can exclude
-    # them from the dropdown. The driver's own current truck would only
-    # be here if the caller bypassed the detail-page Release path; we
-    # still exclude it so the list stays "free trucks only".
     assigned_trucks: set[str] = set()
     try:
         resp = (_svc_client().table("truck_assignments")
@@ -607,10 +607,6 @@ def api_available_trucks():
         except Exception:
             log.debug("available_trucks: background warm-up failed")
 
-        # No warm cache: we can only trust the assignments table. Since
-        # we don't know the full device list, return an empty list and
-        # tell the client to retry — better than a misleading partial
-        # list that would let the user pick an assigned truck.
         return jsonify({
             "trucks": [],
             "is_admin": _is_admin(),
@@ -624,13 +620,10 @@ def api_available_trucks():
     seen = set()
     for d in devices:
         name = (d.get("deviceName") or "").strip()
-        # Key by truck name; skip devices with no name (they can't be
-        # the target of a truck-keyed assignment).
         if not name or name in seen:
             continue
         seen.add(name)
 
-        # Skip anything already assigned to any driver.
         if name in assigned_trucks:
             continue
 
@@ -643,7 +636,7 @@ def api_available_trucks():
         out.append({
             "truck_id":  name,
             "name":      name,
-            "imei":      "",  # not exposed to the client
+            "imei":      "",
             "category":  category,
         })
 
@@ -660,12 +653,6 @@ def api_available_trucks():
 @bp.route("/api/truck_status")
 @login_required
 def api_truck_status():
-    """Per-truck check used by the assignment dropdown.
-
-    Takes `?truck_id=...` (not imei). Resolves the IMEI server-side
-    via the same helper `assign()` uses, so the UI and the server
-    cannot disagree about the truck's state.
-    """
     if not _can_view():
         return jsonify({
             "error": "insufficient_permission",
@@ -679,7 +666,6 @@ def api_truck_status():
             "message": "No truck supplied.",
         }), 200
 
-    # Fence state
     in_awaso = False
     in_trip_time = False
     state_reason = None
@@ -782,8 +768,6 @@ def trips_list():
             warnings.append(
                 f"Driver {d['full_name'] or d['driver_id']} not found.")
             continue
-        # trucks now keyed by truck_id; the service resolves the imei
-        # from the assignment row when it needs to hit `trips`.
         trucks = drivers_svc.trucks_for_driver_during(info["id"], begin, end)
         if not trucks:
             if require_assignment:
@@ -812,11 +796,8 @@ def trips_list():
             flash(w, "error")
         return redirect(url_for("index"))
 
-    from report import find_trips  # deferred import to match app.py style
+    from report import find_trips
 
-    # Search by truck_id, but `find_trips` is IMEI-backed so we still
-    # need the imei here — it comes from the assignment row, never
-    # from the request.
     unique_trucks: dict[str, dict] = {}
     for r in resolved:
         for t in r["trucks"]:
@@ -864,10 +845,6 @@ def trips_list():
                 driver_trips.append({
                     **trip,
                     "truck":       truck_id,
-                    # Per-trip IMEI: the checkbox in trips.html submits this,
-                    # and preview_start needs it to re-fetch the trip. In
-                    # truck-mode this is filled from the group; in driver-mode
-                    # it was empty, which caused "invalid trip selection".
                     "imei":        t["imei"],
                     "driver_id":   r["id"],
                     "driver_name": r["full_name"],
@@ -881,10 +858,6 @@ def trips_list():
             "driver_id":   r["id"],
             "driver_name": r["full_name"],
             "truck":       _truck_summary(driver_trips),
-            # Group-level IMEI: used by trips.html for the header line and
-            # as the fallback in `data-imei="{{ t.imei or g.imei }}"`. When
-            # a driver has driven multiple trucks, this is intentionally
-            # blank so the header doesn't claim a single IMEI.
             "imei":        (driver_trips[0]["imei"]
                             if driver_trips and
                                len({t["imei"] for t in driver_trips}) == 1
