@@ -531,6 +531,12 @@ def current_fence_state(imei: str,
         "lookback_hours": _FENCE_LOOKBACK_HOURS,
     }
 
+    # Track the latest boundary event per fence independently. Deriving
+    # in_trip_time / in_awaso from the *latest* event for each fence (not
+    # from every event) stops a late-arriving or out-of-order alarm from
+    # flipping the flag after a newer event has already set it.
+    last_trip_at: datetime | None = None
+    last_yard_at: datetime | None = None
     last_at: datetime | None = None
 
     for a in alarms:
@@ -546,6 +552,7 @@ def current_fence_state(imei: str,
         if not (is_trip or is_yard):
             continue
 
+        # Overall latest event across both fence groups.
         if last_at is None or t > last_at:
             last_at = t
             state["last_event"] = {
@@ -554,9 +561,13 @@ def current_fence_state(imei: str,
                 "at":    t,
             }
 
-        if is_trip:
+        # Per-fence latest event — only flip the flag when this event
+        # is strictly newer than the last one seen for that fence.
+        if is_trip and (last_trip_at is None or t > last_trip_at):
+            last_trip_at = t
             state["in_trip_time"] = (ev == "in")
-        if is_yard:
+        if is_yard and (last_yard_at is None or t > last_yard_at):
+            last_yard_at = t
             state["in_awaso"] = (ev == "in")
 
     return state
