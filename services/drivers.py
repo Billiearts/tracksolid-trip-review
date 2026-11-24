@@ -15,9 +15,11 @@ Semantics
   releases the driver from the truck with released_reason="trip_ended", so
   the next dispatch has to re-assign.
 * Truck-state guard: a truck may only be assigned when its current fence
-  state is AWASO (parked in the yard). A truck inside TRIP TIME is blocked
-  as "on an open trip"; a truck outside both fences is blocked as "not at
-  the yard". See `current_fence_state()` below.
+  state is inside the yard. The yard is not a single fence — it's a group
+  (AWASO, the wrapper fences, and the station fences). A truck inside
+  TRIP TIME is blocked as "on an open trip"; a truck outside both the
+  yard and TRIP TIME is blocked as "not at the yard".
+  See `current_fence_state()` below.
 
 Driver positions
 ----------------
@@ -42,6 +44,10 @@ from services.supabase_client import admin_client
 
 log = logging.getLogger(__name__)
 
+# Yard fences — the guard treats "inside any of these" as "at the yard".
+# Imported lazily in _fence_matches_yard() to avoid a circular import
+# at module load (report_analysis imports jimi, which imports config).
+
 
 class DriverError(RuntimeError):
     pass
@@ -58,8 +64,9 @@ _ROLE_LABELS = {
 
 
 # Fences used by the truck-state guard. TRIP TIME is matched by geoid
-# (authoritative) with a name fallback; AWASO is matched by name only,
-# mirroring how report_analysis.YARD_WRAPPER_NAMES identifies it.
+# (authoritative) with a name fallback; the yard is matched by name
+# against the AWASO fences plus the wrapper/bracket/station fences from
+# report_analysis.
 _TRIP_TIME_FENCE_NAME_FALLBACKS = ("TRIP TIME GBC", "GBC TRIP TIME")
 _AWASO_FENCE_NAMES = frozenset({"GBC AWASO", "GBC AWASO 2"})
 _FENCE_LOOKBACK_HOURS = 72
@@ -135,8 +142,14 @@ def _parse_dt(v):
 
 
 def _row_to_driver(row: dict) -> dict:
-    role = row.get("driver_role") or "driver"
+    raw = row.get("driver_role")
+    role = (str(raw).strip().lower() if raw is not None else "") or "driver"
     if role not in DRIVER_ROLES:
+        # Unknown/non-null value is a data problem — don't silently
+        # coerce to "driver", log it and fall back so the row still
+        # renders but the issue is visible in logs.
+        log.warning("_row_to_driver: unrecognised driver_role %r for id %r",
+                    raw, row.get("id"))
         role = "driver"
     return {
         "id":             row.get("id"),
@@ -443,7 +456,7 @@ def current_assignment_for_driver(driver_id: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Truck-state guard — fence-based (unchanged from previous version)
+# Truck-state guard — fence-based
 # ---------------------------------------------------------------------------
 
 def _fence_matches_trip_time(alarm: dict) -> bool:
@@ -458,13 +471,43 @@ def _fence_matches_trip_time(alarm: dict) -> bool:
     return any(fb in name for fb in _TRIP_TIME_FENCE_NAME_FALLBACKS)
 
 
-def _fence_matches_awaso(alarm: dict) -> bool:
+def _fence_matches_yard(alarm: dict) -> bool:
+    """True if the alarm's fence is anywhere inside the yard.
+
+    The yard is not one fence — it's a group. A truck is 'at the yard'
+    whenever its last in/out event is one of:
+      * GBC AWASO / GBC AWASO 2
+      * the wrapper fences (HAULAGE TRUCKS EXIT, GBC EXITED,
+        FUEL AND WAYBILL, LOADED AND PARKED)
+      * any of the YARD_STATIONS (MAINTENANCE / WAYBILL / FUELING /
+        LOADING / WEIGHING / WAITING TIME)
+
+    Using only AWASO (the original rule) missed trucks like GT 8131 -25,
+    which sit in the yard but never trigger the AWASO fence. This is
+    why the assign form said 'not at the yard' while the truck was
+    visibly inside.
+    """
     try:
-        from report_analysis import _alarm_fence_name
+        from report_analysis import (
+            _alarm_fence_name,
+            YARD_WRAPPER_NAMES,
+            YARD_BRACKET_NAMES,
+            _YARD_STATION_NAME_TO_KEY,
+        )
     except Exception:
         return False
     name = _alarm_fence_name(alarm)
-    return name in _AWASO_FENCE_NAMES
+    if not name:
+        return False
+    if name in _AWASO_FENCE_NAMES:
+        return True
+    if name in YARD_WRAPPER_NAMES:
+        return True
+    if name in YARD_BRACKET_NAMES:
+        return True
+    if name in _YARD_STATION_NAME_TO_KEY:
+        return True
+    return False
 
 
 def current_fence_state(imei: str,
@@ -483,7 +526,7 @@ def current_fence_state(imei: str,
 
     state = {
         "in_trip_time":   False,
-        "in_awaso":       False,
+        "in_awaso":       False,   # kept for API compat; now means "in yard"
         "last_event":     None,
         "lookback_hours": _FENCE_LOOKBACK_HOURS,
     }
@@ -499,21 +542,21 @@ def current_fence_state(imei: str,
             continue
 
         is_trip = _fence_matches_trip_time(a)
-        is_awaso = _fence_matches_awaso(a)
-        if not (is_trip or is_awaso):
+        is_yard = _fence_matches_yard(a)
+        if not (is_trip or is_yard):
             continue
 
         if last_at is None or t > last_at:
             last_at = t
             state["last_event"] = {
-                "fence": "TRIP TIME" if is_trip else "AWASO",
+                "fence": "TRIP TIME" if is_trip else "YARD",
                 "event": ev,
                 "at":    t,
             }
 
         if is_trip:
             state["in_trip_time"] = (ev == "in")
-        if is_awaso:
+        if is_yard:
             state["in_awaso"] = (ev == "in")
 
     return state

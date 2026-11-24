@@ -2,8 +2,14 @@
 
 {% block heading %}Drivers{% endblock %}
 
+{% block body_class %}wide{% endblock %}
+
 {% block head %}
 <style>
+  /* Widen the container for the driver list so long names, long emails,
+     and the widened column set don't squash. */
+  body.wide .container { max-width: 1400px; }
+
   .filter-bar {
     display: flex;
     flex-wrap: wrap;
@@ -34,7 +40,7 @@
     font-weight: 600;
   }
 
-  /* ---- Role badges -------------------------------------------------- */
+  /* Role badges */
   .role-badge {
     display: inline-block;
     font-size: 0.68rem;
@@ -48,6 +54,10 @@
   .role-badge-driver       { background: #f0f0f0; color: #555; }
   .role-badge-chief_driver { background: #e7f5e9; color: #256b2a; }
   .role-badge-trainee      { background: #fff7e6; color: #8a5a00; }
+
+  /* Let long names/emails wrap rather than ellipsis, since we've
+     widened the container. */
+  .admin-table td { white-space: normal; word-break: break-word; }
 </style>
 {% endblock %}
 
@@ -60,12 +70,13 @@
     {% endif %}
   </div>
 
-  {# Search is live-on-type (debounced in JS); the Filter button stays
-     as a no-JS fallback and also preserves view/role/inactive/deleted. #}
+  {# Search is live-on-type (debounced in JS). The Filter button is
+     removed — checkboxes now submit on change, and the segmented
+     controls are links that navigate immediately. #}
   <form method="get" action="{{ url_for('drivers.index') }}"
         class="filter-bar" id="driver-filter-form">
 
-    <div class="field-inline" style="flex:2 1 260px;">
+    <div class="field-inline" style="flex:2 1 320px;">
       <label for="q">Search</label>
       <input type="text" id="q" name="q" value="{{ search }}"
              placeholder="Name or staff ID"
@@ -136,15 +147,10 @@
       </div>
     {% endif %}
 
-    {# Hidden fields so the fallback Filter button keeps the current
-       segmented selections. #}
+    {# Hidden fields so the checkbox auto-submits keep the segmented
+       selections. #}
     <input type="hidden" name="view" value="{{ view_filter }}">
     <input type="hidden" name="role" value="{{ role_filter }}">
-
-    <div class="field-inline" style="flex:0 0 auto;">
-      <label>&nbsp;</label>
-      <button type="submit">Filter</button>
-    </div>
   </form>
 
   {% if not result.drivers %}
@@ -165,10 +171,8 @@
             <th>Name</th>
             <th>Staff ID</th>
             <th>Role</th>
-            <th>Phone</th>
             <th>Current truck</th>
             <th>Assigned by</th>
-            <th>Status</th>
             <th></th>
           </tr>
         </thead>
@@ -187,7 +191,6 @@
                   {{ d.driver_role_label }}
                 </span>
               </td>
-              <td>{{ d.phone or '—' }}</td>
               <td>
                 {% if d.current_assignment %}
                   {{ d.current_assignment.truck_id or d.current_assignment.imei }}
@@ -198,24 +201,10 @@
               <td>
                 {% if d.current_assignment and d.current_assignment.assigned_by_name %}
                   {{ d.current_assignment.assigned_by_name }}
-                  {% if d.current_assignment.assigned_by_email %}
-                    <br><span class="muted" style="font-size:0.78rem;">
-                      {{ d.current_assignment.assigned_by_email }}
-                    </span>
-                  {% endif %}
-                {% elif d.current_assignment %}
-                  <span class="muted">—</span>
+                {% elif d.current_assignment and d.current_assignment.assigned_by_email %}
+                  {{ d.current_assignment.assigned_by_email }}
                 {% else %}
                   <span class="muted">—</span>
-                {% endif %}
-              </td>
-              <td>
-                {% if d.deleted_at %}
-                  <span class="status status-failed">Deleted</span>
-                {% elif d.active %}
-                  <span class="status status-done">Active</span>
-                {% else %}
-                  <span class="status status-queued">Inactive</span>
                 {% endif %}
               </td>
               <td style="text-align:right; white-space:nowrap;">
@@ -258,20 +247,55 @@
   const input = document.getElementById('q');
   if (!form || !input) return;
 
-  // Debounced live search. Pushes the current query into the URL and
-  // navigates, preserving view/role/inactive/deleted so the user
-  // doesn't lose their filter context while typing.
+  // Track the last query we actually navigated with, so typing then
+  // backspacing to the same value doesn't trigger a redundant reload.
+  let lastSubmitted = input.value.trim();
+  let navigating = false;
+
+  function buildSearchUrl() {
+    const url = new URL(window.location.href);
+    const q = input.value.trim();
+    if (q) {
+      url.searchParams.set('q', q);
+    } else {
+      url.searchParams.delete('q');
+    }
+    // Reset pagination whenever the query changes.
+    url.searchParams.delete('page');
+    return url.toString();
+  }
+
   let timer = null;
   function submitLive() {
-    const url = new URL(window.location.href);
-    url.searchParams.set('q', input.value.trim());
-    url.searchParams.delete('page');
-    window.location.href = url.toString();
+    const q = input.value.trim();
+    if (navigating || q === lastSubmitted) return;
+    lastSubmitted = q;
+    navigating = true;
+    window.location.href = buildSearchUrl();
   }
 
   input.addEventListener('input', function () {
     clearTimeout(timer);
     timer = setTimeout(submitLive, 250);
+  });
+
+  // Pressing Enter should navigate immediately with the current filters
+  // rather than letting the browser submit the form with stale hidden
+  // inputs.
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      clearTimeout(timer);
+      submitLive();
+    }
+  });
+
+  // Auto-submit on checkbox change (Show inactive / Show deleted).
+  // Segmented controls are links and navigate immediately on their own.
+  form.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
+    cb.addEventListener('change', function () {
+      form.submit();
+    });
   });
 })();
 </script>

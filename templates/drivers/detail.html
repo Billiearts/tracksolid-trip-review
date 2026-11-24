@@ -158,16 +158,11 @@
       Since {{ current.assigned_at.strftime('%Y-%m-%d %H:%M:%S') }}
     </p>
     {% if current.assigned_by_name or current.assigned_by_email %}
-      <p class="muted" style="font-size:0.82rem; margin-top:0.2rem;">
-        Assigned by
-        {% if current.assigned_by_name %}
-          <strong>{{ current.assigned_by_name }}</strong>
-        {% endif %}
-        {% if current.assigned_by_email %}
-          ({{ current.assigned_by_email }})
-        {% endif %}
-      </p>
-    {% endif %}
+  <p class="muted" style="font-size:0.82rem; margin-top:0.2rem;">
+    Assigned by
+    <strong>{{ current.assigned_by_name or current.assigned_by_email }}</strong>
+  </p>
+{% endif %}
     {% if open_trip %}
       <div class="truck-warning">
         <span class="icon">⚠</span>
@@ -283,19 +278,14 @@
                 {% endif %}
               </td>
               <td>
-                {% if a.assigned_by_name %}
-                  {{ a.assigned_by_name }}
-                  {% if a.assigned_by_email %}
-                    <br><span class="muted" style="font-size:0.78rem;">
-                      {{ a.assigned_by_email }}
-                    </span>
-                  {% endif %}
-                {% elif a.assigned_by_email %}
-                  {{ a.assigned_by_email }}
-                {% else %}
-                  <span class="muted">—</span>
-                {% endif %}
-              </td>
+  {% if a.assigned_by_name %}
+    {{ a.assigned_by_name }}
+  {% elif a.assigned_by_email %}
+    {{ a.assigned_by_email }}
+  {% else %}
+    <span class="muted">—</span>
+  {% endif %}
+</td>
               <td>{{ a.notes or '—' }}</td>
             </tr>
           {% endfor %}
