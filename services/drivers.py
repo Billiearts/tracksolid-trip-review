@@ -531,12 +531,17 @@ def current_fence_state(imei: str,
         "lookback_hours": _FENCE_LOOKBACK_HOURS,
     }
 
-    # Track the latest boundary event per fence independently. Deriving
-    # in_trip_time / in_awaso from the *latest* event for each fence (not
-    # from every event) stops a late-arriving or out-of-order alarm from
-    # flipping the flag after a newer event has already set it.
-    last_trip_at: datetime | None = None
-    last_yard_at: datetime | None = None
+    # Track the latest boundary event per fence group independently, so a
+    # late-arriving or out-of-order alarm can't flip a flag after a newer
+    # event has already set it. The comparison key is (timestamp, rank)
+    # where rank prefers "in" over "out" at the same timestamp: a truck
+    # that leaves one overlapping fence and enters another in the same
+    # tick is inside the new one, so "in" must win regardless of list
+    # order. Without the tiebreaker, events sharing a second (e.g.
+    # "out LOADED AND PARKED" + "in MAINTENANCE TIME" at 15:33:09) would
+    # leave in_awaso stuck at False depending on list order.
+    last_trip_key: tuple | None = None
+    last_yard_key: tuple | None = None
     last_at: datetime | None = None
 
     for a in alarms:
@@ -561,13 +566,14 @@ def current_fence_state(imei: str,
                 "at":    t,
             }
 
-        # Per-fence latest event — only flip the flag when this event
-        # is strictly newer than the last one seen for that fence.
-        if is_trip and (last_trip_at is None or t > last_trip_at):
-            last_trip_at = t
+        rank = 1 if ev == "in" else 0
+        key = (t, rank)
+
+        if is_trip and (last_trip_key is None or key > last_trip_key):
+            last_trip_key = key
             state["in_trip_time"] = (ev == "in")
-        if is_yard and (last_yard_at is None or t > last_yard_at):
-            last_yard_at = t
+        if is_yard and (last_yard_key is None or key > last_yard_key):
+            last_yard_key = key
             state["in_awaso"] = (ev == "in")
 
     return state
