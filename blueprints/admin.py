@@ -34,9 +34,7 @@ _EXTRA_ROLE_KEYS = {
     "extra_drivers_add":           "drivers_add",
     "extra_drivers_edit":          "drivers_edit",
     "extra_drivers_assign":        "drivers_assign",
-    # CHANGED: new role that lets a non-admin bypass the truck-state
-    # guard. Granting it to a dispatcher is equivalent to the admin
-    # "override" checkbox on the assign form.
+   "extra_trip_history_view": "trip_history_view",
     "extra_drivers_override_trip": "drivers_override_trip",
 }
 

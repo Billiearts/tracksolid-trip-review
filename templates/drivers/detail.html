@@ -4,24 +4,6 @@
 
 {% block head %}
 <style>
-  .truck-warning {
-    display: flex; align-items: center; gap: 0.45rem;
-    background: #fde7e7; color: #7a1c1c;
-    border: 1px solid #f5b5b5; border-radius: 6px;
-    padding: 0.5rem 0.75rem; font-size: 0.85rem;
-    margin-top: 0.5rem;
-  }
-  .truck-warning[hidden] { display: none; }
-  .truck-warning.warn-soft {
-    background: #fff7e6; color: #8a5a00; border-color: #f0d9a8;
-  }
-  .truck-warning .icon { font-size: 1.1rem; line-height: 1; }
-  .override-box {
-    display: flex; align-items: center; gap: 0.4rem;
-    margin-top: 0.4rem; font-size: 0.82rem;
-    color: #8a5a00;
-  }
-  .override-box[hidden] { display: none; }
   .staff-id-badge {
     display: inline-block;
     font-size: 0.75rem;
@@ -45,6 +27,7 @@
   .role-badge-driver       { background: #f0f0f0; color: #555; }
   .role-badge-chief_driver { background: #e7f5e9; color: #256b2a; }
   .role-badge-trainee      { background: #fff7e6; color: #8a5a00; }
+
   #truck-input { width: 100%; }
 
   .truck-combo { position: relative; }
@@ -86,6 +69,7 @@
     cursor: default;
     font-style: italic;
   }
+
   .rest-box {
     background: #fff7e6; color: #8a5a00; border: 1px solid #f0d9a8;
     border-radius: 6px; padding: 0.5rem 0.75rem;
@@ -93,6 +77,12 @@
     display: flex; align-items: center; gap: 0.45rem;
   }
   .rest-box[hidden] { display: none; }
+  .override-box {
+    display: flex; align-items: center; gap: 0.4rem;
+    margin-top: 0.4rem; font-size: 0.82rem;
+    color: #8a5a00;
+  }
+  .override-box[hidden] { display: none; }
 </style>
 {% endblock %}
 
@@ -164,20 +154,9 @@
       Since {{ current.assigned_at.strftime('%Y-%m-%d %H:%M:%S') }}
     </p>
     {% if current.assigned_by_name or current.assigned_by_email %}
-  <p class="muted" style="font-size:0.82rem; margin-top:0.2rem;">
-    Assigned by
-    <strong>{{ current.assigned_by_name or current.assigned_by_email }}</strong>
-  </p>
-{% endif %}
-    {% if open_trip %}
-      <div class="truck-warning">
-        <span class="icon">⚠</span>
-        <span>This truck is currently on an open trip. The assignment
-          will auto-release when the trip ends.</span>
-      </div>
-    {% elif state_note %}
-      <p class="muted" style="font-size:0.8rem; margin-top:0.4rem;">
-        {{ state_note }}
+      <p class="muted" style="font-size:0.82rem; margin-top:0.2rem;">
+        Assigned by
+        <strong>{{ current.assigned_by_name or current.assigned_by_email }}</strong>
       </p>
     {% endif %}
     {% if can_assign %}
@@ -220,7 +199,6 @@
           <ul id="truck-options" class="truck-combo-list" hidden
               role="listbox"></ul>
         </div>
-        {# Only the truck_id is submitted. IMEI is resolved server-side. #}
         <input type="hidden" name="truck_id" id="truck-name" value="">
         <p class="muted" id="truck-loading-hint"
            style="font-size:0.8rem; margin:0.35rem 0 0;">
@@ -230,18 +208,6 @@
       <div style="display:flex; gap:0.6rem; align-items:center; margin-bottom:0.6rem;">
         <button type="submit">Assign</button>
       </div>
-
-      <div class="truck-warning" id="truck-warning" hidden>
-        <span class="icon">⚠</span>
-        <span id="truck-warning-text"></span>
-      </div>
-
-      {% if can_override %}
-        <label class="override-box" id="override-box" hidden>
-          <input type="checkbox" name="override_active_trip" id="override-active-trip">
-          <span>Override the truck-state check for this assignment (admin / override-role)</span>
-        </label>
-      {% endif %}
 
       {% if can_override_rest and rest_until %}
         <label class="override-box" style="display:flex;">
@@ -257,9 +223,10 @@
       </div>
     </form>
     <p class="muted" style="margin-top:0.5rem;">
-      A driver can only be assigned to one truck at a time. Assignments
-      are recorded with timestamps so past trips can still be attributed
-      to this driver months later.
+      A driver can only be assigned to one truck at a time, and a truck
+      can only be held by one driver at a time. Assignments are recorded
+      with timestamps so past trips can still be attributed to this
+      driver months later.
     </p>
   {% else %}
     <p class="muted">No current assignment.</p>
@@ -303,14 +270,14 @@
                 {% endif %}
               </td>
               <td>
-  {% if a.assigned_by_name %}
-    {{ a.assigned_by_name }}
-  {% elif a.assigned_by_email %}
-    {{ a.assigned_by_email }}
-  {% else %}
-    <span class="muted">—</span>
-  {% endif %}
-</td>
+                {% if a.assigned_by_name %}
+                  {{ a.assigned_by_name }}
+                {% elif a.assigned_by_email %}
+                  {{ a.assigned_by_email }}
+                {% else %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
               <td>{{ a.notes or '—' }}</td>
             </tr>
           {% endfor %}
@@ -329,20 +296,12 @@
   const listEl      = document.getElementById('truck-options');
   const hiddenName  = document.getElementById('truck-name');
   const loadingHint = document.getElementById('truck-loading-hint');
-  const warn        = document.getElementById('truck-warning');
-  const warnText    = document.getElementById('truck-warning-text');
-  const overrideBox = document.getElementById('override-box');
-  const overrideChk = document.getElementById('override-active-trip');
   const form        = document.getElementById('assign-form');
   if (!input || !listEl || !form) return;
 
-  let trucks      = [];
-  let canOverride = false;
-  let filtered    = [];
-  let activeIdx   = -1;
-  const statusCache = {};
-
-  const STATUS_TTL_MS = 30000;
+  let trucks    = [];
+  let filtered  = [];
+  let activeIdx = -1;
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
@@ -393,7 +352,6 @@
     input.value = labelFor(t);
     hiddenName.value = t.truck_id;
     closeList();
-    refreshStatusForTruck(t.truck_id);
   }
 
   function highlight(idx) {
@@ -405,114 +363,15 @@
     items[idx].scrollIntoView({ block: 'nearest' });
   }
 
-  function applyStatus(status) {
-    // A truck is ONLY hard-blocked when it is genuinely on an open
-    // trip (state_reason === 'trip_time'). Stale/off_yard are shown
-    // as soft warnings but do NOT block submission.
-    let blocked = false;
-    let reason  = '';
-    let soft    = false;
-
-    if (status.error) {
-      blocked = false;              // never hard-block on a status error
-      soft    = true;
-      reason  = status.message || 'Could not check this truck right now.';
-    } else if (status.state_reason === 'trip_time' || status.has_open_trip) {
-      blocked = true;
-      reason  = status.state_message || 'Truck is on an open trip.';
-    } else if (status.state_reason === 'off_yard') {
-      soft    = true;
-      reason  = status.state_message || 'Truck is not at the yard.';
-    } else if (status.state_reason === 'stale') {
-      soft    = true;
-      reason  = status.state_message
-             || 'Truck has not entered or left a tracked fence recently.';
-    } else if (status.state_reason === 'lookup_failed') {
-      soft    = true;
-      reason  = status.state_message
-             || 'Could not verify the truck\'s state right now.';
-    }
-
-    if (reason) {
-      warn.hidden = false;
-      warn.classList.toggle('warn-soft', soft);
-      warnText.textContent = reason;
-    } else {
-      warn.hidden = true;
-      warn.classList.remove('warn-soft');
-    }
-
-    if (overrideBox) {
-      overrideBox.hidden = !(canOverride && blocked);
-    }
-
-    form.dataset.blocked = blocked ? '1' : '0';
-  }
-
-  function clearStatus() {
-    warn.hidden = true;
-    warn.classList.remove('warn-soft');
-    if (overrideBox) overrideBox.hidden = true;
-    form.dataset.blocked = '0';
-  }
-
-  async function refreshStatusForTruck(truckId) {
-    if (!truckId) {
-      clearStatus();
-      return;
-    }
-    warn.hidden = false;
-    warn.classList.remove('warn-soft');
-    warnText.textContent = 'Checking truck state…';
-    // We optimistically do NOT block while the check is in flight;
-    // only a real trip_time response will set blocked=1.
-
-    const cached = statusCache[truckId];
-    if (cached && (Date.now() - cached._ts) < STATUS_TTL_MS) {
-      canOverride = !!cached.payload.can_override;
-      applyStatus(cached.payload);
-      return;
-    }
-
-    const ctrl = new AbortController();
-    const kill = setTimeout(() => ctrl.abort(), 10000);
-    try {
-      const r = await fetch(
-        "{{ url_for('drivers.api_truck_status') }}?truck_id=" +
-          encodeURIComponent(truckId),
-        { signal: ctrl.signal, credentials: 'same-origin' }
-      );
-      clearTimeout(kill);
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const status = await r.json();
-      statusCache[truckId] = { payload: status, _ts: Date.now() };
-      canOverride = !!status.can_override;
-      applyStatus(status);
-    } catch (e) {
-      clearTimeout(kill);
-      warn.hidden = false;
-      warn.classList.add('warn-soft');
-      warnText.textContent = 'Could not check truck state. Try again, or refresh.';
-      form.dataset.blocked = '0';
-    }
-  }
-
   function syncFromInput() {
     const raw = (input.value || '').trim();
     if (!raw) {
       hiddenName.value = '';
-      clearStatus();
       return;
     }
     const chosen = trucks.find(t => labelFor(t) === raw) ||
                    trucks.find(t => t.truck_id === raw);
-    if (chosen) {
-      hiddenName.value = chosen.truck_id;
-      refreshStatusForTruck(chosen.truck_id);
-    } else {
-      hiddenName.value = '';
-      clearStatus();
-    }
+    hiddenName.value = chosen ? chosen.truck_id : '';
   }
 
   input.addEventListener('input', function () {
@@ -565,9 +424,7 @@
   });
 
   async function loadTrucks() {
-    // Do NOT pass include_operational=0 — that can hide yard trucks
-    // that the user should still be able to assign.
-    const url = "{{ url_for('drivers.api_available_trucks') }}?include_operational=1";
+    const url = "{{ url_for('drivers.api_available_trucks') }}";
     const ctrl = new AbortController();
     const kill = setTimeout(() => ctrl.abort(), 12000);
     try {
@@ -577,8 +434,7 @@
       const j = await r.json();
       if (j.error) throw new Error(j.error);
 
-      trucks      = j.trucks || [];
-      canOverride = !!j.can_override;
+      trucks = j.trucks || [];
 
       if (loadingHint) loadingHint.hidden = true;
 
@@ -613,14 +469,6 @@
       e.preventDefault();
       alert('Please pick a truck from the list.');
       input.focus();
-      return;
-    }
-    if (form.dataset.blocked === '1') {
-      const overrideOn = overrideChk && overrideChk.checked;
-      if (!overrideOn) {
-        e.preventDefault();
-        alert('This truck cannot be assigned right now — see the warning above.');
-      }
     }
   });
 

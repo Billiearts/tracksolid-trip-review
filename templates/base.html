@@ -733,6 +733,19 @@
           </a>
         {% endif %}
 
+        {% if 'trip_history_view' in (session.get('extra_roles') or [])
+      or session.get('role') in ('admin', 'super_admin') %}
+  <a href="{{ url_for('trip_history.index') }}"
+     class="topbar-link {{ 'active' if request.endpoint and request.endpoint.startswith('trip_history.') else '' }}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"></circle>
+      <polyline points="12 7 12 12 15 14"></polyline>
+    </svg>
+    Completed trips
+  </a>
+{% endif %}
+
         {% if 'live_fleet_view' in (session.get('extra_roles') or []) %}
           <a href="{{ url_for('live_fleet.index') }}"
              class="topbar-link {{ 'active' if request.endpoint and request.endpoint.startswith('live_fleet.') else '' }}">

@@ -117,7 +117,9 @@ from blueprints.auth       import bp as auth_bp
 from blueprints.admin      import bp as admin_bp
 from blueprints.live_fleet import bp as live_fleet_bp
 from blueprints.drivers    import bp as drivers_bp
+from blueprints import trip_history as trip_history_bp
 
+app.register_blueprint(trip_history_bp.bp)
 app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
 app.register_blueprint(live_fleet_bp)

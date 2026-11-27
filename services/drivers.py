@@ -1,8 +1,13 @@
 """
-services/drivers.py — driver registry and truck-assignment persistence.
+services/drivers.py — driver registry, truck assignment, rest period,
+and auto-release on trip end.
 
-Drivers are persistent identities. Truck assignments are time-bounded rows
-in `truck_assignments`; releasing one never deletes it.
+This module owns:
+  * Driver CRUD (list/get/create/update/soft-delete).
+  * Truck assignment (assign/release + history queries).
+  * Rest period settings + rest_until() calculation.
+  * Auto-release when a truck's trip ends (same fence-state logic the
+    live map uses, so "trip ended" is consistent everywhere).
 
 Semantics
 ---------
@@ -11,15 +16,37 @@ Semantics
   made to a deleted driver.
 * A truck currently on a trip cannot be reassigned without
   override_active_trip=True (admins / super-admins only).
-* When a trip finishes (its end is known), `auto_release_finished_assignments`
-  releases the driver from the truck with released_reason="trip_ended", so
-  the next dispatch has to re-assign.
+* When a trip finishes (its end is known),
+  `auto_release_finished_assignments` releases the driver from the truck
+  with released_reason="trip_ended", so the next dispatch has to
+  re-assign.
 * Truck-state guard: a truck may only be assigned when its current fence
   state is inside the yard. The yard is not a single fence — it's a group
   (AWASO, the wrapper fences, and the station fences). A truck inside
   TRIP TIME is blocked as "on an open trip"; a truck outside both the
   yard and TRIP TIME is blocked as "not at the yard".
   See `current_fence_state()` below.
+
+Fail-safe auto-release
+----------------------
+The auto-release path is *destructive*: if it fires when the truck is
+actually still on a trip, it silently drops the driver's assignment.
+So `_truck_has_open_trip()` treats "state lookup unavailable" as
+"assume still on a trip" (a block), and `auto_release_if_trip_ended()`
+short-circuits entirely when no fence-state helper exists on the
+install. Both behaviours are required to stop the current bug where
+every open assignment gets released on first call because
+`current_fence_state()` returns None.
+
+Rest period / Supabase client quirk
+-----------------------------------
+`_last_release_for_driver()` deliberately does NOT use
+`.not_.is_("released_at", "null")`. On some versions of the Supabase
+Python client that chain is a no-op and returns the open rows first
+(ordered by released_at desc → the None row), so `rest_until()`
+incorrectly returns None and the amber rest box never renders. We
+instead fetch the 50 most recent rows ordered by `released_at desc`
+and pick the first non-null value in Python.
 
 Driver positions
 ----------------
@@ -44,14 +71,10 @@ from services.supabase_client import admin_client
 
 log = logging.getLogger(__name__)
 
-# Yard fences — the guard treats "inside any of these" as "at the yard".
-# Imported lazily in _fence_matches_yard() to avoid a circular import
-# at module load (report_analysis imports jimi, which imports config).
 
-
-class DriverError(RuntimeError):
-    pass
-
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 
 # Allowed driver positions. Kept in sync with the CHECK constraint in
 # sql/2026_11_23_driver_roles.sql.
@@ -62,6 +85,8 @@ _ROLE_LABELS = {
     "trainee":      "Trainee",
 }
 
+# Singleton row id in driver_rest_settings.
+REST_SETTINGS_ID = 1
 
 # Fences used by the truck-state guard. TRIP TIME is matched by geoid
 # (authoritative) with a name fallback; the yard is matched by name
@@ -73,7 +98,15 @@ _FENCE_LOOKBACK_HOURS = 72
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Errors
+# ---------------------------------------------------------------------------
+
+class DriverError(RuntimeError):
+    """Raised for validation / lookup failures the UI can show."""
+
+
+# ---------------------------------------------------------------------------
+# Small helpers
 # ---------------------------------------------------------------------------
 
 def _client():
@@ -108,28 +141,6 @@ def _normalise_role(v) -> str:
     return s
 
 
-def _resolve_imei_for_truck(truck_id: str) -> str | None:
-    """truck display name -> device IMEI.
-
-    Single source of truth used by both the open-trip guard and the
-    assignment write. The blueprint never sends an IMEI, so this is
-    the only path that decides which device backs a truck.
-    """
-    tid = _blank(truck_id)
-    if not tid:
-        return None
-    try:
-        from services.devices import find_device
-        dev = find_device(tid)
-    except Exception:
-        log.exception("_resolve_imei_for_truck: find_device failed for %r",
-                      tid)
-        return None
-    if not dev:
-        return None
-    return dev.get("imei") or None
-
-
 def _parse_dt(v):
     if v is None:
         return None
@@ -140,6 +151,104 @@ def _parse_dt(v):
     except ValueError:
         return None
 
+
+# ---------------------------------------------------------------------------
+# Rest period settings + rest_until()
+# ---------------------------------------------------------------------------
+
+def get_rest_period_hours() -> float:
+    """Return the configured rest period in hours (default 8)."""
+    try:
+        resp = (_client().table("driver_rest_settings")
+                .select("rest_period_hours")
+                .eq("id", REST_SETTINGS_ID)
+                .limit(1)
+                .execute())
+        rows = resp.data or []
+        if rows:
+            return float(rows[0]["rest_period_hours"])
+    except Exception:
+        log.exception("get_rest_period_hours failed; defaulting to 8")
+    return 8.0
+
+
+def set_rest_period_hours(hours: float, updated_by: str | None = None) -> None:
+    if hours < 0 or hours > 72:
+        raise DriverError("Rest period must be between 0 and 72 hours.")
+    payload = {
+        "id": REST_SETTINGS_ID,
+        "rest_period_hours": hours,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": updated_by,
+    }
+    try:
+        (_client().table("driver_rest_settings")
+         .upsert(payload, on_conflict="id")
+         .execute())
+    except Exception as exc:
+        log.exception("set_rest_period_hours failed")
+        raise DriverError(f"Could not save rest period: {exc}") from exc
+
+
+def _last_release_for_driver(driver_id: str) -> datetime | None:
+    """Most recent released_at for this driver's assignments.
+
+    Deliberately does NOT rely on Supabase's `.not_.is_()` chain — on
+    some client versions the operator is a no-op and returns rows
+    where released_at IS NULL, which makes rest_until() incorrectly
+    return None. We fetch the last 50 rows ordered by released_at and
+    pick the first non-null value in Python instead.
+    """
+    if not driver_id:
+        return None
+    try:
+        resp = (_client().table("truck_assignments")
+                .select("released_at")
+                .eq("driver_id", driver_id)
+                .order("released_at", desc=True)
+                .limit(50)
+                .execute())
+    except Exception:
+        log.exception("_last_release_for_driver failed for %s", driver_id)
+        return None
+
+    for row in (resp.data or []):
+        raw = row.get("released_at")
+        if not raw:
+            continue
+        if isinstance(raw, str):
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+        if isinstance(raw, datetime):
+            return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    return None
+
+
+def rest_until(driver_id: str) -> datetime | None:
+    """When the driver's rest period ends, or None if not resting.
+
+    Rest is measured from the driver's most recent released assignment.
+    A rest of 0 hours disables the feature entirely.
+    """
+    hours = get_rest_period_hours()
+    if hours <= 0:
+        return None
+    last = _last_release_for_driver(driver_id)
+    if last is None:
+        return None
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    ends = last + timedelta(hours=hours)
+    if ends <= datetime.now(timezone.utc):
+        return None
+    return ends
+
+
+# ---------------------------------------------------------------------------
+# Row normalisers
+# ---------------------------------------------------------------------------
 
 def _row_to_driver(row: dict) -> dict:
     raw = row.get("driver_role")
@@ -198,7 +307,7 @@ def _row_to_assignment(row: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# CRUD
+# Driver CRUD
 # ---------------------------------------------------------------------------
 
 def list_drivers(*, search: str = "", page: int = 1, per_page: int = 50,
@@ -410,7 +519,7 @@ def soft_delete_driver(driver_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Assignments
+# Assignments — queries
 # ---------------------------------------------------------------------------
 
 _ASSIGNMENT_SELECT = (
@@ -422,6 +531,7 @@ _ASSIGNMENT_SELECT = (
 
 def list_assignments(*, driver_id: str | None = None,
                      imei: str | None = None,
+                     truck_id: str | None = None,
                      active_only: bool = False,
                      limit: int = 200) -> list[dict]:
     q = (_client().table("truck_assignments")
@@ -430,6 +540,8 @@ def list_assignments(*, driver_id: str | None = None,
         q = q.eq("driver_id", driver_id)
     if imei:
         q = q.eq("imei", imei)
+    if truck_id:
+        q = q.eq("truck_id", truck_id)
     if active_only:
         q = q.is_("released_at", "null")
     q = q.order("assigned_at", desc=True).limit(max(1, min(2000, limit)))
@@ -455,11 +567,49 @@ def current_assignment_for_driver(driver_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
+def current_assignment_for_truck(truck_id: str) -> dict | None:
+    if not truck_id:
+        return None
+    rows = list_assignments(truck_id=truck_id, active_only=True, limit=1)
+    return rows[0] if rows else None
+
+
 # ---------------------------------------------------------------------------
 # Truck-state guard — fence-based
 # ---------------------------------------------------------------------------
 
+def _truck_state_available() -> bool:
+    """True if a real fence-state helper exists and can be called."""
+    try:
+        from services import devices as devices_svc
+        return getattr(devices_svc, "current_fence_state", None) is not None
+    except Exception:
+        return False
+
+
+def current_fence_state(truck_id: str) -> dict | None:
+    """Return the truck's current fence state, or None if unavailable.
+
+    Delegates to the devices service helper when present. Returns None
+    (rather than raising) when the helper is missing or errors, so
+    callers can distinguish "state unknown" from "confirmed not on
+    trip" — the auto-release path relies on that distinction.
+    """
+    try:
+        from services import devices as devices_svc
+        fn = getattr(devices_svc, "current_fence_state", None)
+        if fn is not None:
+            return fn(truck_id)
+    except Exception:
+        log.exception("current_fence_state failed for %s", truck_id)
+    return None
+
+
 def _fence_matches_trip_time(alarm: dict) -> bool:
+    """Kept for parity with the local-fence implementation. Only used
+    when the devices-service helper is missing (see
+    `_local_fence_state`).
+    """
     try:
         from report_analysis import GBC_GEOIDS, _alarm_fence_name
     except Exception:
@@ -481,11 +631,6 @@ def _fence_matches_yard(alarm: dict) -> bool:
         FUEL AND WAYBILL, LOADED AND PARKED)
       * any of the YARD_STATIONS (MAINTENANCE / WAYBILL / FUELING /
         LOADING / WEIGHING / WAITING TIME)
-
-    Using only AWASO (the original rule) missed trucks like GT 8131 -25,
-    which sit in the yard but never trigger the AWASO fence. This is
-    why the assign form said 'not at the yard' while the truck was
-    visibly inside.
     """
     try:
         from report_analysis import (
@@ -510,8 +655,13 @@ def _fence_matches_yard(alarm: dict) -> bool:
     return False
 
 
-def current_fence_state(imei: str,
-                        now: datetime | None = None) -> dict:
+def _local_fence_state(imei: str,
+                       now: datetime | None = None) -> dict:
+    """Local fence-state computation, used only when the devices
+    service does not expose `current_fence_state`. Matches the
+    {'fence_kind': 'trip_time'|'yard', 'inside': bool, 'since': dt}
+    shape the devices helper returns.
+    """
     from jimi import fetch_alarms
     from report_analysis import _alarm_boundary_event, _alarm_time
 
@@ -525,21 +675,15 @@ def current_fence_state(imei: str,
     ) or []
 
     state = {
-        "in_trip_time":   False,
-        "in_awaso":       False,   # kept for API compat; now means "in yard"
-        "last_event":     None,
-        "lookback_hours": _FENCE_LOOKBACK_HOURS,
+        "fence_kind":      None,
+        "inside":          False,
+        "since":           None,
+        "in_trip_time":    False,
+        "in_awaso":        False,
+        "last_event":      None,
+        "lookback_hours":  _FENCE_LOOKBACK_HOURS,
     }
 
-    # Track the latest boundary event per fence group independently, so a
-    # late-arriving or out-of-order alarm can't flip a flag after a newer
-    # event has already set it. The comparison key is (timestamp, rank)
-    # where rank prefers "in" over "out" at the same timestamp: a truck
-    # that leaves one overlapping fence and enters another in the same
-    # tick is inside the new one, so "in" must win regardless of list
-    # order. Without the tiebreaker, events sharing a second (e.g.
-    # "out LOADED AND PARKED" + "in MAINTENANCE TIME" at 15:33:09) would
-    # leave in_awaso stuck at False depending on list order.
     last_trip_key: tuple | None = None
     last_yard_key: tuple | None = None
     last_at: datetime | None = None
@@ -557,7 +701,6 @@ def current_fence_state(imei: str,
         if not (is_trip or is_yard):
             continue
 
-        # Overall latest event across both fence groups.
         if last_at is None or t > last_at:
             last_at = t
             state["last_event"] = {
@@ -572,6 +715,10 @@ def current_fence_state(imei: str,
         if is_trip and (last_trip_key is None or key > last_trip_key):
             last_trip_key = key
             state["in_trip_time"] = (ev == "in")
+            if ev == "in":
+                state["fence_kind"] = "trip_time"
+                state["inside"] = True
+                state["since"] = t
         if is_yard and (last_yard_key is None or key > last_yard_key):
             last_yard_key = key
             state["in_awaso"] = (ev == "in")
@@ -580,39 +727,27 @@ def current_fence_state(imei: str,
 
 
 def _truck_has_open_trip(truck_id: str) -> dict | None:
-    imei = _resolve_imei_for_truck(truck_id)
-    if not imei:
-        return None
+    """Return a block dict iff the truck is in TRIP TIME.
 
-    state = current_fence_state(imei)
-
-    if state["in_awaso"] and not state["in_trip_time"]:
-        return None
-
-    last = state.get("last_event")
-
-    if state["in_trip_time"]:
+    Fails SAFE: if no fence-state helper is available on this install,
+    return a block dict so `auto_release_if_trip_ended` does NOT fire.
+    The block dict distinguishes 'no state' (reason='state_unavailable')
+    from 'confirmed on trip' (reason='trip_time').
+    """
+    if not _truck_state_available():
+        return {"reason": "state_unavailable", "start": None,
+                "state": None}
+    state = current_fence_state(truck_id)
+    if not state:
+        return {"reason": "state_unavailable", "start": None,
+                "state": None}
+    if state.get("fence_kind") == "trip_time" and state.get("inside"):
         return {
-            "imei":   imei,
             "reason": "trip_time",
+            "start":  state.get("since"),
             "state":  state,
-            "start":  last["at"] if last and last["fence"] == "TRIP TIME" else None,
         }
-
-    if last is not None:
-        return {
-            "imei":   imei,
-            "reason": "off_yard",
-            "state":  state,
-            "start":  None,
-        }
-
-    return {
-        "imei":   imei,
-        "reason": "stale",
-        "state":  state,
-        "start":  None,
-    }
+    return None
 
 
 def describe_block(block: dict) -> str:
@@ -623,74 +758,143 @@ def describe_block(block: dict) -> str:
         return "Truck is not at the yard. Assign only if you know it has returned."
     if reason == "stale":
         return "Truck has not entered or left a tracked fence recently."
+    if reason == "state_unavailable":
+        return ("Truck state is unavailable on this install; "
+                "refusing to auto-release.")
     return "Truck cannot be assigned right now."
 
 
-def assign_driver(*, driver_id: str, truck_id: str,
-                  assigned_at: datetime | None = None,
-                  notes: str | None = None,
-                  created_by: str | None = None,
-                  override_active_trip: bool = False) -> dict:
-    if not driver_id:
-        raise DriverError("Missing driver id.")
+# ---------------------------------------------------------------------------
+# IMEI resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_imei_for_truck(truck_id: str) -> str | None:
+    """truck display name -> device IMEI.
+
+    Single source of truth used by both the open-trip guard and the
+    assignment write. The blueprint never sends an IMEI, so this is
+    the only path that decides which device backs a truck.
+    """
     tid = _blank(truck_id)
     if not tid:
-        raise DriverError("Missing truck name.")
-
-    imei = _resolve_imei_for_truck(tid)
-    if not imei:
-        raise DriverError(
-            f"Could not resolve a device for truck {tid!r}. "
-            f"Make sure the truck name matches a device in Tracksolid."
-        )
-
-    driver = get_driver(driver_id)
-    if not driver:
-        raise DriverError("Driver not found.")
-    if driver.get("deleted_at"):
-        raise DriverError("Cannot assign a deleted driver.")
-
-    when = _utc(assigned_at) or datetime.now(timezone.utc)
-
-    existing_truck = current_assignment_for_imei(imei)
-    if existing_truck and existing_truck["driver_id"] != driver_id:
-        raise DriverError(
-            f"Truck {existing_truck['truck_id'] or imei} is currently "
-            f"assigned to another driver. Release it first."
-        )
-    existing_driver = current_assignment_for_driver(driver_id)
-    if existing_driver and existing_driver["imei"] != imei:
-        raise DriverError(
-            f"{driver['full_name']} is currently assigned to "
-            f"{existing_driver['truck_id'] or existing_driver['imei']}. "
-            f"Release that assignment first."
-        )
-
-    if not override_active_trip:
-        block = _truck_has_open_trip(tid)
-        if block is not None:
-            raise DriverError(describe_block(block))
-
-    payload = {
-        "driver_id":   driver_id,
-        "imei":        imei,
-        "truck_id":    tid,
-        "assigned_at": when.isoformat(),
-        "notes":       _blank(notes),
-        "created_by":  created_by,
-    }
+        return None
     try:
-        resp = (_client().table("truck_assignments")
-                .insert(payload)
-                .select(_ASSIGNMENT_SELECT)
+        from services.devices import find_device
+        dev = find_device(tid)
+    except Exception:
+        log.exception("_resolve_imei_for_truck: find_device failed for %r",
+                      tid)
+        return None
+    if not dev:
+        return None
+    return dev.get("imei") or None
+
+
+def _resolve_imei_fallback(truck_id: str) -> str:
+    """Fallback path used only by assign_driver when find_device is
+    unavailable. Returns '' (not None) to match the DB column default.
+    """
+    try:
+        from services.devices import get_devices_cached_only, get_devices
+        devices = None
+        try:
+            devices = get_devices_cached_only()
+        except Exception:
+            devices = None
+        if devices is None:
+            devices = get_devices()
+        for d in devices or []:
+            if (d.get("deviceName") or "").strip() == truck_id:
+                return d.get("imei") or ""
+    except Exception:
+        log.exception("_resolve_imei_fallback failed for %s", truck_id)
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Assignment — write paths
+# ---------------------------------------------------------------------------
+
+def assign_driver(driver_id, truck_id, notes, created_by,
+                  override_rest=False):
+    """Create a new assignment row.
+
+    Rules:
+      * The driver must have no open assignment.
+      * The truck must have no open assignment (can't hand an already
+        assigned truck to a different driver).
+      * The driver must not still be in their rest period
+        (unless override_rest).
+
+    `created_by` / `assigned_by` are only written when we actually have
+    a non-empty string. Both columns have FK constraints (to profiles /
+    auth.users), so passing None or a malformed id would abort the
+    insert.
+    """
+    client = _client()
+
+    # 1. Driver already assigned?
+    cur = current_assignment_for_driver(driver_id)
+    if cur is not None:
+        raise DriverError(
+            f"Driver is already assigned to {cur['truck_id'] or cur['imei']}."
+        )
+
+    # 2. Truck already assigned to someone else?
+    try:
+        resp = (client.table("truck_assignments")
+                .select("id, driver_id, truck_id, imei")
+                .eq("truck_id", truck_id)
+                .is_("released_at", "null")
+                .limit(1)
                 .execute())
+        rows = resp.data or []
     except Exception as exc:
-        log.exception("assign_driver failed")
-        raise DriverError(f"{type(exc).__name__}: {exc}") from exc
+        log.exception("assign_driver: truck assignment lookup failed")
+        raise DriverError(
+            f"Could not verify the truck's assignment state: {exc}"
+        ) from exc
+    if rows:
+        raise DriverError(
+            f"{truck_id} is already assigned to another driver."
+        )
+
+    # 3. Rest period
+    if not override_rest:
+        ru = rest_until(driver_id)
+        if ru is not None:
+            raise DriverError(
+                f"Driver is resting until "
+                f"{ru.strftime('%Y-%m-%d %H:%M UTC')}. "
+                f"Rest period is {get_rest_period_hours():g}h after release."
+            )
+
+    # 4. Resolve IMEI server-side (never trust the browser)
+    imei = _resolve_imei_for_truck(truck_id) or _resolve_imei_fallback(truck_id)
+
+    # 5. Build payload. Only include created_by / assigned_by when we
+    #    actually have a non-empty string, otherwise omit them so the
+    #    FKs to profiles(id) / auth.users(id) don't block the insert.
+    payload = {
+        "driver_id": driver_id,
+        "truck_id":  truck_id,
+        "imei":      imei,
+        "notes":     notes,
+    }
+    actor = created_by.strip() if isinstance(created_by, str) else None
+    if actor:
+        payload["created_by"] = actor
+        payload["assigned_by"] = actor
+
+    try:
+        resp = client.table("truck_assignments").insert(payload).execute()
+    except Exception as exc:
+        log.exception("assign_driver: insert failed payload=%s", payload)
+        raise DriverError(f"Could not create assignment: {exc}") from exc
     rows = resp.data or []
     if not rows:
         raise DriverError("Assignment was not created.")
-    return _row_to_assignment(rows[0])
+    return rows[0]
 
 
 def release_assignment(assignment_id: str,
@@ -718,8 +922,56 @@ def release_assignment(assignment_id: str,
     return _row_to_assignment(rows[0])
 
 
-def auto_release_finished_assignments(imei_trip_ends: Iterable[tuple[str, datetime]],
-                                      reason: str = "trip_ended") -> int:
+# ---------------------------------------------------------------------------
+# Auto-release on trip end
+# ---------------------------------------------------------------------------
+
+def auto_release_if_trip_ended(truck_id: str) -> dict | None:
+    """Release an open assignment ONLY when we can confirm the truck
+    is not on a trip AND a fence-state helper is available.
+
+    If fence-state is unavailable, do nothing (fail-safe).
+    """
+    if not truck_id:
+        return None
+    if not _truck_state_available():
+        # No state lookup on this install → don't touch the row.
+        return None
+
+    try:
+        resp = (_client().table("truck_assignments")
+                .select("*")
+                .eq("truck_id", truck_id)
+                .is_("released_at", "null")
+                .limit(1)
+                .execute())
+    except Exception:
+        log.exception("auto_release_if_trip_ended: lookup failed for %s",
+                      truck_id)
+        return None
+    rows = resp.data or []
+    if not rows:
+        return None
+    assignment = rows[0]
+
+    block = _truck_has_open_trip(truck_id)
+    if block is not None:
+        # Still on a trip (or state unavailable) → leave it alone.
+        return None
+
+    try:
+        return release_assignment(assignment["id"], reason="trip_ended")
+    except DriverError:
+        raise
+    except Exception:
+        log.exception("auto_release_if_trip_ended: release failed for %s",
+                      truck_id)
+        return None
+
+
+def auto_release_finished_assignments(
+        imei_trip_ends: Iterable[tuple[str, datetime]],
+        reason: str = "trip_ended") -> int:
     by_imei: dict[str, datetime] = {}
     for imei, te in imei_trip_ends:
         if not imei or te is None:
@@ -766,7 +1018,7 @@ def auto_release_finished_assignments(imei_trip_ends: Iterable[tuple[str, dateti
 
 
 # ---------------------------------------------------------------------------
-# Resolution — "who drove what, when" (unchanged)
+# Resolution — "who drove what, when"
 # ---------------------------------------------------------------------------
 
 def _windows_overlapping(rows: Iterable[dict],

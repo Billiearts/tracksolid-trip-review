@@ -83,6 +83,10 @@
     </div>
 
     <div class="field-inline" style="flex:0 0 auto;">
+      <button type="submit" style="padding:0.42rem 0.95rem;">Search</button>
+    </div>
+
+    <div class="field-inline" style="flex:0 0 auto;">
       <label>Assignment</label>
       <div class="segmented" role="group" aria-label="Assignment filter">
         <a class="seg-btn {% if view_filter == 'all' or not view_filter %}active{% endif %}"
@@ -238,50 +242,11 @@
 
 <script>
 (function () {
+  // Manual search only. Checkbox filters auto-submit; segmented filters
+  // are links and navigate on their own. The Search button (or Enter
+  // in the field) is the only way to apply a name/staff-ID query.
   const form = document.getElementById('driver-filter-form');
-  const input = document.getElementById('q');
-  if (!form || !input) return;
-
-  let lastSubmitted = input.value.trim();
-  let navigating = false;
-
-  function buildSearchUrl() {
-    const url = new URL(window.location.href);
-    const q = input.value.trim();
-    if (q) {
-      url.searchParams.set('q', q);
-    } else {
-      url.searchParams.delete('q');
-    }
-    url.searchParams.delete('page');
-    return url.toString();
-  }
-
-  function submitLive() {
-    const q = input.value.trim();
-    if (navigating || q === lastSubmitted) return;
-    lastSubmitted = q;
-    navigating = true;
-    window.location.href = buildSearchUrl();
-  }
-
-  // Short debounce (~120ms) so a burst of keystrokes coalesces into
-  // one navigation, while still firing almost immediately after the
-  // last keystroke. This is what makes the search feel live while
-  // typing instead of "wait, then search".
-  let timer = null;
-  input.addEventListener('input', function () {
-    clearTimeout(timer);
-    timer = setTimeout(submitLive, 120);
-  });
-
-  input.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      clearTimeout(timer);
-      submitLive();
-    }
-  });
+  if (!form) return;
 
   form.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
     cb.addEventListener('change', function () {

@@ -1,0 +1,375 @@
+{% extends "base.html" %}
+
+{% block heading %}Completed trips — by truck{% endblock %}
+{% block body_class %}wide{% endblock %}
+
+{% block head %}
+<style>
+  body.wide .container { max-width: 1400px; }
+
+  .th-filter {
+    display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: flex-end;
+    margin-bottom: 1rem;
+  }
+  .th-filter .field-inline { min-width: 160px; }
+
+  .th-stat-row { display: flex; gap: 0.6rem; margin-bottom: 1rem; flex-wrap: wrap; }
+  .th-stat {
+    background: #fff; border: 1px solid var(--line); border-radius: 8px;
+    padding: 0.6rem 0.9rem; min-width: 130px;
+  }
+  .th-stat .label {
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--ink-3); font-weight: 500;
+  }
+  .th-stat .value {
+    font-size: 1.5rem; font-weight: 600; color: var(--brand);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .th-quick {
+    display: inline-flex; border: 1px solid #c9ced6; border-radius: 6px;
+    overflow: hidden; font-size: 0.78rem; line-height: 1.2;
+  }
+  .th-quick a {
+    padding: 0.4rem 0.6rem; color: #333; background: #fff;
+    text-decoration: none; border-right: 1px solid #e1e5eb;
+    white-space: nowrap;
+  }
+  .th-quick a:last-child { border-right: none; }
+  .th-quick a:hover { background: #f5f7fa; }
+  .th-quick a.active {
+    background: #eef2f8; color: #111; font-weight: 600;
+  }
+
+  .th-nav-tabs {
+    display: inline-flex; border: 1px solid #c9ced6; border-radius: 6px;
+    overflow: hidden; font-size: 0.82rem; line-height: 1.2;
+    margin-bottom: 1rem;
+  }
+  .th-nav-tabs a {
+    padding: 0.42rem 0.7rem; color: #333; background: #fff;
+    text-decoration: none; border-right: 1px solid #e1e5eb;
+  }
+  .th-nav-tabs a:last-child { border-right: none; }
+  .th-nav-tabs a:hover { background: #f5f7fa; }
+  .th-nav-tabs a.active {
+    background: #eef2f8; color: #111; font-weight: 600;
+  }
+
+  /* ---- Multi-select combobox ---- */
+  .cb-wrap { position: relative; }
+  .cb-input-row {
+    display: flex; align-items: stretch;
+    border: 1px solid #c9ced6; border-radius: 6px; background: #fff;
+  }
+  .cb-input-row input[type=text] {
+    flex: 1 1 auto; border: none; outline: none; padding: 0.42rem 0.6rem;
+    font-size: 0.88rem; background: transparent;
+  }
+  .cb-input-row .cb-select-all {
+    border: none; background: #f3f6f9; color: #333;
+    padding: 0 0.7rem; font-size: 0.78rem; cursor: pointer;
+    border-left: 1px solid #e1e5eb;
+  }
+  .cb-input-row .cb-select-all:hover { background: #e6eaef; }
+  .cb-input-row .cb-clear {
+    border: none; background: #f3f6f9; color: #a02525;
+    padding: 0 0.7rem; font-size: 0.78rem; cursor: pointer;
+    border-left: 1px solid #e1e5eb;
+  }
+  .cb-input-row .cb-clear:hover { background: #fbe3e3; }
+  .cb-list {
+    position: absolute; top: calc(100% + 2px); left: 0; right: 0;
+    z-index: 40; max-height: 280px; overflow-y: auto;
+    background: #fff; border: 1px solid #c9ced6; border-radius: 6px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.14); margin: 0; padding: 4px 0;
+    list-style: none;
+  }
+  .cb-list[hidden] { display: none; }
+  .cb-list li {
+    padding: 0.4rem 0.65rem; font-size: 0.88rem; cursor: pointer;
+  }
+  .cb-list li:hover, .cb-list li.active { background: #eef2f8; }
+  .cb-list li.cb-empty { color: #8a8f98; cursor: default; font-style: italic; }
+
+  .cb-chips {
+    display: flex; flex-wrap: wrap; gap: 0.35rem;
+    padding: 0.35rem 0; min-height: 32px;
+  }
+  .cb-chip {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    background: var(--brand-light); color: var(--brand);
+    border-radius: 12px; font-size: 0.8rem; padding: 2px 8px;
+    font-weight: 500;
+  }
+  .cb-chip button {
+    background: transparent; border: none; color: var(--brand);
+    cursor: pointer; font-size: 0.95rem; line-height: 1;
+    padding: 0 0.1rem;
+  }
+  .cb-chip button:hover { color: #a02525; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center;
+              flex-wrap:wrap; gap:0.6rem; margin-bottom:1rem;">
+    <h2 style="font-size:1.1rem; margin:0;">Completed trips</h2>
+  </div>
+
+  <div class="th-nav-tabs" role="group" aria-label="View">
+    <a href="{{ url_for('trip_history.index') }}">Day</a>
+    <a href="{{ url_for('trip_history.by_driver') }}">By driver</a>
+    <a class="active" href="{{ url_for('trip_history.by_truck') }}">By truck</a>
+  </div>
+
+  <form method="get" action="{{ url_for('trip_history.by_truck') }}"
+        id="th-form">
+    <div class="th-filter">
+      <div class="field-inline" style="flex:1 1 320px;">
+        <label for="truck-search">Trucks</label>
+        <div class="cb-wrap" id="truck-cb">
+          <div class="cb-input-row">
+            <input type="text" id="truck-search"
+                   placeholder="Type to search trucks…" autocomplete="off">
+            <button type="button" class="cb-select-all" data-cb-select-all>Select all</button>
+            <button type="button" class="cb-clear" data-cb-clear>Clear</button>
+          </div>
+          <ul class="cb-list" id="truck-list" hidden></ul>
+          <div class="cb-chips" id="truck-chips"></div>
+          <div id="truck-hidden-inputs"></div>
+        </div>
+      </div>
+
+      <div class="field-inline">
+        <label>Quick range</label>
+        <div class="th-quick" role="group">
+          <a href="?range=this_week">This week</a>
+          <a href="?range=this_month">This month</a>
+          <a href="?range=last_month">Last month</a>
+          <a href="?range=this_year">This year</a>
+        </div>
+      </div>
+
+      <div class="field-inline">
+        <label for="start">Start</label>
+        <input type="date" id="start" name="start" value="{{ start }}">
+      </div>
+      <div class="field-inline">
+        <label for="end">End</label>
+        <input type="date" id="end" name="end" value="{{ end }}">
+      </div>
+
+      <div class="field-inline">
+        <button type="submit">Search</button>
+      </div>
+    </div>
+  </form>
+
+  {% if warning %}
+    <div class="flash error" style="margin-bottom:1rem;">{{ warning }}</div>
+  {% endif %}
+
+  {% if not imeis %}
+    <p class="muted">
+      Pick one or more trucks above to see their completed trips.
+    </p>
+  {% elif not trips %}
+    <p class="muted">No completed trips for the selected trucks in the range.</p>
+  {% else %}
+    <div class="th-stat-row">
+      <div class="th-stat">
+        <div class="label">Trips</div>
+        <div class="value">{{ trips|length }}</div>
+      </div>
+      <div class="th-stat">
+        <div class="label">Trucks</div>
+        <div class="value">{{ selected_trucks|length }}</div>
+      </div>
+    </div>
+
+    <h3 style="font-size:0.95rem; margin:1.5rem 0 0.6rem;">Per truck</h3>
+    <div class="table-scroll">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>Truck</th>
+            <th>Trips</th>
+            <th>Total km</th>
+            <th>Total hours</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in summary %}
+            <tr>
+              <td>{{ s.truck_id or s.imei }}</td>
+              <td>{{ s.trips }}</td>
+              <td>{% if s.km %}{{ '%.1f'|format(s.km) }} km{% else %}—{% endif %}</td>
+              <td>
+                {% set h = s.seconds // 3600 %}
+                {% set m = (s.seconds % 3600) // 60 %}
+                {{ '%dh %02dm'|format(h, m) }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <h3 style="font-size:0.95rem; margin:1.5rem 0 0.6rem;">All trips</h3>
+    <div class="table-scroll">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Truck</th>
+            <th>Driver</th>
+            <th>Started</th>
+            <th>Ended</th>
+            <th>Duration</th>
+            <th>Distance</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in trips %}
+            <tr>
+              <td>{{ t.end.strftime('%Y-%m-%d') }}</td>
+              <td>{{ t.truck_id or t.imei }}</td>
+              <td>
+                {% if t.driver_id %}
+                  <a href="{{ url_for('drivers.detail', driver_id=t.driver_id) }}"
+                     style="color:var(--brand); text-decoration:none; font-weight:500;">
+                    {{ t.driver_name or t.driver_id }}
+                  </a>
+                {% else %}—{% endif %}
+              </td>
+              <td>{{ t.start.strftime('%H:%M:%S') }}</td>
+              <td>{{ t.end.strftime('%H:%M:%S') }}</td>
+              <td>
+                {% set h = t.duration_s // 3600 %}
+                {% set m = (t.duration_s % 3600) // 60 %}
+                {{ '%dh %02dm'|format(h, m) }}
+              </td>
+              <td>
+                {% if t.distance %}{{ '%.1f'|format(t.distance) }} km
+                {% else %}—{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</div>
+
+<script>
+(function () {
+  const form         = document.getElementById('th-form');
+  const searchInput  = document.getElementById('truck-search');
+  const listEl       = document.getElementById('truck-list');
+  const chipsEl      = document.getElementById('truck-chips');
+  const hiddenEl     = document.getElementById('truck-hidden-inputs');
+  const selectAllBtn = document.querySelector('[data-cb-select-all]');
+  const clearBtn     = document.querySelector('[data-cb-clear]');
+  if (!form || !searchInput) return;
+
+  const ALL = {{ all_trucks|tojson }};
+  const SELECTED_IDS = new Set({{ imeis|tojson }});
+  const byId = Object.fromEntries(ALL.map(t => [t.imei, t]));
+
+  let activeIdx = -1;
+  let matches = [];
+
+  function label(t) { return t.name || t.truck_id || t.imei; }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+  function renderChips() {
+    chipsEl.innerHTML = '';
+    SELECTED_IDS.forEach(id => {
+      const t = byId[id];
+      if (!t) return;
+      const chip = document.createElement('span');
+      chip.className = 'cb-chip';
+      chip.innerHTML = esc(label(t)) +
+        '<button type="button" data-remove="' + esc(id) + '">&times;</button>';
+      chipsEl.appendChild(chip);
+    });
+    chipsEl.querySelectorAll('button[data-remove]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        SELECTED_IDS.delete(btn.dataset.remove);
+        renderChips(); renderHidden();
+      });
+    });
+  }
+  function renderHidden() {
+    hiddenEl.innerHTML = '';
+    SELECTED_IDS.forEach(id => {
+      const inp = document.createElement('input');
+      inp.type = 'hidden';
+      inp.name = 'imei';
+      inp.value = id;
+      hiddenEl.appendChild(inp);
+    });
+  }
+  function renderList() {
+    const q = (searchInput.value || '').trim().toLowerCase();
+    matches = ALL.filter(t => !SELECTED_IDS.has(t.imei) &&
+      (!q || label(t).toLowerCase().includes(q)));
+    if (!matches.length) {
+      listEl.innerHTML = '<li class="cb-empty">No matching trucks</li>';
+      listEl.hidden = false; return;
+    }
+    listEl.innerHTML = matches.map((t, i) =>
+      '<li data-idx="' + i + '"' + (i === activeIdx ? ' class="active"' : '') + '>' +
+      esc(label(t)) + '</li>').join('');
+    listEl.hidden = false;
+  }
+  function pick(idx) {
+    if (idx < 0 || idx >= matches.length) return;
+    SELECTED_IDS.add(matches[idx].imei);
+    searchInput.value = '';
+    renderChips(); renderHidden(); renderList(); searchInput.focus();
+  }
+
+  searchInput.addEventListener('input', () => { activeIdx = -1; renderList(); });
+  searchInput.addEventListener('focus', renderList);
+  searchInput.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault(); activeIdx = Math.min(activeIdx + 1, matches.length - 1);
+      renderList();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault(); activeIdx = Math.max(activeIdx - 1, 0);
+      renderList();
+    } else if (e.key === 'Enter') {
+      if (!listEl.hidden && activeIdx >= 0) { e.preventDefault(); pick(activeIdx); }
+    } else if (e.key === 'Escape') {
+      listEl.hidden = true;
+    }
+  });
+  listEl.addEventListener('mousedown', e => {
+    const li = e.target.closest('li[data-idx]');
+    if (!li) return;
+    e.preventDefault();
+    pick(parseInt(li.dataset.idx, 10));
+  });
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#truck-cb')) listEl.hidden = true;
+  });
+  selectAllBtn.addEventListener('click', () => {
+    ALL.forEach(t => SELECTED_IDS.add(t.imei));
+    renderChips(); renderHidden(); renderList();
+  });
+  clearBtn.addEventListener('click', () => {
+    SELECTED_IDS.clear();
+    renderChips(); renderHidden(); renderList();
+  });
+
+  renderChips(); renderHidden();
+})();
+</script>
+{% endblock %}

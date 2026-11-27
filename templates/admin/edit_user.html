@@ -95,6 +95,12 @@
           <span class="muted" style="font-size:0.8rem;">(assign a truck to a driver)</span>
         </label>
 
+        <label style="display:flex; align-items:center; gap:0.4rem;">
+  <input type="checkbox" name="extra_trip_history_view"
+         {% if 'trip_history_view' in user.extra_roles %}checked{% endif %}>
+  Trip history viewer (Completed trips page)
+</label>
+
         <p class="muted" style="font-size:0.78rem; margin:0.35rem 0 0;">
           Admins and super-admins always have all Drivers permissions.
           Grant the specific capabilities here to individual users who
