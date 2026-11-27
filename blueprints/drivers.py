@@ -8,6 +8,8 @@ Permissions
 * `drivers_add`    — register new drivers.
 * `drivers_edit`   — edit / delete existing drivers.
 * `drivers_assign` — assign / release a truck, and check truck status.
+* `drivers_override_trip` — bypass the truck-state guard.
+* `drivers_override_rest` — bypass the driver rest-period guard.
 
 Admins and super-admins always have all of the above.
 
@@ -15,41 +17,30 @@ Truck identity
 --------------
 Everything user-facing is keyed by `truck_id` (the display name, e.g.
 "GT 7592 - 25"). The IMEI is resolved server-side from the truck and
-never comes from the browser. This is what makes the guard
-trustworthy: the guard, the status endpoint, and the search all agree
-on which device backs a truck.
+never comes from the browser.
 
 Truck-state guard
 -----------------
-A truck may only be assigned when its current fence state is AWASO
-(parked in the yard). A truck inside TRIP TIME is blocked as "on an
-open trip"; a truck outside both fences is blocked as "not at the
-yard". See `services.drivers.current_fence_state()`.
+A truck may only be assigned when it is NOT currently on an open trip.
+A truck that is physically in the yard (AWASO) must always be
+assignable — even if its last fence event is stale or off-yard, as
+long as there is no open TRIP TIME window. We deliberately only block
+on `reason == "trip_time"`; stale/off_yard only produce a soft warning
+that an override-role user can bypass.
 
-Override
---------
-The guard can be bypassed with the `override_active_trip` form field.
-The caller must be either an admin / super-admin OR hold the
-`drivers_override_trip` extra-role.
-
-Driver positions
-----------------
-`driver_role` is one of 'driver', 'chief_driver', 'trainee'. The
-`?role=` query param on /drivers/ filters the list; the new/edit
-forms set it. Validation lives in services.drivers.
-
-Assignment actor
-----------------
-Every assignment records the caller's user id in `created_by`. The
-list views resolve it to an email/name via a nested select, so the
-UI can show "assigned by …".
+Driver rest period
+------------------
+After a driver's assignment is released (manual OR auto on trip end),
+they must rest for `driver_rest_settings.rest_period_hours` hours
+before they can be assigned to another truck. Admins and holders of
+`drivers_override_rest` may bypass.
 """
 from __future__ import annotations
 
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import (
     Blueprint, render_template, request, redirect, url_for, flash,
@@ -59,7 +50,7 @@ from flask import (
 from decorators import login_required
 from services import audit
 from services import drivers as drivers_svc
-from services.devices import find_device
+from services.devices import find_device  # noqa: F401  (kept for compat)
 from services.ratelimit import is_rate_limited
 from jimi import RateLimitExceeded
 
@@ -103,6 +94,12 @@ def _can_override() -> bool:
     if session.get("role") in ("admin", "super_admin"):
         return True
     return "drivers_override_trip" in (session.get("extra_roles") or [])
+
+
+def _can_override_rest() -> bool:
+    if session.get("role") in ("admin", "super_admin"):
+        return True
+    return "drivers_override_rest" in (session.get("extra_roles") or [])
 
 
 def _is_admin() -> bool:
@@ -175,31 +172,24 @@ def _parse_requested_drivers() -> list[dict] | None:
 
 
 def _truck_state_block(truck_id: str) -> dict | None:
-    return drivers_svc._truck_has_open_trip(truck_id)
+    """Return a block dict ONLY if the truck is currently on an open trip.
 
-
-def _driver_choices_for_admin(selected_id: str | None = None) -> list[dict]:
-    """Active, non-deleted drivers for the edit-meta <select>."""
-    try:
-        result = drivers_svc.list_drivers(
-            page=1, per_page=200,
-            include_inactive=False, include_deleted=False,
-        )
-    except drivers_svc.DriverError:
-        log.exception("_driver_choices_for_admin: list_drivers failed")
-        return []
-
-    out = []
-    for d in result["drivers"]:
-        out.append({
-            "driver_id":    d["id"],
-            "full_name":    d["full_name"],
-            "staff_id":     d["staff_id"],
-            "driver_role":  d.get("driver_role") or "driver",
-            "selected":     (selected_id is not None and d["id"] == selected_id),
-        })
-    out.sort(key=lambda x: x["full_name"].lower())
-    return out
+    A truck that is physically parked in AWASO (even if the last event
+    looks stale or off-yard) must be assignable. We intentionally
+    delegate to the service, which is responsible for only returning a
+    `trip_time` block in that case. Any other reason is treated as a
+    soft warning by the UI and does NOT prevent assignment here.
+    """
+    block = drivers_svc._truck_has_open_trip(truck_id)
+    if block is None:
+        return None
+    # Only a genuine open trip hard-blocks server-side assignment.
+    if block.get("reason") == "trip_time":
+        return block
+    # Anything else (off_yard / stale / lookup_failed) is advisory only.
+    # Returning None here means the server will allow the assignment;
+    # the UI already shows a soft warning so the user can decide.
+    return None
 
 
 def _role_choices() -> list[dict]:
@@ -411,6 +401,17 @@ def detail(driver_id):
             else:
                 state_note = drivers_svc.describe_block(block)
 
+    # Rest period status (only relevant when not currently assigned).
+    rest_until_dt = None
+    rest_hours = 0.0
+    if not current:
+        try:
+            rest_until_dt = drivers_svc.rest_until(driver_id)
+            rest_hours = drivers_svc.get_rest_period_hours()
+        except Exception:
+            log.exception("detail: rest-period lookup failed for %s",
+                          driver_id)
+
     return render_template(
         "drivers/detail.html",
         driver=driver,
@@ -418,10 +419,58 @@ def detail(driver_id):
         current=current,
         open_trip=open_trip,
         state_note=state_note,
+        rest_until=rest_until_dt,
+        rest_period_hours=rest_hours,
         can_edit=_can_edit(),
         can_assign=_can_assign(),
         can_override=_can_override(),
+        can_override_rest=_can_override_rest(),
         is_admin=_is_admin(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rest-period settings
+# ---------------------------------------------------------------------------
+
+@bp.route("/settings", methods=["GET", "POST"])
+@login_required
+def settings():
+    if not _is_admin():
+        abort(403)
+
+    if request.method == "POST":
+        raw = (request.form.get("rest_period_hours") or "").strip()
+        try:
+            hours = float(raw)
+        except ValueError:
+            flash("Rest period must be a number between 0 and 72.", "error")
+            return redirect(url_for("drivers.settings"))
+        if hours < 0 or hours > 72:
+            flash("Rest period must be between 0 and 72 hours.", "error")
+            return redirect(url_for("drivers.settings"))
+        try:
+            drivers_svc.set_rest_period_hours(hours, updated_by=_caller_id())
+        except drivers_svc.DriverError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("drivers.settings"))
+        audit.record(
+            "driver.rest_settings_update",
+            target="driver_rest_settings",
+            detail=f"rest_period_hours={hours}",
+            meta={"rest_period_hours": hours},
+        )
+        flash("Rest period updated.", "success")
+        return redirect(url_for("drivers.settings"))
+
+    try:
+        hours = drivers_svc.get_rest_period_hours()
+    except drivers_svc.DriverError as exc:
+        flash(str(exc), "error")
+        hours = 8.0
+    return render_template(
+        "drivers/settings.html",
+        rest_period_hours=hours,
     )
 
 
@@ -441,12 +490,14 @@ def assign(driver_id):
     truck_id = (request.form.get("truck_id") or "").strip()
     notes = (request.form.get("notes") or "").strip() or None
     want_override = request.form.get("override_active_trip") == "on"
+    want_rest_override = request.form.get("override_rest") == "on"
 
     if not truck_id:
         flash("Please choose a truck.", "error")
         return redirect(url_for("drivers.detail", driver_id=driver_id))
 
     override = want_override and _can_override()
+    override_rest = want_rest_override and _can_override_rest()
 
     if not override:
         try:
@@ -471,6 +522,7 @@ def assign(driver_id):
             driver_id=driver_id, truck_id=truck_id,
             notes=notes, created_by=_caller_id(),
             override_active_trip=override,
+            override_rest=override_rest,
         )
     except drivers_svc.DriverError as exc:
         flash(str(exc), "error")
@@ -480,12 +532,14 @@ def assign(driver_id):
         "driver.assign",
         target=driver["full_name"],
         detail=(f"truck={truck_id}"
-                + (" [override: truck-state guard]" if override else "")),
+                + (" [override: truck-state guard]" if override else "")
+                + (" [override: rest period]" if override_rest else "")),
         meta={"driver_id": driver_id, "assignment_id": a["id"],
               "truck_id": truck_id, "imei": a.get("imei"),
               "assigned_by": _caller_id(),
-              "override_active_trip": override},
-        severity="warning" if override else "info",
+              "override_active_trip": override,
+              "override_rest": override_rest},
+        severity="warning" if (override or override_rest) else "info",
     )
     flash(f"Assigned {driver['full_name']} to {truck_id}.", "success")
     return redirect(url_for("drivers.detail", driver_id=driver_id))
@@ -552,8 +606,10 @@ def api_list():
 def api_available_trucks():
     """Trucks the current driver can be assigned to.
 
-    Only **unassigned** trucks are returned: any truck with an open
-    `truck_assignments` row is omitted.
+    Only **unassigned** trucks are returned. We deliberately do NOT
+    filter by device category by default (category filtering can hide
+    perfectly assignable yard trucks); pass `include_operational=1`
+    to include non-regular devices, otherwise regular ones are shown.
     """
     from services import devices as devices_svc
 
@@ -587,38 +643,39 @@ def api_available_trucks():
     except Exception as exc:
         log.exception("available_trucks: assignment lookup failed: %s", exc)
 
+    # Prefer the cached device list. Fall back to a live fetch if the
+    # cache helper is missing so the dropdown is never empty just
+    # because a helper wasn't defined in services/devices.py.
     devices = None
     try:
         devices = devices_svc.get_devices_cached_only()
     except AttributeError:
         log.warning(
-            "available_trucks: services.devices.get_devices_cached_only() "
-            "is missing. Serve fallback; add the helper to services/devices.py."
-        )
+            "available_trucks: get_devices_cached_only() missing; "
+            "falling back to live get_devices().")
+        devices = None
+    except Exception:
+        log.exception("available_trucks: cached device lookup failed")
         devices = None
 
     if devices is None:
         try:
-            threading.Thread(
-                target=devices_svc.get_devices,
-                daemon=True,
-                name="available-trucks-warm",
-            ).start()
-        except Exception:
-            log.debug("available_trucks: background warm-up failed")
-
-        return jsonify({
-            "trucks": [],
-            "is_admin": _is_admin(),
-            "can_assign": _can_assign(),
-            "can_override": _can_override(),
-            "degraded": True,
-            "message": ("Truck list is warming up. Try again in a moment."),
-        })
+            devices = devices_svc.get_devices()
+        except Exception as exc:
+            log.exception("available_trucks: live device lookup failed: %s",
+                          exc)
+            return jsonify({
+                "trucks": [],
+                "is_admin": _is_admin(),
+                "can_assign": _can_assign(),
+                "can_override": _can_override(),
+                "degraded": True,
+                "message": ("Truck list is warming up. Try again in a moment."),
+            })
 
     out = []
     seen = set()
-    for d in devices:
+    for d in devices or []:
         name = (d.get("deviceName") or "").strip()
         if not name or name in seen:
             continue
@@ -636,7 +693,7 @@ def api_available_trucks():
         out.append({
             "truck_id":  name,
             "name":      name,
-            "imei":      "",
+            "imei":      d.get("imei") or "",
             "category":  category,
         })
 
@@ -672,28 +729,48 @@ def api_truck_status():
     state_message = ""
     open_trip_start = None
     last_event = None
+    blocked = False
+
     try:
-        block = _truck_state_block(truck_id)
+        # Do not use _truck_state_block() here — that helper is the
+        # *hard guard* used server-side on assign. For the UI we want
+        # the raw reason so we can show a soft warning for stale/
+        # off-yard trucks while still letting the user proceed.
+        block = drivers_svc._truck_has_open_trip(truck_id)
         if block is None:
             in_awaso = True
         else:
             state_reason = block.get("reason")
             state_message = drivers_svc.describe_block(block)
             last_event = (block.get("state") or {}).get("last_event")
-            if block.get("reason") == "trip_time":
+            if state_reason == "trip_time":
                 in_trip_time = True
                 s = block.get("start")
                 if isinstance(s, datetime):
                     open_trip_start = s.strftime("%Y-%m-%d %H:%M")
+                blocked = True
+            elif state_reason in ("off_yard", "stale", "lookup_failed"):
+                # Only a soft warning: the truck is in the yard (or we
+                # can't tell), so we don't hard-block assignment.
+                blocked = False
+                in_awaso = (state_reason != "off_yard")
     except Exception as exc:
         log.warning("api_truck_status: truck-state check failed for %s: %s",
                     truck_id, exc)
         state_reason = "lookup_failed"
         state_message = ("Could not verify the truck's state right now. "
                          "Try again in a moment.")
+        blocked = False
+
+    # Opportunistic auto-release: if the truck is no longer on an open
+    # trip, any assignment still open is stale — release it.
+    if not in_trip_time:
+        try:
+            drivers_svc.auto_release_if_trip_ended(truck_id)
+        except Exception:
+            log.exception("auto-release failed for %s", truck_id)
 
     can_override = _can_override()
-    blocked = (state_reason is not None)
 
     return jsonify({
         "truck_id":          truck_id,

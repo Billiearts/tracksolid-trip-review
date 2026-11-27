@@ -47,7 +47,6 @@
   .role-badge-trainee      { background: #fff7e6; color: #8a5a00; }
   #truck-input { width: 100%; }
 
-  /* ---- Custom truck combobox (replaces the native datalist) ---- */
   .truck-combo { position: relative; }
   .truck-combo-list {
     position: absolute;
@@ -87,6 +86,13 @@
     cursor: default;
     font-style: italic;
   }
+  .rest-box {
+    background: #fff7e6; color: #8a5a00; border: 1px solid #f0d9a8;
+    border-radius: 6px; padding: 0.5rem 0.75rem;
+    font-size: 0.85rem; margin-top: 0.5rem;
+    display: flex; align-items: center; gap: 0.45rem;
+  }
+  .rest-box[hidden] { display: none; }
 </style>
 {% endblock %}
 
@@ -186,6 +192,18 @@
     {% endif %}
   {% elif not driver.deleted_at and can_assign %}
     <p class="muted">Not currently assigned to a truck.</p>
+
+    {% if rest_until %}
+      <div class="rest-box">
+        <span class="icon">⏳</span>
+        <span>
+          Driver is resting until
+          <strong>{{ rest_until.strftime('%Y-%m-%d %H:%M UTC') }}</strong>
+          ({{ '%.2f'|format(rest_period_hours) }}h rest period after release).
+        </span>
+      </div>
+    {% endif %}
+
     <form method="post"
           action="{{ url_for('drivers.assign', driver_id=driver.id) }}"
           id="assign-form"
@@ -222,6 +240,13 @@
         <label class="override-box" id="override-box" hidden>
           <input type="checkbox" name="override_active_trip" id="override-active-trip">
           <span>Override the truck-state check for this assignment (admin / override-role)</span>
+        </label>
+      {% endif %}
+
+      {% if can_override_rest and rest_until %}
+        <label class="override-box" style="display:flex;">
+          <input type="checkbox" name="override_rest" id="override-rest">
+          <span>Override the rest-period guard for this assignment (admin / override-role)</span>
         </label>
       {% endif %}
 
@@ -381,30 +406,31 @@
   }
 
   function applyStatus(status) {
+    // A truck is ONLY hard-blocked when it is genuinely on an open
+    // trip (state_reason === 'trip_time'). Stale/off_yard are shown
+    // as soft warnings but do NOT block submission.
     let blocked = false;
     let reason  = '';
     let soft    = false;
 
     if (status.error) {
-      blocked = true;
-      reason  = status.message || 'Cannot check this truck right now.';
-    } else if (status.state_reason === 'trip_time') {
+      blocked = false;              // never hard-block on a status error
+      soft    = true;
+      reason  = status.message || 'Could not check this truck right now.';
+    } else if (status.state_reason === 'trip_time' || status.has_open_trip) {
       blocked = true;
       reason  = status.state_message || 'Truck is on an open trip.';
     } else if (status.state_reason === 'off_yard') {
-      blocked = true;
+      soft    = true;
       reason  = status.state_message || 'Truck is not at the yard.';
     } else if (status.state_reason === 'stale') {
-      blocked = true;
+      soft    = true;
       reason  = status.state_message
              || 'Truck has not entered or left a tracked fence recently.';
     } else if (status.state_reason === 'lookup_failed') {
-      blocked = true;
+      soft    = true;
       reason  = status.state_message
              || 'Could not verify the truck\'s state right now.';
-    } else if (status.blocked && status.can_override) {
-      soft    = true;
-      reason  = status.state_message || 'Truck cannot be assigned freely.';
     }
 
     if (reason) {
@@ -417,7 +443,7 @@
     }
 
     if (overrideBox) {
-      overrideBox.hidden = !(canOverride && status.blocked);
+      overrideBox.hidden = !(canOverride && blocked);
     }
 
     form.dataset.blocked = blocked ? '1' : '0';
@@ -438,7 +464,8 @@
     warn.hidden = false;
     warn.classList.remove('warn-soft');
     warnText.textContent = 'Checking truck state…';
-    form.dataset.blocked = '1';
+    // We optimistically do NOT block while the check is in flight;
+    // only a real trip_time response will set blocked=1.
 
     const cached = statusCache[truckId];
     if (cached && (Date.now() - cached._ts) < STATUS_TTL_MS) {
@@ -464,9 +491,9 @@
     } catch (e) {
       clearTimeout(kill);
       warn.hidden = false;
-      warn.classList.remove('warn-soft');
+      warn.classList.add('warn-soft');
       warnText.textContent = 'Could not check truck state. Try again, or refresh.';
-      form.dataset.blocked = '1';
+      form.dataset.blocked = '0';
     }
   }
 
@@ -538,7 +565,9 @@
   });
 
   async function loadTrucks() {
-    const url = "{{ url_for('drivers.api_available_trucks') }}?include_operational=0";
+    // Do NOT pass include_operational=0 — that can hide yard trucks
+    // that the user should still be able to assign.
+    const url = "{{ url_for('drivers.api_available_trucks') }}?include_operational=1";
     const ctrl = new AbortController();
     const kill = setTimeout(() => ctrl.abort(), 12000);
     try {
