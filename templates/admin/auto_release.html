@@ -5,7 +5,11 @@
 {% block content %}
 <div class="card" style="max-width:720px;">
   <h2 style="font-size:1.1rem; margin:0 0 1rem;">Auto-release sweep</h2>
-
+<p style="margin:0 0 1rem;">
+  <a href="{{ url_for('probe.index') }}" class="btn-edit">
+    Open truck probe →
+  </a>
+</p>
   <p class="muted" style="font-size:0.88rem;">
     Every {{ interval }} seconds a background worker closes any
     <code>truck_assignments</code> row whose truck is back in the yard.

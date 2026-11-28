@@ -38,6 +38,21 @@
     {% set y   = c.yard %}
     {% set m   = manual or {} %}
 
+    {# ------------------------------------------------------------------
+       Driver resolution.
+       Prefer the values the route passed in (resolved_driver_id /
+       resolved_driver_name). Fall back to `computed.driver_id` and
+       `computed.driver_name` — `compute_report()` now overwrites the
+       blank Tracksolid name with the resolved one before returning.
+       ------------------------------------------------------------------ #}
+    {% set display_driver_id   = resolved_driver_id
+                                 or (computed.driver_id if computed else None)
+                                 or m.driver_id %}
+    {% set display_driver_name = resolved_driver_name
+                                 or (computed.driver_name if computed else '')
+                                 or m.driver_name
+                                 or '' %}
+
     {% macro ev_count(kind) -%}
       {{ ev.counts.get(kind, 0) if ev and ev.counts else 0 }}
     {%- endmacro %}
@@ -74,8 +89,8 @@
             </h2>
             <p style="color: #666; font-size: 0.9rem; margin: 0;">
               Viewing trip {{ current_index + 1 }} of {{ reports | length }} —
-              <strong>{{ c.truck_id }}</strong>{% if c.driver_name %} ·
-                <strong>{{ c.driver_name }}</strong>{% endif %} ·
+              <strong>{{ c.truck_id }}</strong>{% if display_driver_name %} ·
+                <strong>{{ display_driver_name }}</strong>{% endif %} ·
               {% if c.trip_start %}{{ c.trip_start.strftime('%Y-%m-%d %H:%M') }}{% endif %}
               →
               {% if c.trip_end %}{{ c.trip_end.strftime('%Y-%m-%d %H:%M') }}{% endif %}
@@ -86,7 +101,7 @@
             </h2>
             <p style="color: #666; font-size: 0.9rem; margin: 0;">
               IMEI {{ c.imei }}
-              {% if c.driver_name %} · Driver: <strong>{{ c.driver_name }}</strong>{% endif %} ·
+              {% if display_driver_name %} · Driver: <strong>{{ display_driver_name }}</strong>{% endif %} ·
               {% if c.trip_start %}{{ c.trip_start.strftime('%Y-%m-%d %H:%M') }}{% endif %}
               →
               {% if c.trip_end %}{{ c.trip_end.strftime('%Y-%m-%d %H:%M') }}{% endif %}
@@ -136,7 +151,7 @@
         <details open>
           <summary style="cursor: pointer; font-size: 1rem; font-weight: 500; padding: 0.25rem 0;">
             Report details — editing trip {{ current_index + 1 }} of {{ reports | length }}
-            ({{ c.truck_id }}{% if c.driver_name %} · {{ c.driver_name }}{% endif %})
+            ({{ c.truck_id }}{% if display_driver_name %} · {{ display_driver_name }}{% endif %})
           </summary>
           <p class="muted" style="margin: 0.5rem 0 1rem;">
             {% if is_bulk %}
@@ -157,7 +172,7 @@
               {% if driver_locked %}
                 {# Non-admin: read-only, always shows the resolved name. #}
                 <input type="text" id="meta_driver_id_display"
-                       value="{{ m.driver_name or c.driver_name or '—' }}"
+                       value="{{ m.driver_name or display_driver_name or '—' }}"
                        readonly
                        style="background:#f5f7fa; color:#555; cursor:not-allowed;">
                 <p class="muted" style="font-size:0.78rem; margin:0.25rem 0 0;">
@@ -166,12 +181,12 @@
                 </p>
               {% else %}
                 {# Admin: pick from the driver list, not free text. #}
-                <select id="meta_driver_id" name="meta_driver_id">
-                  <option value="">— keep automatic —</option>
+                <select name="meta_driver_id" class="form-control">
+                  <option value="">({{ display_driver_name or 'Unknown' }})</option>
                   {% for d in driver_choices %}
                     <option value="{{ d.driver_id }}"
-                            {% if d.selected %}selected{% endif %}>
-                      {{ d.full_name }}{% if d.staff_id %} ({{ d.staff_id }}){% endif %}
+                            {% if (display_driver_id and d.driver_id == display_driver_id) or d.selected %}selected{% endif %}>
+                      {{ d.full_name }}
                     </option>
                   {% endfor %}
                 </select>
@@ -309,7 +324,7 @@
 
               {% if driver_locked %}
                 <input type="text" id="meta_driver_id_export"
-                       value="{{ c.driver_name or '—' }}"
+                       value="{{ display_driver_name or '—' }}"
                        readonly
                        style="background:#f5f7fa; color:#555; cursor:not-allowed;">
                 <p class="muted" style="font-size:0.78rem; margin:0.25rem 0 0;">
@@ -318,10 +333,10 @@
                 </p>
               {% else %}
                 <select id="meta_driver_id_export" name="meta_driver_id">
-                  <option value="">— keep automatic —</option>
+                  <option value=""> {{ display_driver_name or 'Unknown' }}</option>
                   {% for d in driver_choices %}
                     <option value="{{ d.driver_id }}"
-                            {% if d.selected %}selected{% endif %}>
+                            {% if (display_driver_id and d.driver_id == display_driver_id) or d.selected %}selected{% endif %}>
                       {{ d.full_name }}{% if d.staff_id %} ({{ d.staff_id }}){% endif %}
                     </option>
                   {% endfor %}

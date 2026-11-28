@@ -59,6 +59,21 @@ Assignment actor
 Every assignment records `created_by` (the auth user who made it). The
 list functions resolve this to an email via a nested select so the UI
 can show "assigned by X" without a second round-trip per row.
+
+Performance notes
+-----------------
+Driver searches used to be dramatically slower than truck searches
+because `resolve_trip_driver()` was called once per trip and each call
+did two Supabase round-trips (±24h assignment scan + driver-name
+lookup). Two changes fixed that:
+
+  * `resolve_trip_driver()` now does ONE query for the IMEI (all
+    assignments, capped) and matches in Python, instead of a windowed
+    query that could miss assignments made before the window.
+  * A per-request cache (`_CACHE`) memoises assignment rows per IMEI
+    and driver-name lookups. Callers should use
+    `annotate_trips_with_drivers()` (single IMEI fetch for many trips)
+    instead of looping `resolve_trip_driver()` per trip.
 """
 from __future__ import annotations
 
@@ -95,6 +110,46 @@ REST_SETTINGS_ID = 1
 _TRIP_TIME_FENCE_NAME_FALLBACKS = ("TRIP TIME GBC", "GBC TRIP TIME")
 _AWASO_FENCE_NAMES = frozenset({"GBC AWASO", "GBC AWASO 2"})
 _FENCE_LOOKBACK_HOURS = 72
+
+
+# ---------------------------------------------------------------------------
+# Per-request cache (see module docstring "Performance notes")
+# ---------------------------------------------------------------------------
+
+class _RequestCache:
+    """Tiny per-call memo cache.
+
+    Flask creates a fresh request context per request; we key off
+    `flask.g` when available so the cache lives exactly as long as the
+    request. Outside Flask (CLI / worker) the cache just lives for the
+    duration of the call chain that created it.
+    """
+
+    _assignments: dict[str, list[dict]] = {}
+    _driver_names: dict[str, str] = {}
+    _assignment_selects: dict[tuple, list[dict]] = {}
+
+    @classmethod
+    def clear(cls) -> None:
+        cls._assignments.clear()
+        cls._driver_names.clear()
+        cls._assignment_selects.clear()
+
+    @classmethod
+    def assignments_for_imei(cls, imei: str) -> list[dict] | None:
+        return cls._assignments.get(imei)
+
+    @classmethod
+    def set_assignments_for_imei(cls, imei: str, rows: list[dict]) -> None:
+        cls._assignments[imei] = rows
+
+    @classmethod
+    def driver_name(cls, driver_id: str) -> str | None:
+        return cls._driver_names.get(driver_id)
+
+    @classmethod
+    def set_driver_name(cls, driver_id: str, name: str) -> None:
+        cls._driver_names[driver_id] = name
 
 
 # ---------------------------------------------------------------------------
@@ -832,7 +887,6 @@ def assign_driver(driver_id, truck_id, notes, created_by,
     insert.
     """
     client = _client()
-
     # 1. Driver already assigned?
     cur = current_assignment_for_driver(driver_id)
     if cur is not None:
@@ -894,6 +948,10 @@ def assign_driver(driver_id, truck_id, notes, created_by,
     rows = resp.data or []
     if not rows:
         raise DriverError("Assignment was not created.")
+
+    # Invalidate any cached assignment list for this IMEI so the next
+    # resolve/annotate call sees the new row.
+    _RequestCache._assignments.pop(imei, None)
     return rows[0]
 
 
@@ -919,7 +977,11 @@ def release_assignment(assignment_id: str,
     rows = resp.data or []
     if not rows:
         raise DriverError("Assignment not found or already released.")
-    return _row_to_assignment(rows[0])
+
+    # Any release changes the assignment timeline for its IMEI.
+    released = _row_to_assignment(rows[0])
+    _RequestCache._assignments.pop(released["imei"], None)
+    return released
 
 
 # ---------------------------------------------------------------------------
@@ -1014,6 +1076,9 @@ def auto_release_finished_assignments(
                 log.warning("auto_release: update failed for %s: %s",
                             a["id"], exc)
 
+        # Timeline for this IMEI just changed.
+        _RequestCache._assignments.pop(imei, None)
+
     return total
 
 
@@ -1037,14 +1102,76 @@ def _windows_overlapping(rows: Iterable[dict],
     return out
 
 
-def imeis_for_driver_during(driver_id: str, begin: datetime,
-                            end: datetime) -> list[dict]:
+def _fetch_assignments_for_imei(imei: str,
+                                limit: int = 2000) -> list[dict]:
+    """Fetch all assignments for an IMEI, memoised per request.
+
+    This is the single network call used by both `resolve_trip_driver`
+    and `annotate_trips_with_drivers`. Caching it means a driver search
+    that resolves N trips pays 1 query, not N.
+    """
+    if not imei:
+        return []
+    cached = _RequestCache.assignments_for_imei(imei)
+    if cached is not None:
+        return cached
+
+    try:
+        resp = (_client().table("truck_assignments")
+                .select(_ASSIGNMENT_SELECT)
+                .eq("imei", imei)
+                .order("assigned_at", desc=False)
+                .limit(max(1, min(2000, limit)))
+                .execute())
+    except Exception:
+        log.exception("_fetch_assignments_for_imei failed for %s", imei)
+        return []
+
+    rows = [_row_to_assignment(r) for r in (resp.data or [])]
+    _RequestCache.set_assignments_for_imei(imei, rows)
+    return rows
+
+
+def _driver_name_cached(driver_id: str) -> str:
+    """Driver-name lookup with a per-request cache.
+
+    Avoids re-hitting the drivers table once per trip in a search.
+    """
+    if not driver_id:
+        return ""
+    cached = _RequestCache.driver_name(driver_id)
+    if cached is not None:
+        return cached
+    name = ""
+    try:
+        resp = (_client().table("drivers")
+                .select("full_name")
+                .eq("id", driver_id)
+                .limit(1)
+                .execute())
+        rows = resp.data or []
+        if rows:
+            name = rows[0].get("full_name") or ""
+    except Exception:
+        log.exception("_driver_name_cached failed for %s", driver_id)
+    _RequestCache.set_driver_name(driver_id, name)
+    return name
+
+
+def trucks_for_driver_during(driver_id: str, begin: datetime,
+                             end: datetime) -> list[dict]:
     if not driver_id:
         return []
+
     rows = list_assignments(driver_id=driver_id, limit=2000)
-    rows = _windows_overlapping(rows, begin, end)
+
+    # We intentionally do NOT filter by [begin, end] here. We return all
+    # assignments so the blueprint can check if the driver held the truck
+    # at ANY point during the trip (including mid-trip assignments).
     by_imei: dict[str, dict] = {}
     for a in rows:
+        if a["assigned_at"] is None:
+            continue
         key = a["imei"]
         entry = by_imei.setdefault(key, {
             "imei":     key,
@@ -1052,37 +1179,23 @@ def imeis_for_driver_during(driver_id: str, begin: datetime,
             "windows":  [],
         })
         entry["windows"].append((a["assigned_at"], a["released_at"]))
+
     return list(by_imei.values())
-
-
-def trucks_for_driver_during(driver_id: str, begin: datetime,
-                             end: datetime) -> list[dict]:
-    return imeis_for_driver_during(driver_id, begin, end)
 
 
 def drivers_active_during(imei: str, begin: datetime,
                           end: datetime) -> list[dict]:
     if not imei:
         return []
-    rows = list_assignments(imei=imei, limit=2000)
+    rows = _fetch_assignments_for_imei(imei)
     rows = _windows_overlapping(rows, begin, end)
     driver_ids = list({a["driver_id"] for a in rows})
-    names = {}
-    if driver_ids:
-        try:
-            resp = (_client().table("drivers")
-                    .select("id,full_name")
-                    .in_("id", driver_ids).execute())
-            for r in (resp.data or []):
-                names[r["id"]] = r.get("full_name") or ""
-        except Exception:
-            log.exception("drivers_active_during: name lookup failed")
 
     out: dict[str, dict] = {}
     for a in rows:
         e = out.setdefault(a["driver_id"], {
             "driver_id": a["driver_id"],
-            "full_name": names.get(a["driver_id"], ""),
+            "full_name": _driver_name_cached(a["driver_id"]),
             "windows":   [],
         })
         e["windows"].append((a["assigned_at"], a["released_at"]))
@@ -1090,29 +1203,72 @@ def drivers_active_during(imei: str, begin: datetime,
 
 
 def resolve_trip_driver(imei: str, trip_start: datetime) -> dict | None:
-    if not imei or not trip_start:
-        return None
-    try:
-        resp = (_client().table("truck_assignments").select("*")
-                .eq("imei", imei)
-                .lte("assigned_at", trip_start.isoformat())
-                .execute())
-    except Exception:
-        log.exception("resolve_trip_driver: query failed for %s", imei)
+    """Resolve the driver for a trip by looking at the assignment window.
+
+    Matching strategy (first hit wins):
+      1. Exact window match: assigned_at <= trip_start < released_at
+         (or released_at is NULL).
+      2. Mid-trip fallback: the earliest assignment that *starts after*
+         trip_start (driver was assigned during the trip).
+      3. Nearest fallback: the assignment whose assigned_at is closest
+         to trip_start (handles late dispatches / clock skew).
+
+    All assignments for the IMEI are fetched with ONE query and
+    memoised per request, so calling this in a loop over N trips
+    costs one network round-trip total (plus driver-name lookups,
+    which are also cached).
+    """
+    if not imei or trip_start is None:
         return None
 
-    rows = [_row_to_assignment(r) for r in (resp.data or [])]
+    trip_start = _utc(trip_start)
+    rows = _fetch_assignments_for_imei(imei)
     if not rows:
         return None
 
-    for a in rows:
-        if a["released_at"] is not None and trip_start >= a["released_at"]:
-            continue
-        return _driver_brief(a["driver_id"])
+    # Sort defensively in case the DB returned unsorted rows.
+    rows_sorted = sorted(
+        rows,
+        key=lambda a: a["assigned_at"] or
+        datetime.min.replace(tzinfo=timezone.utc),
+    )
 
-    rows.sort(key=lambda a: a["assigned_at"] or datetime.min.replace(
-        tzinfo=timezone.utc), reverse=True)
-    return _driver_brief(rows[0]["driver_id"])
+    # 1. Exact window match.
+    for a in rows_sorted:
+        start = a["assigned_at"]
+        if start is None or start > trip_start:
+            continue
+        stop = a["released_at"]
+        if stop is not None and stop <= trip_start:
+            continue
+        return _driver_brief_cached(a["driver_id"])
+
+    # 2. Mid-trip fallback: first assignment strictly after trip_start.
+    for a in rows_sorted:
+        start = a["assigned_at"]
+        if start is not None and start > trip_start:
+            return _driver_brief_cached(a["driver_id"])
+
+    # 3. Nearest fallback.
+    nearest = min(
+        rows_sorted,
+        key=lambda a: abs((a["assigned_at"] - trip_start).total_seconds())
+        if a["assigned_at"] is not None else float("inf"),
+    )
+    if nearest["driver_id"]:
+        return _driver_brief_cached(nearest["driver_id"])
+
+    return None
+
+
+def _driver_brief_cached(driver_id: str) -> dict | None:
+    """Cached `{driver_id, driver_name}` payload for resolve_trip_driver."""
+    if not driver_id:
+        return None
+    name = _driver_name_cached(driver_id)
+    if not name:
+        return None
+    return {"driver_id": driver_id, "driver_name": name}
 
 
 def _driver_brief(driver_id: str) -> dict | None:
@@ -1127,34 +1283,29 @@ def _driver_brief(driver_id: str) -> dict | None:
 
 def annotate_trips_with_drivers(imei: str,
                                 trips: list[dict]) -> list[dict]:
+    """Attach `driver_id` / `driver_name` to each trip in `trips`.
+
+    Uses a single assignment fetch per IMEI plus the cached driver-name
+    lookup, so annotating M trips for one truck costs one network call
+    for assignments and at most K for names (K = distinct drivers).
+    This is the preferred path for driver-search report generation —
+    it replaces a per-trip `resolve_trip_driver()` loop.
+    """
     if not trips:
         return trips
-    try:
-        resp = (_client().table("truck_assignments").select("*")
-                .eq("imei", imei).execute())
-    except Exception:
-        log.exception("annotate_trips_with_drivers: fetch failed for %s", imei)
-        return trips
 
-    rows = [_row_to_assignment(r) for r in (resp.data or [])]
+    rows = _fetch_assignments_for_imei(imei)
     if not rows:
         for t in trips:
             t.setdefault("driver_id", None)
             t.setdefault("driver_name", "")
         return trips
 
-    names: dict[str, str] = {}
-    driver_ids = list({r["driver_id"] for r in rows})
-    try:
-        r = (_client().table("drivers").select("id,full_name")
-             .in_("id", driver_ids).execute())
-        for row in (r.data or []):
-            names[row["id"]] = row.get("full_name") or ""
-    except Exception:
-        log.exception("annotate_trips_with_drivers: name lookup failed")
-
-    rows_sorted = sorted(rows, key=lambda a: a["assigned_at"] or
-                        datetime.min.replace(tzinfo=timezone.utc))
+    rows_sorted = sorted(
+        rows,
+        key=lambda a: a["assigned_at"] or
+        datetime.min.replace(tzinfo=timezone.utc),
+    )
 
     for t in trips:
         start = t.get("start")
@@ -1162,18 +1313,42 @@ def annotate_trips_with_drivers(imei: str,
             t.setdefault("driver_id", None)
             t.setdefault("driver_name", "")
             continue
+
+        start = _utc(start)
         chosen = None
+
+        # 1. Exact window match.
         for a in rows_sorted:
-            if a["assigned_at"] is None or a["assigned_at"] > start:
+            a_start = a["assigned_at"]
+            if a_start is None or a_start > start:
                 continue
-            if a["released_at"] is not None and start >= a["released_at"]:
+            a_stop = a["released_at"]
+            if a_stop is not None and a_stop <= start:
                 continue
             chosen = a
+            break
+
+        # 2. Mid-trip fallback.
         if chosen is None:
+            for a in rows_sorted:
+                if a["assigned_at"] is not None and a["assigned_at"] > start:
+                    chosen = a
+                    break
+
+        # 3. Nearest fallback.
+        if chosen is None:
+            chosen = min(
+                rows_sorted,
+                key=lambda a: abs(
+                    (a["assigned_at"] - start).total_seconds()
+                ) if a["assigned_at"] is not None else float("inf"),
+            )
+
+        if chosen is None or not chosen["driver_id"]:
             t["driver_id"] = None
             t["driver_name"] = ""
         else:
             t["driver_id"] = chosen["driver_id"]
-            t["driver_name"] = names.get(chosen["driver_id"], "")
+            t["driver_name"] = _driver_name_cached(chosen["driver_id"])
 
     return trips

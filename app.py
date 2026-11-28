@@ -120,7 +120,10 @@ from blueprints.live_fleet import bp as live_fleet_bp
 from blueprints.drivers    import bp as drivers_bp
 from blueprints import trip_history as trip_history_bp
 from blueprints import auto_release_admin as ar_admin_bp
+from blueprints import probe as probe_bp
 
+
+app.register_blueprint(probe_bp.bp)
 app.register_blueprint(ar_admin_bp.bp)
 app.register_blueprint(trip_history_bp.bp)
 app.register_blueprint(auth_bp)

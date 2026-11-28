@@ -3,13 +3,15 @@ blueprints/trip_history.py — Completed trips (standalone blueprint).
 
 Routes
 ------
-  GET /trip-history/                    day view (default: today)
-  GET /trip-history/by-driver           range + multi-driver
-  GET /trip-history/by-truck            range + multi-truck
+  GET /trip-history/    single page: date range + free-text search
 
 Quick ranges: today, yesterday, 7d, 30d, this_week, this_month,
 last_month, this_year, last_year. Explicit start/end override the
 quick range when both are supplied.
+
+Search matches (case-insensitive substring) against truck name, IMEI,
+driver name, and driver ID. Results are sorted descending by trip end
+so the most recent lands on top.
 """
 from __future__ import annotations
 
@@ -21,8 +23,6 @@ from flask import (
 )
 
 from decorators import login_required
-from services import drivers as drivers_svc
-from services import devices as devices_svc
 from services import trip_history as th_svc
 from jimi import RateLimitExceeded
 
@@ -149,59 +149,7 @@ def _resolve_range(args) -> tuple[datetime, datetime, str, str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Combobox data
-# ---------------------------------------------------------------------------
-
-def _all_drivers_for_picker() -> list[dict]:
-    try:
-        res = drivers_svc.list_drivers(
-            page=1, per_page=1000,
-            include_inactive=False, include_deleted=False)
-        out = [
-            {"driver_id": d["id"],
-             "full_name": d["full_name"],
-             "staff_id":  d.get("staff_id") or ""}
-            for d in res["drivers"]
-        ]
-        out.sort(key=lambda x: x["full_name"].lower())
-        return out
-    except Exception:
-        log.exception("trip_history: driver list failed")
-        return []
-
-
-def _all_trucks_for_picker() -> list[dict]:
-    try:
-        devs = None
-        try:
-            devs = devices_svc.get_devices_cached_only()
-        except Exception:
-            devs = None
-        if devs is None:
-            devs = devices_svc.get_devices()
-    except Exception:
-        log.exception("trip_history: device list failed")
-        return []
-    seen, out = set(), []
-    for d in devs or []:
-        name = (d.get("deviceName") or "").strip()
-        imei = (d.get("imei") or "").strip()
-        if not name or not imei or imei in seen:
-            continue
-        seen.add(imei)
-        try:
-            cat = devices_svc.classify_device(name)
-        except Exception:
-            cat = "regular"
-        if cat != "regular":
-            continue
-        out.append({"imei": imei, "truck_id": name, "name": name})
-    out.sort(key=lambda x: x["name"].lower())
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Day view
+# Single route
 # ---------------------------------------------------------------------------
 
 @bp.route("/")
@@ -209,7 +157,8 @@ def _all_trucks_for_picker() -> list[dict]:
 def index():
     _require_view()
 
-    begin, end, start_s, end_s, _rng = _resolve_range(request.args)
+    begin, end, start_s, end_s, rng = _resolve_range(request.args)
+    q = (request.args.get("q") or "").strip()
 
     trips, warning = [], ""
     try:
@@ -218,131 +167,36 @@ def index():
         warning = ("Tracksolid daily API limit reached. "
                    "Try again later or reset the quota from Admin → Usage.")
     except Exception as exc:
-        log.exception("trip_history day view failed")
+        log.exception("trip_history lookup failed")
         warning = f"Could not fetch trips from Tracksolid: {exc}"
 
-    drivers = {t["driver_id"] for t in trips if t["driver_id"]}
-    trucks  = {t["truck_id"] for t in trips if t["truck_id"]}
+    # Apply text search *after* the Tracksolid fetch. The fetch is
+    # bounded by the date range, so this is O(trips) not O(fleet).
+    if q:
+        needle = q.lower()
+        trips = [
+            t for t in trips
+            if needle in (t.get("truck_id") or "").lower()
+            or needle in (t.get("imei") or "").lower()
+            or needle in (t.get("driver_name") or "").lower()
+            or needle in (t.get("driver_id") or "").lower()
+        ]
+
+    # Sort descending by trip end so the most recent lands on top.
+    trips.sort(key=lambda t: t["end"], reverse=True)
+
+    total = len(trips)
+    unique_drivers = len({t["driver_id"] for t in trips if t["driver_id"]})
+    unique_trucks  = len({t["truck_id"]  for t in trips if t["truck_id"]})
 
     return render_template(
         "trip_history/index.html",
-        start=start_s, end=end_s,
+        start=start_s, end=end_s, range_key=rng,
+        search=q,
         trips=trips,
-        total=len(trips),
-        unique_drivers=len(drivers),
-        unique_trucks=len(trucks),
-        warning=warning,
-        is_admin=_is_admin(),
-    )
-
-
-# ---------------------------------------------------------------------------
-# By driver
-# ---------------------------------------------------------------------------
-
-@bp.route("/by-driver")
-@login_required
-def by_driver():
-    _require_view()
-
-    begin, end, start_s, end_s, _rng = _resolve_range(request.args)
-
-    ids_raw = request.args.getlist("driver_id")
-    driver_ids = [d for d in ids_raw if d]
-
-    all_drivers = _all_drivers_for_picker()
-    selected_drivers = [
-        d for d in all_drivers if d["driver_id"] in set(driver_ids)
-    ]
-
-    trips, warning = [], ""
-    if driver_ids:
-        try:
-            trips = th_svc.trips_by_driver(driver_ids, begin, end)
-        except RateLimitExceeded:
-            warning = ("Tracksolid daily API limit reached. Try again later.")
-        except Exception as exc:
-            log.exception("trip_history driver view failed")
-            warning = f"Could not fetch trips: {exc}"
-
-    truck_counts = {}
-    for t in trips:
-        k = t["truck_id"] or t["imei"]
-        if k:
-            truck_counts[k] = truck_counts.get(k, 0) + 1
-
-    return render_template(
-        "trip_history/by_driver.html",
-        start=start_s,
-        end=end_s,
-        driver_ids=driver_ids,
-        selected_drivers=selected_drivers,
-        all_drivers=all_drivers,
-        trips=trips,
-        truck_counts=truck_counts,
-        warning=warning,
-        is_admin=_is_admin(),
-    )
-
-
-# ---------------------------------------------------------------------------
-# By truck
-# ---------------------------------------------------------------------------
-
-@bp.route("/by-truck")
-@login_required
-def by_truck():
-    _require_view()
-
-    begin, end, start_s, end_s, _rng = _resolve_range(request.args)
-
-    imei_raw = request.args.getlist("imei")
-    imeis = [i for i in imei_raw if i]
-
-    all_trucks = _all_trucks_for_picker()
-    by_imei = {t["imei"]: t for t in all_trucks}
-    selected_trucks = [by_imei[i] for i in imeis if i in by_imei]
-
-    trips, warning = [], ""
-    if imeis:
-        try:
-            trips = th_svc.trips_by_range(begin, end, imeis=imeis)
-        except RateLimitExceeded:
-            warning = ("Tracksolid daily API limit reached. Try again later.")
-        except Exception as exc:
-            log.exception("trip_history truck view failed")
-            warning = f"Could not fetch trips: {exc}"
-
-    summary = {}
-    for t in trips:
-        k = t["imei"]
-        s = summary.setdefault(k, {
-            "imei": k,
-            "truck_id": t["truck_id"] or by_imei.get(k, {}).get("name", ""),
-            "trips": 0,
-            "km": 0.0,
-            "seconds": 0,
-        })
-        s["trips"]  += 1
-        if t["distance"]:
-            try:
-                s["km"] += float(t["distance"])
-            except (TypeError, ValueError):
-                pass
-        s["seconds"] += int(t["duration_s"] or 0)
-
-    summary_rows = sorted(summary.values(),
-                          key=lambda s: s["trips"], reverse=True)
-
-    return render_template(
-        "trip_history/by_truck.html",
-        start=start_s,
-        end=end_s,
-        imeis=imeis,
-        selected_trucks=selected_trucks,
-        all_trucks=all_trucks,
-        trips=trips,
-        summary=summary_rows,
+        total=total,
+        unique_drivers=unique_drivers,
+        unique_trucks=unique_trucks,
         warning=warning,
         is_admin=_is_admin(),
     )

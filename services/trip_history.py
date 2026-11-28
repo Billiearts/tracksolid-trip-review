@@ -1,13 +1,5 @@
 """
 services/trip_history.py — completed-trip lookups from Tracksolid Pro.
-
-Trips come from `report.find_trips(imei, begin, end)`, the same live
-source the trip-review pipeline uses. Attribution is by assignment
-window overlap.
-
-`find_trips()` may return trip times as `datetime`, `date`, or string,
-depending on the Tracksolid client version / report module. All three
-shapes are accepted by `_coerce_dt()`.
 """
 from __future__ import annotations
 
@@ -23,14 +15,10 @@ _CACHE_OK: bool | None = None
 
 
 # ---------------------------------------------------------------------------
-# Time coercion — the actual bug fix lives here
+# Time coercion
 # ---------------------------------------------------------------------------
 
 def _coerce_dt(value) -> datetime | None:
-    """Return a timezone-aware UTC datetime from whatever find_trips
-    gave us: `datetime`, `date`, ISO string, or
-    'YYYY-MM-DD HH:MM:SS' string.
-    """
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -39,7 +27,6 @@ def _coerce_dt(value) -> datetime | None:
         s = value.strip()
         if not s:
             return None
-        # Try the two formats used across the codebase.
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
             try:
                 return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
@@ -50,20 +37,10 @@ def _coerce_dt(value) -> datetime | None:
             return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
         except ValueError:
             return None
-    # date-like object
     try:
-        return datetime(value.year, value.month, value.day,
-                        tzinfo=timezone.utc)
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
     except Exception:
         return None
-
-
-def _coerce_date(value) -> datetime | None:
-    """Coerce to UTC midnight of the same calendar day."""
-    dt = _coerce_dt(value)
-    if dt is None:
-        return None
-    return dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 # ---------------------------------------------------------------------------
@@ -87,8 +64,7 @@ def _driver_name_map(driver_ids):
 
 def _truck_name_map(imeis):
     try:
-        from services.devices import (get_devices_cached_only,
-                                     get_devices)
+        from services.devices import (get_devices_cached_only, get_devices)
         try:
             devs = get_devices_cached_only()
         except Exception:
@@ -107,7 +83,7 @@ def _truck_name_map(imeis):
 
 
 # ---------------------------------------------------------------------------
-# Cache (optional table)
+# Cache
 # ---------------------------------------------------------------------------
 
 def use_db_cache() -> bool:
@@ -116,8 +92,7 @@ def use_db_cache() -> bool:
         return _CACHE_OK
     from services.supabase_client import admin_client
     try:
-        (admin_client().table("trip_history")
-         .select("id").limit(1).execute())
+        (admin_client().table("trip_history").select("id").limit(1).execute())
         _CACHE_OK = True
     except Exception:
         _CACHE_OK = False
@@ -142,19 +117,16 @@ def _cache_trip(row: dict) -> None:
          }, on_conflict="imei,trip_start")
          .execute())
     except Exception:
-        log.exception("trip_history cache upsert failed for %s %s",
-                      row.get("imei"), row.get("start"))
+        log.exception("trip_history cache upsert failed")
 
 
-def _cached_trips(imei: str, begin: datetime,
-                  end: datetime) -> list[dict]:
+def _cached_trips(imei: str, begin: datetime, end: datetime) -> list[dict]:
     if not use_db_cache():
         return []
     from services.supabase_client import admin_client
     try:
         resp = (admin_client().table("trip_history")
-                .select("trip_start,trip_end,truck_id,driver_id,"
-                        "distance,duration_s,raw")
+                .select("trip_start,trip_end,truck_id,driver_id,distance,duration_s,raw")
                 .eq("imei", imei)
                 .gte("trip_end",  begin.isoformat())
                 .lt("trip_start", end.isoformat())
@@ -163,7 +135,6 @@ def _cached_trips(imei: str, begin: datetime,
                 .execute())
         rows = resp.data or []
     except Exception:
-        log.exception("trip_history cache read failed for %s", imei)
         return []
     out = []
     for r in rows:
@@ -182,17 +153,16 @@ def _cached_trips(imei: str, begin: datetime,
 
 
 # ---------------------------------------------------------------------------
-# Assignment attribution
+# Assignment attribution (NOW WITH FALLBACK)
 # ---------------------------------------------------------------------------
 
-def _assignment_windows(imei: str, begin: datetime,
-                        end: datetime) -> list[tuple]:
+def _assignment_windows(imei: str, begin: datetime, end: datetime) -> list[tuple]:
     from services.supabase_client import admin_client
     try:
         resp = (admin_client().table("truck_assignments")
                 .select("driver_id,truck_id,assigned_at,released_at")
                 .eq("imei", imei)
-                .lt("assigned_at",  end.isoformat())
+                .lt("assigned_at", end.isoformat())
                 .or_(f"released_at.is.null,released_at.gt.{begin.isoformat()}")
                 .order("assigned_at", desc=False)
                 .limit(200)
@@ -201,6 +171,7 @@ def _assignment_windows(imei: str, begin: datetime,
     except Exception:
         log.exception("trip_history: window lookup failed for %s", imei)
         return []
+    
     out = []
     for r in rows:
         a   = _coerce_dt(r.get("assigned_at"))
@@ -212,31 +183,41 @@ def _assignment_windows(imei: str, begin: datetime,
 
 
 def _driver_at(windows, at: datetime):
+    """Return driver_id that held the truck at `at`, or the last driver before `at`."""
+    if not windows:
+        return None
+    # Pass 1: strict window
     for a, rls, did, _tid in windows:
-        if at < a:
-            continue
-        if rls is not None and at >= rls:
-            continue
+        if at < a: continue
+        if rls is not None and at >= rls: continue
         return did
-    return None
+    # Pass 2: most recent assignment that started before `at`
+    last_did = None
+    for a, _rls, did, _tid in windows:
+        if a <= at: last_did = did
+        else: break
+    return last_did
 
 
 def _truck_at(windows, at: datetime):
+    if not windows:
+        return None
     for a, rls, _did, tid in windows:
-        if at < a:
-            continue
-        if rls is not None and at >= rls:
-            continue
+        if at < a: continue
+        if rls is not None and at >= rls: continue
         return tid
-    return None
+    last_tid = None
+    for a, _rls, _did, tid in windows:
+        if a <= at: last_tid = tid
+        else: break
+    return last_tid
 
 
 # ---------------------------------------------------------------------------
 # Candidate IMEIs
 # ---------------------------------------------------------------------------
 
-def _imeis_for_driver(driver_ids, begin: datetime,
-                      end: datetime) -> list[str]:
+def _imeis_for_driver(driver_ids, begin: datetime, end: datetime) -> list[str]:
     from services.supabase_client import admin_client
     ids = [i for i in (driver_ids or []) if i]
     if not ids:
@@ -245,13 +226,12 @@ def _imeis_for_driver(driver_ids, begin: datetime,
         resp = (admin_client().table("truck_assignments")
                 .select("imei")
                 .in_("driver_id", ids)
-                .lt("assigned_at",  end.isoformat())
+                .lt("assigned_at", end.isoformat())
                 .or_(f"released_at.is.null,released_at.gt.{begin.isoformat()}")
                 .limit(2000)
                 .execute())
         rows = resp.data or []
     except Exception:
-        log.exception("trip_history: driver imei lookup failed")
         return []
     seen, out = set(), []
     for r in rows:
@@ -262,19 +242,17 @@ def _imeis_for_driver(driver_ids, begin: datetime,
     return out
 
 
-def _imeis_for_range(begin: datetime,
-                     end: datetime) -> list[str]:
+def _imeis_for_range(begin: datetime, end: datetime) -> list[str]:
     from services.supabase_client import admin_client
     try:
         resp = (admin_client().table("truck_assignments")
                 .select("imei")
-                .lt("assigned_at",  end.isoformat())
+                .lt("assigned_at", end.isoformat())
                 .or_(f"released_at.is.null,released_at.gt.{begin.isoformat()}")
                 .limit(5000)
                 .execute())
         rows = resp.data or []
     except Exception:
-        log.exception("trip_history: range imei lookup failed")
         return []
     seen, out = set(), []
     for r in rows:
@@ -289,8 +267,7 @@ def _imeis_for_range(begin: datetime,
 # Fetch + normalise
 # ---------------------------------------------------------------------------
 
-def _fetch_one(imei: str, begin: datetime,
-               end: datetime) -> tuple[str, list[dict]]:
+def _fetch_one(imei: str, begin: datetime, end: datetime) -> tuple[str, list[dict]]:
     cached = _cached_trips(imei, begin, end)
     if cached:
         return imei, cached
@@ -309,8 +286,7 @@ def _fetch_many(imeis, begin, end):
     if not imeis:
         return {}
     out = {}
-    with ThreadPoolExecutor(max_workers=_FETCH_WORKERS,
-                            thread_name_prefix="trip-history") as pool:
+    with ThreadPoolExecutor(max_workers=_FETCH_WORKERS, thread_name_prefix="trip-history") as pool:
         futs = {pool.submit(_fetch_one, i, begin, end): i for i in imeis}
         for f in as_completed(futs):
             imei = futs[f]
@@ -319,13 +295,7 @@ def _fetch_many(imeis, begin, end):
     return out
 
 
-def _normalise(imei: str,
-               raw: dict,
-               windows: list,
-               begin: datetime,
-               end: datetime) -> dict | None:
-    """The bug fix is in the two lines below — _coerce_dt() handles
-    datetime / date / string inputs."""
+def _normalise(imei: str, raw: dict, windows: list, begin: datetime, end: datetime) -> dict | None:
     t_start = _coerce_dt(raw.get("start"))
     t_end   = _coerce_dt(raw.get("end"))
     if t_start is None or t_end is None:
@@ -335,8 +305,18 @@ def _normalise(imei: str,
     if not (begin <= t_end < end):
         return None
 
+    # First try attribution at trip start (the correct moment)
     did = _driver_at(windows, t_start)
-    tid = _truck_at(windows,  t_start)
+    tid = _truck_at(windows, t_start)
+    attribution = "trip_start" if did is not None else "none"
+
+    # If no driver found at trip start, fallback to trip end
+    if did is None:
+        did = _driver_at(windows, t_end)
+        tid = _truck_at(windows, t_end)
+        if did is not None:
+            attribution = "trip_end_fallback"
+
     duration_s = int((t_end - t_start).total_seconds())
     return {
         "imei":       imei,
@@ -347,6 +327,7 @@ def _normalise(imei: str,
         "duration_s": duration_s,
         "distance":   raw.get("distance") or raw.get("mileage") or None,
         "raw":        raw,
+        "attribution": attribution,
     }
 
 
@@ -363,11 +344,7 @@ def trips_by_day(day_utc: datetime) -> list[dict]:
     return _finalise(_fetch_many(imeis, start, end), start, end)
 
 
-def trips_by_range(begin: datetime,
-                   end: datetime,
-                   imeis: list[str] | None = None) -> list[dict]:
-    """Range view. If `imeis` is provided only those trucks are
-    inspected; otherwise every truck with an overlapping assignment."""
+def trips_by_range(begin: datetime, end: datetime, imeis: list[str] | None = None) -> list[dict]:
     if begin.tzinfo is None:
         begin = begin.replace(tzinfo=timezone.utc)
     if end.tzinfo is None:
@@ -379,16 +356,11 @@ def trips_by_range(begin: datetime,
     return _finalise(_fetch_many(targets, begin, end), begin, end)
 
 
-def trips_by_driver(driver_ids,
-                    begin: datetime,
-                    end: datetime) -> list[dict]:
-    """One or more drivers. Pass a single string, or a list."""
+def trips_by_driver(driver_ids, begin: datetime, end: datetime) -> list[dict]:
     if isinstance(driver_ids, str):
         driver_ids = [driver_ids]
-    if begin.tzinfo is None:
-        begin = begin.replace(tzinfo=timezone.utc)
-    if end.tzinfo is None:
-        end = end.replace(tzinfo=timezone.utc)
+    if begin.tzinfo is None: begin = begin.replace(tzinfo=timezone.utc)
+    if end.tzinfo is None: end = end.replace(tzinfo=timezone.utc)
     imeis = _imeis_for_driver(driver_ids, begin, end)
     if not imeis:
         return []
@@ -407,6 +379,9 @@ def _normalise_all(trips_by_imei, begin, end):
             t = _normalise(imei, raw, windows, begin, end)
             if t is None:
                 continue
+            if t["driver_id"] is None:
+                log.info("trip_history: unattributed trip imei=%s truck=%s start=%s end=%s",
+                         imei, t["truck_id"], t["start"], t["end"])
             rows.append(t)
             _cache_trip(t)
     return rows
@@ -417,8 +392,7 @@ def _finalise(trips_by_imei, begin, end):
 
 
 def _decorate(rows):
-    names   = _driver_name_map([r["driver_id"] for r in rows
-                                if r["driver_id"]])
+    names   = _driver_name_map([r["driver_id"] for r in rows if r["driver_id"]])
     truck_n = _truck_name_map([r["imei"] for r in rows])
     for r in rows:
         r["driver_name"] = names.get(r["driver_id"] or "", "")

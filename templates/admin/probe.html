@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+
+{% block heading %}Truck state probe{% endblock %}
+
+{% block head %}
+<style>
+  .probe-form {
+    display: flex; gap: 0.6rem; align-items: flex-end; flex-wrap: wrap;
+    margin-bottom: 1rem;
+  }
+  .probe-form input[type=text] {
+    min-width: 320px;
+  }
+  .probe-result { margin-top: 1rem; }
+  .probe-section {
+    background: #fafbfc; border: 1px solid var(--line);
+    border-radius: 6px; padding: 0.85rem 1rem; margin-bottom: 0.9rem;
+  }
+  .probe-section h3 {
+    font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--brand); margin: 0 0 0.6rem; font-weight: 600;
+  }
+  .probe-kv { display: grid; grid-template-columns: 160px 1fr;
+              gap: 0.3rem 0.8rem; font-size: 0.86rem; }
+  .probe-kv dt { color: var(--ink-3); }
+  .probe-kv dd { margin: 0; font-family: monospace; word-break: break-word; }
+  .probe-release-yes {
+    background: var(--ok-bg); color: var(--ok);
+    padding: 0.55rem 0.85rem; border-radius: 6px;
+    font-weight: 600; border-left: 3px solid var(--ok);
+  }
+  .probe-release-no {
+    background: var(--err-bg); color: var(--err);
+    padding: 0.55rem 0.85rem; border-radius: 6px;
+    font-weight: 600; border-left: 3px solid var(--err);
+  }
+  .probe-events-table { width: 100%; font-size: 0.82rem;
+                        font-family: monospace; border-collapse: collapse; }
+  .probe-events-table th { text-align: left; color: var(--ink-3);
+                           font-weight: 600; padding: 0.3rem 0.5rem 0.3rem 0;
+                           border-bottom: 1px solid var(--line); }
+  .probe-events-table td { padding: 0.35rem 0.5rem 0.35rem 0;
+                           border-bottom: 1px solid var(--line-2); }
+  .probe-events-table .enter { color: var(--ok); }
+  .probe-events-table .exit  { color: var(--err); }
+  .probe-error { color: var(--err); font-weight: 500; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h2 style="font-size:1.1rem; margin:0 0 1rem;">Truck state probe</h2>
+  <p class="muted" style="font-size:0.86rem;">
+    Type a truck name (<code>GT 8573 - 25</code>) or an IMEI. This shows
+    exactly what the auto-release sweeper sees for that truck right now,
+    plus the recent fence events that produced that state.
+  </p>
+
+  <form class="probe-form" onsubmit="event.preventDefault(); runProbe();">
+    <div class="field-inline" style="flex:1 1 340px;">
+      <label for="q">Truck or IMEI</label>
+      <input type="text" id="q" name="q" autocomplete="off" autofocus
+             placeholder="GT 8573 - 25 or 865135061393573">
+    </div>
+    <div class="field-inline">
+      <button type="submit">Probe</button>
+    </div>
+  </form>
+
+  <div id="probe-error" class="probe-error" hidden></div>
+  <div id="probe-result" class="probe-result" hidden></div>
+</div>
+
+<script>
+const probeResult = document.getElementById('probe-result');
+const probeError  = document.getElementById('probe-error');
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+function renderProbe(data) {
+  probeError.hidden = true;
+  probeResult.hidden = false;
+
+  const parts = [];
+
+  parts.push(
+    '<div class="probe-section">' +
+    '<h3>Truck</h3>' +
+    '<dl class="probe-kv">' +
+    '<dt>Name</dt><dd>' + esc(data.truck_id) + '</dd>' +
+    '<dt>IMEI</dt><dd>' + esc(data.imei) + '</dd>' +
+    '</dl>' +
+    '</div>'
+  );
+
+  if (!data.state) {
+    parts.push(
+      '<div class="probe-section">' +
+      '<h3>State</h3>' +
+      '<p class="probe-error">' +
+      esc(data.message || 'Current state unavailable.') +
+      '</p></div>'
+    );
+    probeResult.innerHTML = parts.join('');
+    return;
+  }
+
+  const s = data.state;
+  const releaseClass = data.would_release
+    ? 'probe-release-yes' : 'probe-release-no';
+  const releaseText = data.would_release
+    ? 'YES — the next sweep will release any open assignment'
+    : 'NO — this group does not trigger auto-release';
+
+  parts.push(
+    '<div class="probe-section">' +
+    '<h3>Current state</h3>' +
+    '<dl class="probe-kv">' +
+    '<dt>Group</dt><dd>' + esc(s.group) + '</dd>' +
+    '<dt>Fence</dt><dd>' + esc(s.fence || '—') + '</dd>' +
+    '<dt>Geoid</dt><dd>' + esc(s.geoid || '—') + '</dd>' +
+    '<dt>Inside</dt><dd>' + (s.inside ? 'true' : 'false') + '</dd>' +
+    '<dt>At</dt><dd>' + esc(s.at || '—') + '</dd>' +
+    '</dl></div>'
+  );
+
+  parts.push(
+    '<div class="probe-section">' +
+    '<h3>Auto-release check</h3>' +
+    '<div class="' + releaseClass + '">' + releaseText + '</div>' +
+    '<p class="muted" style="font-size:0.8rem; margin:0.5rem 0 0;">' +
+    '<code>group=' + esc(s.group) + '</code> ' +
+    (data.would_release ? '∈' : '∉') + ' ' +
+    '<code>RELEASE_GROUPS=' + esc(JSON.stringify(data.release_groups)) + '</code>' +
+    '</p></div>'
+  );
+
+  if (data.assignment) {
+    const a = data.assignment;
+    const drv = data.driver || {};
+    parts.push(
+      '<div class="probe-section">' +
+      '<h3>Open assignment</h3>' +
+      '<dl class="probe-kv">' +
+      '<dt>Assignment</dt><dd>' + esc(a.id) + '</dd>' +
+      '<dt>Truck</dt><dd>' + esc(a.truck_id) + '</dd>' +
+      '<dt>Assigned at</dt><dd>' + esc(a.assigned_at) + '</dd>' +
+      '<dt>Driver</dt><dd>' + esc(drv.name || '(unknown)') +
+        ' (' + esc(drv.driver_id || '—') + ')</dd>' +
+      '<dt>Rest until</dt><dd>' +
+        esc(drv.rest_until || '(not resting)') + '</dd>' +
+      '</dl></div>'
+    );
+  } else {
+    parts.push(
+      '<div class="probe-section">' +
+      '<h3>Open assignment</h3>' +
+      '<p class="muted">No open assignment for this truck.</p>' +
+      '</div>'
+    );
+  }
+
+  if (data.events && data.events.length) {
+    const rows = data.events.map(e => (
+      '<tr>' +
+      '<td>' + esc(e.at) + '</td>' +
+      '<td class="' + esc(e.kind) + '">' + esc(e.kind) + '</td>' +
+      '<td>' + esc(e.name) + '</td>' +
+      '<td>' + esc(e.geoid) + '</td>' +
+      '</tr>'
+    )).join('');
+    parts.push(
+      '<div class="probe-section">' +
+      '<h3>Recent fence events (48 h)</h3>' +
+      '<table class="probe-events-table">' +
+      '<thead><tr><th>Time (UTC)</th><th>Kind</th><th>Fence</th><th>Geoid</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody>' +
+      '</table></div>'
+    );
+  }
+
+  probeResult.innerHTML = parts.join('');
+}
+
+async function runProbe() {
+  const q = document.getElementById('q').value.trim();
+  if (!q) return;
+  probeError.hidden = true;
+  probeResult.hidden = true;
+
+  try {
+    const r = await fetch(
+      "{{ url_for('probe.state') }}?q=" + encodeURIComponent(q),
+      { credentials: 'same-origin' }
+    );
+    const j = await r.json();
+    if (!r.ok) {
+      probeError.hidden = false;
+      probeError.textContent = j.message || ('HTTP ' + r.status);
+      return;
+    }
+    renderProbe(j);
+  } catch (e) {
+    probeError.hidden = false;
+    probeError.textContent = 'Request failed: ' + (e && e.message || e);
+  }
+}
+</script>
+{% endblock %}

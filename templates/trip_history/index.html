@@ -6,58 +6,94 @@
 {% block head %}
 <style>
   body.wide .container { max-width: 1400px; }
-  .th-filter { display:flex; flex-wrap:wrap; gap:0.6rem; align-items:flex-end; margin-bottom:1rem; }
-  .th-filter .field-inline { min-width:160px; }
-  .th-stat-row { display:flex; gap:0.6rem; margin-bottom:1rem; flex-wrap:wrap; }
-  .th-stat { background:#fff; border:1px solid var(--line); border-radius:8px; padding:0.6rem 0.9rem; min-width:130px; }
-  .th-stat .label { font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-3); font-weight:500; }
-  .th-stat .value { font-size:1.5rem; font-weight:600; color:var(--brand); font-variant-numeric: tabular-nums; }
-  .th-quick { display:inline-flex; border:1px solid #c9ced6; border-radius:6px; overflow:hidden; font-size:0.78rem; line-height:1.2; }
-  .th-quick a { padding:0.4rem 0.6rem; color:#333; background:#fff; text-decoration:none; border-right:1px solid #e1e5eb; white-space:nowrap; }
-  .th-quick a:last-child { border-right:none; }
-  .th-quick a:hover { background:#f5f7fa; }
-  .th-quick a.active { background:#eef2f8; color:#111; font-weight:600; }
-  .th-nav-tabs { display:inline-flex; border:1px solid #c9ced6; border-radius:6px; overflow:hidden; font-size:0.82rem; line-height:1.2; margin-bottom:1rem; }
-  .th-nav-tabs a { padding:0.42rem 0.7rem; color:#333; background:#fff; text-decoration:none; border-right:1px solid #e1e5eb; }
-  .th-nav-tabs a:last-child { border-right:none; }
-  .th-nav-tabs a:hover { background:#f5f7fa; }
-  .th-nav-tabs a.active { background:#eef2f8; color:#111; font-weight:600; }
+
+  .th-filter {
+    display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: flex-end;
+    margin-bottom: 1rem;
+  }
+  .th-filter .field-inline { min-width: 160px; }
+
+  .th-stat-row {
+    display: flex; gap: 0.6rem; margin-bottom: 1rem; flex-wrap: wrap;
+  }
+  .th-stat {
+    background: #fff; border: 1px solid var(--line); border-radius: 8px;
+    padding: 0.6rem 0.9rem; min-width: 130px;
+  }
+  .th-stat .label {
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--ink-3); font-weight: 500;
+  }
+  .th-stat .value {
+    font-size: 1.5rem; font-weight: 600; color: var(--brand);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .th-quick {
+    display: inline-flex; border: 1px solid #c9ced6; border-radius: 6px;
+    overflow: hidden; font-size: 0.78rem; line-height: 1.2;
+  }
+  .th-quick a {
+    padding: 0.4rem 0.6rem; color: #333; background: #fff;
+    text-decoration: none; border-right: 1px solid #e1e5eb;
+    white-space: nowrap;
+  }
+  .th-quick a:last-child { border-right: none; }
+  .th-quick a:hover { background: #f5f7fa; }
+  .th-quick a.active {
+    background: #eef2f8; color: #111; font-weight: 600;
+  }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="card">
-  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.6rem; margin-bottom:1rem;">
-    <h2 style="font-size:1.1rem; margin:0;">Completed trips — day view</h2>
-  </div>
-
-  <div class="th-nav-tabs" role="group" aria-label="View">
-    <a class="active" href="{{ url_for('trip_history.index') }}">Day</a>
-    <a href="{{ url_for('trip_history.by_driver') }}">By driver</a>
-    <a href="{{ url_for('trip_history.by_truck') }}">By truck</a>
+  <div style="display:flex; justify-content:space-between; align-items:center;
+              flex-wrap:wrap; gap:0.6rem; margin-bottom:1rem;">
+    <h2 style="font-size:1.1rem; margin:0;">Completed trips</h2>
   </div>
 
   <form method="get" action="{{ url_for('trip_history.index') }}"
         class="th-filter">
-    <div class="field-inline" style="min-width:180px;">
+    <div class="field-inline" style="flex:1 1 280px;">
+      <label for="q">Search (truck or driver)</label>
+      <input type="text" id="q" name="q" value="{{ search }}"
+             placeholder="e.g. GT 8573 or Adam"
+             autocomplete="off">
+    </div>
+
+    <div class="field-inline">
+      <label>Quick range</label>
+      <div class="th-quick" role="group">
+        <a class="{% if range_key == 'today' %}active{% endif %}"
+           href="?range=today&q={{ search|urlencode }}">Today</a>
+        <a class="{% if range_key == 'yesterday' %}active{% endif %}"
+           href="?range=yesterday&q={{ search|urlencode }}">Yesterday</a>
+        <a class="{% if range_key == '7d' %}active{% endif %}"
+           href="?range=7d&q={{ search|urlencode }}">7d</a>
+        <a class="{% if range_key == '30d' %}active{% endif %}"
+           href="?range=30d&q={{ search|urlencode }}">30d</a>
+        <a class="{% if range_key == 'this_week' %}active{% endif %}"
+           href="?range=this_week&q={{ search|urlencode }}">This week</a>
+        <a class="{% if range_key == 'this_month' %}active{% endif %}"
+           href="?range=this_month&q={{ search|urlencode }}">This month</a>
+        <a class="{% if range_key == 'last_month' %}active{% endif %}"
+           href="?range=last_month&q={{ search|urlencode }}">Last month</a>
+        <a class="{% if range_key == 'this_year' %}active{% endif %}"
+           href="?range=this_year&q={{ search|urlencode }}">This year</a>
+      </div>
+    </div>
+
+    <div class="field-inline">
       <label for="start">Start</label>
       <input type="date" id="start" name="start" value="{{ start }}">
     </div>
-    <div class="field-inline" style="min-width:180px;">
+    <div class="field-inline">
       <label for="end">End</label>
       <input type="date" id="end" name="end" value="{{ end }}">
     </div>
     <div class="field-inline">
-      <label>Quick</label>
-      <div class="th-quick">
-        <a href="?range=today">Today</a>
-        <a href="?range=yesterday">Yesterday</a>
-        <a href="?range=7d">7d</a>
-        <a href="?range=30d">30d</a>
-      </div>
-    </div>
-    <div class="field-inline">
-      <button type="submit">Show trips</button>
+      <button type="submit">Search</button>
     </div>
   </form>
 
@@ -66,23 +102,31 @@
   {% endif %}
 
   <div class="th-stat-row">
-    <div class="th-stat"><div class="label">Trips</div><div class="value">{{ total }}</div></div>
-    <div class="th-stat"><div class="label">Drivers</div><div class="value">{{ unique_drivers }}</div></div>
-    <div class="th-stat"><div class="label">Trucks</div><div class="value">{{ unique_trucks }}</div></div>
+    <div class="th-stat"><div class="label">Trips</div>
+      <div class="value">{{ total }}</div></div>
+    <div class="th-stat"><div class="label">Drivers</div>
+      <div class="value">{{ unique_drivers }}</div></div>
+    <div class="th-stat"><div class="label">Trucks</div>
+      <div class="value">{{ unique_trucks }}</div></div>
   </div>
 
   {% if not trips %}
-    <p class="muted">No completed trips in this window.</p>
+    <p class="muted">
+      {% if search %}
+        No completed trips matched “{{ search }}” in this date range.
+      {% else %}
+        No completed trips in this date range.
+      {% endif %}
+    </p>
   {% else %}
     <div class="table-scroll">
       <table class="admin-table">
         <thead>
           <tr>
-            <th>Date</th>
+            <th>Ended</th>
+            <th>Started</th>
             <th>Driver</th>
             <th>Truck</th>
-            <th>Started</th>
-            <th>Ended</th>
             <th>Duration</th>
             <th>Distance</th>
           </tr>
@@ -90,7 +134,8 @@
         <tbody>
           {% for t in trips %}
             <tr>
-              <td>{{ t.end.strftime('%Y-%m-%d') }}</td>
+              <td>{{ t.end.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+              <td>{{ t.start.strftime('%Y-%m-%d %H:%M:%S') }}</td>
               <td>
                 {% if t.driver_id %}
                   <a href="{{ url_for('drivers.detail', driver_id=t.driver_id) }}"
@@ -100,8 +145,6 @@
                 {% else %}—{% endif %}
               </td>
               <td>{{ t.truck_id or t.imei }}</td>
-              <td>{{ t.start.strftime('%H:%M:%S') }}</td>
-              <td>{{ t.end.strftime('%H:%M:%S') }}</td>
               <td>
                 {% set h = t.duration_s // 3600 %}
                 {% set m = (t.duration_s % 3600) // 60 %}
@@ -117,5 +160,11 @@
       </table>
     </div>
   {% endif %}
+
+  <p class="muted" style="font-size:0.78rem; margin-top:0.75rem;">
+    Trip data is fetched live from Tracksolid Pro. Search matches
+    truck name, IMEI, driver name, and driver ID (substring, case-insensitive).
+    Most recent trip is shown first.
+  </p>
 </div>
 {% endblock %}

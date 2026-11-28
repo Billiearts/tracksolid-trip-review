@@ -31,7 +31,10 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Iterable
+
+from services.supabase_client import admin_client
 
 from flask import (
     Blueprint, render_template, request, redirect, url_for, flash,
@@ -52,6 +55,22 @@ bp = Blueprint("drivers", __name__, url_prefix="/drivers")
 _TRIPS_WORKERS = 4
 _trips_pool = ThreadPoolExecutor(max_workers=_TRIPS_WORKERS,
                                  thread_name_prefix="drivers-trips")
+
+
+# ---------------------------------------------------------------------------
+# Per-request cache scoping
+# ---------------------------------------------------------------------------
+# `drivers_svc._RequestCache` memoises assignment rows per IMEI and
+# driver-name lookups so that a driver search doesn't re-query Supabase
+# once per trip. That cache must not survive across requests, otherwise
+# a later user could see stale assignment data. Clearing it at the start
+# of every request is the cheapest correct scope.
+@bp.before_app_request
+def _reset_driver_cache():
+    try:
+        drivers_svc._RequestCache.clear()
+    except Exception:
+        log.exception("drivers: cache reset failed (non-fatal)")
 
 
 # ---------------------------------------------------------------------------
@@ -708,7 +727,8 @@ def trips_list():
             warnings.append(
                 f"Driver {d['full_name'] or d['driver_id']} not found.")
             continue
-        trucks = drivers_svc.trucks_for_driver_during(info["id"], begin, end)
+        trucks = drivers_svc.trucks_for_driver_during(
+            info["id"], begin - timedelta(days=1), end + timedelta(days=1))
         if not trucks:
             if require_assignment:
                 warnings.append(
@@ -770,6 +790,36 @@ def trips_list():
               "error")
         return redirect(url_for("index"))
 
+    # -----------------------------------------------------------------
+    # Attribution — one `annotate_trips_with_drivers` call per IMEI.
+    #
+    # Previously this loop called `resolve_trip_driver()` once per trip,
+    # which did two Supabase round-trips per trip (windowed assignment
+    # scan + driver name). A driver search over N trips therefore paid
+    # ~2N network calls and was dramatically slower than a truck search.
+    #
+    # `annotate_trips_with_drivers` fetches the IMEI's assignments once,
+    # memoised in `drivers_svc._RequestCache`, and writes driver_id /
+    # driver_name onto each trip. That fixes both the latency and the
+    # "keep automatic" bug: trips now carry the resolved driver even
+    # when Tracksolid sent a blank driver_name.
+    # -----------------------------------------------------------------
+    for truck_id, trips in trips_by_truck.items():
+        if not trips:
+            continue
+        # Find the IMEI for this truck.
+        imei = ""
+        for info in unique_trucks.values():
+            if info["truck_id"] == truck_id:
+                imei = info.get("imei") or ""
+                break
+        if not imei:
+            continue
+        try:
+            drivers_svc.annotate_trips_with_drivers(imei, trips)
+        except Exception:
+            log.exception("trips_list: annotate failed for %s", imei)
+
     groups: list[dict] = []
     total = 0
     for r in resolved:
@@ -779,15 +829,25 @@ def trips_list():
             windows = t["windows"]
             for trip in trips_by_truck.get(truck_id, []):
                 start = trip.get("start")
-                if require_assignment and not _trip_in_windows(start,
-                                                               windows):
+                end = trip.get("end")
+                if require_assignment and not _trip_in_windows(
+                        start, windows, end):
                     continue
+                # The trip may already carry a driver from the global
+                # annotation above. Only fall back to this driver if
+                # nothing was attributed — otherwise we would overwrite
+                # the actually-resolved driver with the search target.
+                existing_id = trip.get("driver_id")
+                if not existing_id:
+                    trip = {
+                        **trip,
+                        "driver_id":   r["id"],
+                        "driver_name": r["full_name"],
+                    }
                 driver_trips.append({
                     **trip,
-                    "truck":       truck_id,
-                    "imei":        t["imei"],
-                    "driver_id":   r["id"],
-                    "driver_name": r["full_name"],
+                    "truck": truck_id,
+                    "imei":  t["imei"],
                 })
         if not driver_trips:
             warnings.append(
@@ -826,15 +886,24 @@ def trips_list():
     )
 
 
-def _trip_in_windows(trip_start, windows: list[tuple]) -> bool:
+def _trip_in_windows(trip_start, windows: list[tuple], trip_end=None) -> bool:
     if trip_start is None:
         return False
+
+    from datetime import timedelta
+    # Allow a 36-hour grace period. If a driver was assigned mid-trip,
+    # the trip_end will be very close to the assignment start. We
+    # consider the trip "theirs" if they held the truck while it finished.
+    grace = timedelta(hours=36)
+
     for s, e in windows:
         if s is None:
             continue
-        if trip_start < s:
+        # If the assignment started after the trip ended, skip it
+        if trip_end and s > trip_end:
             continue
-        if e is not None and trip_start >= e:
+        # If the assignment was released long before the trip started, skip
+        if e is not None and e + grace < trip_start:
             continue
         return True
     return False
