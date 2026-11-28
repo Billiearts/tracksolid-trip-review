@@ -530,6 +530,11 @@ def api_available_trucks():
 
     Only **unassigned regular** trucks are returned. Operational trucks
     are excluded using the same classification as the report generator.
+
+    The endpoint always attempts a live fetch when the cache is empty,
+    so the caller is never told "warming up" forever. If Tracksolid
+    itself is unreachable, we return a real error message and
+    `degraded=true` so the UI can offer a retry.
     """
     from services import devices as devices_svc
 
@@ -546,6 +551,7 @@ def api_available_trucks():
             "message": "You do not have permission to view the truck list.",
         }), 200
 
+    # 1. Trucks already assigned to some driver -> never offer them.
     assigned_trucks: set[str] = set()
     try:
         resp = (_svc_client().table("truck_assignments")
@@ -560,7 +566,11 @@ def api_available_trucks():
     except Exception as exc:
         log.exception("available_trucks: assignment lookup failed: %s", exc)
 
+    # 2. Load the device list. Prefer the cache; on miss, fetch live
+    #    with a bounded retry so a single RemoteDisconnected doesn't
+    #    strand the UI in "warming up" forever.
     devices = None
+    fetch_error = None
     try:
         devices = devices_svc.get_devices_cached_only()
     except AttributeError:
@@ -569,26 +579,53 @@ def api_available_trucks():
             "falling back to live get_devices().")
         devices = None
     except Exception:
-        log.exception("available_trucks: cached device lookup failed")
+        log.exception("available_trucks: cached lookup raised")
         devices = None
 
     if devices is None:
-        try:
-            devices = devices_svc.get_devices()
-        except Exception as exc:
-            log.exception("available_trucks: live device lookup failed: %s",
-                          exc)
-            return jsonify({
-                "trucks": [],
-                "is_admin": _is_admin(),
-                "can_assign": _can_assign(),
-                "degraded": True,
-                "message": ("Truck list is warming up. Try again in a moment."),
-            })
+        import time
+        last_exc = None
+        for attempt in range(3):
+            try:
+                devices = devices_svc.get_devices()
+                if devices:
+                    break
+                last_exc = RuntimeError("get_devices returned empty")
+            except Exception as exc:
+                last_exc = exc
+                log.warning(
+                    "available_trucks: get_devices attempt %d/3 failed: %s",
+                    attempt + 1, exc,
+                )
+            if attempt < 2:
+                time.sleep(1 + attempt)  # 1 s, 2 s
 
+        if not devices:
+            fetch_error = (
+                str(last_exc) if last_exc
+                else "Tracksolid returned an empty device list."
+            )
+            log.error("available_trucks: live fetch failed: %s", fetch_error)
+
+    # 3. Fetch failed -> tell the user (don't lie about "warming up").
+    if devices is None or not devices:
+        return jsonify({
+            "trucks": [],
+            "is_admin": _is_admin(),
+            "can_assign": _can_assign(),
+            "degraded": True,
+            "retry":    True,
+            "message": (
+                "Could not load trucks from Tracksolid"
+                + (f": {fetch_error}" if fetch_error else ".")
+                + " Check the network, then retry."
+            ),
+        })
+
+    # 4. Filter and shape the list.
     out = []
     seen = set()
-    for d in devices or []:
+    for d in devices:
         name = (d.get("deviceName") or "").strip()
         if not name or name in seen:
             continue
@@ -615,7 +652,7 @@ def api_available_trucks():
     return jsonify({
         "trucks": out,
         "is_admin": _is_admin(),
-               "can_assign": _can_assign(),
+        "can_assign": _can_assign(),
         "degraded": False,
     })
 

@@ -39,6 +39,7 @@ from services import report_jobs
 from services import job_worker
 from services.prefetch import prefetch_alarms_for_preview_lazy
 
+
 _prefetch_alarms_for_preview_lazy = prefetch_alarms_for_preview_lazy
 
 from report_analysis import YARD_LOOKBACK, history_window
@@ -118,7 +119,9 @@ from blueprints.admin      import bp as admin_bp
 from blueprints.live_fleet import bp as live_fleet_bp
 from blueprints.drivers    import bp as drivers_bp
 from blueprints import trip_history as trip_history_bp
+from blueprints import auto_release_admin as ar_admin_bp
 
+app.register_blueprint(ar_admin_bp.bp)
 app.register_blueprint(trip_history_bp.bp)
 app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
@@ -1906,6 +1909,13 @@ def _start_worker():
         log.info("job worker thread started")
     except Exception as exc:
         log.error("could not start job worker: %s", exc)
+
+    try:
+        from services import auto_release
+        auto_release.start()
+        log.info("auto-release sweeper started")
+    except Exception as exc:
+        log.error("could not start auto-release sweeper: %s", exc)
 
     # Warm the device cache once on startup so the first user who opens
     # a page with a truck dropdown doesn't pay the Tracksolid round trip

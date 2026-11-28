@@ -20,6 +20,16 @@ from services.ratelimit import (
 
 BASE_URL = "https://eu-open.tracksolidpro.com/route/rest"
 
+# Tracksolid's edge (openresty) drops connections from the python-requests
+# User-Agent with `RemoteDisconnected` — confirmed with:
+#     curl -X POST -A "python-requests/2.31.0" → FAILS
+#     curl -X POST -A "curl/8.0.1"              → SUCCEEDS
+# Send a curl-style UA on every request so the WAF doesn't block us.
+_REQUESTS_HEADERS = {
+    "User-Agent": "curl/8.0.1",
+    "Accept":     "*/*",
+}
+
 
 class RateLimitExceeded(RuntimeError):
     """Raised when Tracksolid returns code 1006 (request frequency too high)."""
@@ -115,7 +125,12 @@ def _fetch_new_token() -> str:
     })
     params["sign"] = make_sign(params, APP_SECRET)
 
-    response = requests.post(BASE_URL, data=params, timeout=30)
+    response = requests.post(
+        BASE_URL,
+        data=params,
+        timeout=30,
+        headers=_REQUESTS_HEADERS,
+    )
     response.raise_for_status()
     payload = response.json()
 
@@ -168,7 +183,12 @@ def api_call(method: str, private_params: dict | None = None) -> dict:
     params["sign"] = make_sign(params, APP_SECRET)
 
     try:
-        response = requests.post(BASE_URL, data=params, timeout=30)
+        response = requests.post(
+            BASE_URL,
+            data=params,
+            timeout=30,
+            headers=_REQUESTS_HEADERS,
+        )
         response.raise_for_status()
     except Exception:
         # Network / HTTP-level failure — not a quota failure, but record it.

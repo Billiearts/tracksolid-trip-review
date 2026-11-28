@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block heading %}Auto-release{% endblock %}
+
+{% block content %}
+<div class="card" style="max-width:720px;">
+  <h2 style="font-size:1.1rem; margin:0 0 1rem;">Auto-release sweep</h2>
+
+  <p class="muted" style="font-size:0.88rem;">
+    Every {{ interval }} seconds a background worker closes any
+    <code>truck_assignments</code> row whose truck is back in the yard.
+    It counts a truck as "back" when its latest fence event is one of:
+    {% for g in release_groups %}<code>{{ g }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+    Trucks currently on a trip stay assigned.
+  </p>
+
+  <table class="admin-table" style="max-width:560px; margin-bottom:1rem;">
+    <tbody>
+      <tr><th style="width:200px;">Last sweep</th>
+          <td>{{ last.at or '—' }}</td></tr>
+      <tr><th>Duration</th>
+          <td>{{ '%.1f s'|format(last.get('duration_s') or 0) }}</td></tr>
+      <tr><th>Open assignments</th>
+          <td>{{ last.get('open_assignments', 0) }}</td></tr>
+      <tr><th>Released</th>
+          <td>{{ last.get('released', 0) }}</td></tr>
+      <tr><th>Errors</th>
+          <td>{{ last.get('errors', 0) }}</td></tr>
+      <tr><th>Rate-limited</th>
+          <td>{{ 'yes' if last.get('rate_limited') else 'no' }}</td></tr>
+    </tbody>
+  </table>
+
+  <form method="post"
+        action="{{ url_for('auto_release_admin.sweep') }}"
+        data-loading-overlay="Running sweep… this may take a few seconds.">
+    <button type="submit">Sweep now</button>
+  </form>
+
+  <p class="muted" style="font-size:0.8rem; margin-top:0.75rem;">
+    Each sweep reads the fleet-state cache, which is refreshed every 90 s.
+    A truck whose GPS last checked out more than 36 h ago will be treated
+    as <code>unknown</code> and released — flag that here if it becomes
+    a problem and we can extend the lookback.
+  </p>
+</div>
+{% endblock %}
